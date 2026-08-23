@@ -5,6 +5,7 @@
  * query modules import; the migration generator reads it through this file too.
  */
 export * from "./classroom";
+export * from "./classroom-model-alias";
 export * from "./conversation";
 export * from "./educator";
 export * from "./login-attempt";
