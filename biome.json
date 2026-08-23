@@ -1,0 +1,58 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.10/schema.json",
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "recommended"
+    }
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "double",
+      "semicolons": "always"
+    }
+  },
+  "files": {
+    "includes": [
+      "src/**",
+      "sandbox/**",
+      "*.ts",
+      "*.js",
+      "*.json",
+      "!src/lib/paraglide",
+      "!.svelte-kit",
+      "!build",
+      "!test-results",
+      "!playwright-report"
+    ]
+  },
+  "overrides": [
+    {
+      "includes": ["**/*.svelte"],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "noUnusedImports": "off",
+            "noUnusedVariables": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/app.html"],
+      "linter": {
+        "rules": {
+          "a11y": {
+            "useValidLang": "off"
+          }
+        }
+      }
+    }
+  ]
+}
