@@ -286,5 +286,6 @@
   "student_skill_pending_notice": "Your teacher needs to approve this before it works.",
   "student_skill_rejected_notice": "Your teacher did not approve this one.",
   "student_skills_disabled_notice": "Writing skills is switched off in this class.",
-  "student_skill_back": "Back to chat"
+  "student_skill_back": "Back to chat",
+  "chat_notice_unanswered": "No answer was given, so the assistant carried on without the tool."
 }

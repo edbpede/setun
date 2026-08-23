@@ -286,5 +286,6 @@
   "student_skill_pending_notice": "Din lærer skal godkende den, før den virker.",
   "student_skill_rejected_notice": "Din lærer godkendte ikke denne.",
   "student_skills_disabled_notice": "At skrive evner er slået fra i denne klasse.",
-  "student_skill_back": "Tilbage til chatten"
+  "student_skill_back": "Tilbage til chatten",
+  "chat_notice_unanswered": "Der blev ikke svaret, så assistenten fortsatte uden værktøjet."
 }

@@ -1,7 +1,7 @@
 <script lang="ts">
 import * as m from "$lib/paraglide/messages";
-import type { ChatMessage } from "$lib/state/conversation.svelte";
-import MarkdownMessage from "./MarkdownMessage.svelte";
+import { type ChatMessage, textOf } from "$lib/state/conversation.svelte";
+import MessageParts from "./MessageParts.svelte";
 
 /**
  * One settled message in the conversation (PRD §10, §20).
@@ -12,7 +12,7 @@ import MarkdownMessage from "./MarkdownMessage.svelte";
 interface Props {
   message: ChatMessage;
   /** Editing a prompt branches the tree as a sibling (§10). */
-  onedit?: (message: ChatMessage) => void;
+  onedit?: (message: { id: string; text: string }) => void;
   onregenerate?: (message: ChatMessage) => void;
 }
 
@@ -34,11 +34,7 @@ let isUser = $derived(message.role === "user");
       isUser ? "bg-primary text-primary-foreground" : "bg-card text-card-foreground border border-border",
     ]}
   >
-    {#if isUser}
-      <p class="whitespace-pre-wrap break-words">{message.text}</p>
-    {:else}
-      <MarkdownMessage text={message.text} />
-    {/if}
+    <MessageParts parts={message.parts} plain={isUser} />
   </div>
 
   <div
@@ -48,7 +44,7 @@ let isUser = $derived(message.role === "user");
       <button
         type="button"
         class="text-xs text-muted-foreground hover:text-foreground"
-        onclick={() => onedit?.(message)}
+        onclick={() => onedit?.({ id: message.id, text: textOf(message) })}
       >
         {m.chat_edit_message()}
       </button>
