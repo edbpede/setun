@@ -1,0 +1,92 @@
+# Setun deployment — three services (PRD §5, §6.2).
+#
+#   app     the SvelteKit application (adapter-node build, run under Bun)
+#   cpa     CLIProxyAPI, the model gateway — unmodified, pinned, no host port
+#   caddy   plain reverse proxy terminating TLS for both origins
+#
+# The browser reaches only Caddy. Caddy reaches only the app and the static
+# sandbox files. CPA is reachable exclusively from the app over the internal
+# network and has no published port (§6, §9).
+
+name: setun
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      # Consumed by the app at boot; validated before the listener starts (Phase 1).
+      SETUN_STUDENT_CODE_PEPPER: ${SETUN_STUDENT_CODE_PEPPER:?set in .env}
+      SETUN_EDUCATOR_SEED_USERNAME: ${SETUN_EDUCATOR_SEED_USERNAME:?set in .env}
+      SETUN_EDUCATOR_SEED_PASSWORD: ${SETUN_EDUCATOR_SEED_PASSWORD:?set in .env}
+      SETUN_CPA_LISTENER_KEY: ${SETUN_CPA_LISTENER_KEY:?set in .env}
+      SETUN_CPA_BASE_URL: http://cpa:8317
+      SETUN_APP_ORIGIN: ${SETUN_APP_ORIGIN:?set in .env}
+      SETUN_SANDBOX_ORIGIN: ${SETUN_SANDBOX_ORIGIN:?set in .env}
+      SETUN_DATABASE_PATH: /data/db/setun.sqlite
+      SETUN_STORAGE_PATH: /data/storage
+      SETUN_BACKUP_PATH: /data/backups
+      # The on-disk MCP server configuration (§11). The file itself, and its
+      # schema, arrive with the MCP client in Phase 3.2; mount it below then.
+      SETUN_MCP_CONFIG_PATH: /config/mcp.json
+      # Credentials referenced by name from the MCP configuration file (§11).
+      # Add one line per credential the file names; never store them in the database.
+      SETUN_MCP_EXAMPLE_TOKEN: ${SETUN_MCP_EXAMPLE_TOKEN:-}
+      PORT: "3000"
+    volumes:
+      - db:/data/db
+      - storage:/data/storage
+      - backups:/data/backups
+      # - ./mcp.json:/config/mcp.json:ro   # enabled in Phase 3.2
+    networks: [internal, edge]
+    depends_on: [cpa]
+
+  cpa:
+    # Pinned, unmodified upstream (§9). Source: https://github.com/router-for-me/CLIProxyAPI
+    image: eceasy/cli-proxy-api:v7.2.140
+    restart: unless-stopped
+    # No `ports:` — CPA is deliberately unreachable from the host and the internet.
+    # Provider enrolment happens on the host through CPA's own config and login
+    # flows; Setun neither stores nor manages provider credentials (§9).
+    volumes:
+      # Copied from cpa/config.example.yaml and filled in by the operator.
+      - ./cpa/config.yaml:/CLIProxyAPI/config.yaml
+      - cpa-auth:/root/.cli-proxy-api
+    networks: [internal]
+
+  caddy:
+    # Plain proxy — no custom builds, no plugins (§5).
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SETUN_APP_HOSTNAME: ${SETUN_APP_HOSTNAME:?set in .env}
+      SETUN_SANDBOX_HOSTNAME: ${SETUN_SANDBOX_HOSTNAME:?set in .env}
+      SETUN_ACME_EMAIL: ${SETUN_ACME_EMAIL:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Built from sandbox/ by the repository's own build step and served
+      # statically — the application never serves the sandbox hostname (§6).
+      - ./build/sandbox:/srv/sandbox:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks: [edge]
+    depends_on: [app]
+
+networks:
+  # CPA sits here only; nothing on this network is published to the host.
+  internal:
+    internal: true
+  edge:
+
+volumes:
+  db:
+  storage:
+  backups:
+  cpa-auth:
+  caddy-data:
+  caddy-config:
