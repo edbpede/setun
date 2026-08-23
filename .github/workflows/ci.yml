@@ -63,9 +63,12 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bunx playwright install --with-deps chromium
       - run: bunx playwright test
-      - uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
+      # Only on failure: a passing run writes no report, and uploading
+      # unconditionally annotates every green build with a missing-path warning.
+      - uses: actions/upload-artifact@v5
+        if: ${{ failure() }}
         with:
           name: playwright-report
           path: playwright-report/
           retention-days: 7
+          if-no-files-found: ignore
