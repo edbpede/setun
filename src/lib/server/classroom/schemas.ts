@@ -1,0 +1,214 @@
+import * as v from "valibot";
+import { BUDGET_PRESET_NAMES } from "../agent/budgets";
+import {
+  CLASSROOM_STATES,
+  GATEWAY_DIALECTS,
+  INTERFACE_LANGUAGES,
+  PERMISSION_MODES,
+  SESSION_POLICIES,
+  SKILL_AUTHORING_POLICIES,
+} from "../db/schema";
+import { OPEN_DURATIONS } from "./schedule";
+
+/**
+ * Validation for every educator panel form (PRD §5, §8, §9, §10).
+ *
+ * "Every form action and API endpoint validates through a Valibot schema, no
+ * exceptions" (§5). They live together because they share one audience — the
+ * `(educator)` routes — and one reason to change: the panel's form set. Splitting
+ * one file per form would produce single-export modules with no second importer,
+ * which is not what the splitting principle asks for (§6.1).
+ *
+ * Two shapes appear here, for a reason:
+ *
+ * - Schemas Superforms drives use plain `v.number()` / `v.boolean()`. Superforms
+ *   coerces form data from the schema's own types, and a coercing pipe would
+ *   erase the input type it needs to do that — and with it `bind:value`.
+ * - Schemas a plain action parses by hand coerce explicitly, because there
+ *   everything off a `FormData` is a string.
+ *
+ * Nothing here writes; the routes hand the parsed output to the query modules.
+ * These schemas are the boundary an educator's input crosses, so every bound
+ * that matters — a weekday in range, a positive cap, a real timezone — is
+ * asserted here rather than trusted downstream.
+ */
+
+const MINUTES_PER_DAY = 24 * 60;
+
+/** A trimmed, non-empty string of bounded length. */
+const label = (max: number) => v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(max));
+
+/**
+ * Free text an educator may clear.
+ *
+ * Defaults to the empty string rather than null: that is what a browser posts
+ * for an empty textarea, and the route turns it into null so an empty layer is
+ * never sent to a model as an instruction with no content (§10).
+ */
+const optionalText = (max: number) =>
+  v.optional(v.pipe(v.string(), v.trim(), v.maxLength(max)), "");
+
+/** Blank text is absent text — applied by the routes to `optionalText` fields. */
+export function blankToNull(value: string): string | null {
+  return value.length > 0 ? value : null;
+}
+
+const whole = (min: number, max: number) =>
+  v.pipe(v.number(), v.integer(), v.minValue(min), v.maxValue(max));
+
+const flag = v.optional(v.boolean(), false);
+
+/**
+ * An optional price in USD per million tokens.
+ *
+ * Nullable rather than zero: "optional per-million-token prices" (§9), and a
+ * price of zero would be priced as free rather than unpriced.
+ */
+const optionalPrice = v.nullable(v.pipe(v.number(), v.minValue(0), v.maxValue(10_000)), null);
+
+/**
+ * An IANA zone, checked against the platform's own database.
+ *
+ * A typo here would make every schedule in the classroom resolve against a zone
+ * that does not exist, and `date-fns-tz` would throw on the next request.
+ */
+const timezone = v.pipe(
+  label(64),
+  v.check((value) => {
+    try {
+      new Intl.DateTimeFormat("en", { timeZone: value });
+      return true;
+    } catch {
+      return false;
+    }
+  }, "Enter a valid IANA timezone, for example Europe/Copenhagen"),
+);
+
+// --- Classroom identity (§8) ---
+
+export const CreateClassroomSchema = v.object({
+  name: label(120),
+  timezone: v.optional(timezone, "Europe/Copenhagen"),
+});
+
+// --- Availability (§8) ---
+
+/** Parsed by hand from a two-button form, so the picklists read raw strings. */
+export const SetStateSchema = v.object({
+  state: v.picklist(CLASSROOM_STATES),
+  /** Only read for `open`; a lock stands until the educator lifts it (§8). */
+  duration: v.optional(v.picklist(OPEN_DURATIONS), "indefinite"),
+});
+
+/**
+ * A recurring lesson.
+ *
+ * Minutes from local midnight, matching the stored shape: a clock string parsed
+ * on every comparison is where hand-rolled offset handling creeps in (§5).
+ */
+const weeklyWindow = v.pipe(
+  v.object({
+    weekday: whole(0, 6),
+    startMinute: whole(0, MINUTES_PER_DAY - 1),
+    endMinute: whole(1, MINUTES_PER_DAY),
+  }),
+  v.check((window) => window.endMinute > window.startMinute, "A lesson must end after it starts"),
+);
+
+export const ScheduleSchema = v.object({
+  weeklySchedule: v.pipe(v.array(weeklyWindow), v.maxLength(60)),
+});
+
+const temporaryWindow = v.pipe(
+  v.object({
+    startsAt: whole(0, Number.MAX_SAFE_INTEGER),
+    endsAt: whole(0, Number.MAX_SAFE_INTEGER),
+    note: optionalText(120),
+  }),
+  v.check((window) => window.endsAt > window.startsAt, "A window must end after it starts"),
+);
+
+export const TemporaryWindowsSchema = v.object({
+  temporaryWindows: v.pipe(v.array(temporaryWindow), v.maxLength(60)),
+});
+
+// --- Budgets (§10, Appendix A) ---
+
+/**
+ * Bounds, not policy: the panel's three presets fill these fields, and an
+ * educator may set anything within reason afterwards (§10). The ceilings exist
+ * so a slipped keystroke cannot write a cap no budget would ever reach.
+ */
+export const BudgetsSchema = v.object({
+  perTurnStepCap: whole(1, 200),
+  perTurnWallClockSeconds: whole(10, 3_600),
+  perTurnTokenCap: whole(1_000, 2_000_000),
+  perStudentDailyTokens: whole(1_000, 20_000_000),
+  perClassroomDailyTokens: whole(1_000, 200_000_000),
+  costExchangeRate: v.pipe(v.number(), v.minValue(0), v.maxValue(1_000)),
+});
+
+export const ApplyPresetSchema = v.object({
+  preset: v.picklist(BUDGET_PRESET_NAMES),
+});
+
+// --- Instructions, language, session policy (§7, §8, §10) ---
+
+export const ClassroomPolicySchema = v.object({
+  classroomInstructions: optionalText(8_000),
+  interfaceLanguage: v.picklist(INTERFACE_LANGUAGES),
+  sessionPolicy: v.picklist(SESSION_POLICIES),
+  sessionSlidingDays: whole(1, 365),
+  permissionMode: v.picklist(PERMISSION_MODES),
+  skillAuthoringPolicy: v.picklist(SKILL_AUTHORING_POLICIES),
+  conversationRetentionDays: whole(1, 3_650),
+  attachmentsEnabled: flag,
+});
+
+/** Parsed by hand from one row of the roster. */
+export const StudentInstructionsSchema = v.object({
+  studentId: v.pipe(v.string(), v.uuid()),
+  instructions: v.pipe(
+    v.optional(v.string(), ""),
+    v.transform((value) => value.trim()),
+    v.maxLength(4_000),
+    v.transform(blankToNull),
+  ),
+});
+
+// --- Model aliases (§9, §16) ---
+
+export const AliasSchema = v.object({
+  /** The friendly name — the only part of an alias a pupil ever sees (§9). */
+  name: label(60),
+  /** The identifier CPA knows. Never sent to a student's browser (§9, §21). */
+  gatewayModelId: label(200),
+  dialect: v.picklist(GATEWAY_DIALECTS),
+  available: flag,
+  dataProtection: flag,
+  supportsImageInput: flag,
+  supportsImageGeneration: flag,
+  inputPricePerMillion: optionalPrice,
+  outputPricePerMillion: optionalPrice,
+  isUtility: flag,
+});
+
+/** Parsed by hand from one row of the allowlist. */
+export const AllowAliasSchema = v.object({
+  modelAliasId: v.pipe(v.string(), v.uuid()),
+  /**
+   * The educator's explicit acknowledgement for an alias with no data
+   * processing agreement (§16).
+   *
+   * Required rather than implied: §16 asks that the decision be "made
+   * deliberately, per classroom, by the person accountable for it", and the
+   * server refuses the allowlisting without it — a dialog the client could skip
+   * would not be that.
+   */
+  confirmNoDpa: v.pipe(
+    v.optional(v.unknown()),
+    v.transform((value) => value === "on" || value === "true" || value === true),
+  ),
+});
+
+export const AliasIdSchema = v.object({ modelAliasId: v.pipe(v.string(), v.uuid()) });
