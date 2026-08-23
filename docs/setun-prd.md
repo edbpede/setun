@@ -1,6 +1,6 @@
 # Setun — Product Requirements Document
 
-**Version:** 0.5
+**Version:** 0.6
 **Status:** Ready for implementation planning — all open decisions resolved, defaults pinned
 **Licence:** AGPL-3.0
 **Target:** Classroom pilot, 5–20 students and one educator
@@ -88,7 +88,7 @@ Streaming uses server-sent events end to end: sending a message is a POST return
 
 A small in-process job scheduler (started with the server, portable across Node and Bun) runs retention enforcement, nightly backups, and session cleanup.
 
-The sandbox origin is prebuilt static files served directly by Caddy — the application never serves the sandbox hostname. Drizzle migrations are applied at server boot, before the listener starts; there is no separate migration step for the operator.
+The sandbox origin is prebuilt static files served directly by Caddy — the application never serves the sandbox hostname. Those files are built from `sandbox/` by the repository's own build step and mounted into the Caddy container; in development, Vite serves the sandbox on a second localhost port so both origins exist locally. Drizzle migrations are applied at server boot, before the listener starts; there is no separate migration step for the operator.
 
 ### 6.1 Repository structure
 
@@ -194,17 +194,19 @@ Because MCP and skills are in scope, the core is not a stream proxy but an **age
 
 Budgets are checked when a turn starts; a turn already streaming completes within its per-turn caps even if an allowance empties mid-turn — the per-turn layer bounds the overshoot. Hitting a per-turn cap mid-turn ends the turn gracefully: the loop stops at the next clean boundary, partial content is preserved, and the student sees a friendly notice — never an error. Exhausting an allowance or cap refuses new turns with a friendly, non-technical message; it is never presented as an error.
 
+**A day, for budget purposes, is the calendar day in the classroom's timezone** — allowances and caps reset at local midnight. Token accounting relies on gateway-reported usage; when a response carries none, Setun estimates it (roughly four characters per token) and records the figure as estimated — usage is never counted as zero.
+
 **Internal utility-alias calls** (today, title generation) count toward the per-classroom daily cap but never toward a student's personal allowance; when the classroom cap is exhausted, utility work is skipped and its fallback used.
 
 Alongside the enforced token figures, the panel and student dashboard show an **approximate cost (USD and DKK)** computed from the optional per-alias prices and a configurable exchange rate. Estimates are display only — enforcement never depends on a price being present or current.
 
-**One turn is in flight per conversation.** Sending a new message while a turn streams requires aborting it; the server enforces this, not just the composer.
+**One turn is in flight per student**, across all of their conversations. Sending a new message while a turn streams requires aborting it; the server enforces this, not just the composer.
 
 Messages are stored as a **tree**, not a list. Editing a prompt or regenerating a response creates a sibling; each conversation tracks its active leaf. This costs little now and avoids a migration later.
 
 The loop emits a **normalised internal event stream** — text delta, tool call started, permission request, tool result, usage, error, done — rather than forwarding provider events verbatim. Providers change; the internal wire format should not.
 
-**Transport is SSE.** Sending a message is a POST whose response streams the normalised events. The server buffers every event to the database as it streams, so aborting a turn cancels the in-flight upstream request and any running tool execution, and a reloaded or discarded tab calls a resume endpoint that replays the buffered events and tails the live turn — one code path for live and resumed turns.
+**Transport is SSE.** Sending a message is a POST whose response streams the normalised events. The server buffers every event to the database as it streams, so aborting a turn cancels the in-flight upstream request and any running tool execution, and a reloaded or discarded tab calls a resume endpoint that replays the buffered events and tails the live turn — one code path for live and resumed turns. A server restart marks any in-flight turn as interrupted at boot; resume then replays what was buffered, with a friendly notice that the response was cut short.
 
 Students can **search their own conversations** — titles and message content — via FTS5, strictly scoped to the requesting student. Conversation titles are generated asynchronously by the utility alias after the first exchange, falling back to a truncation of the first user message.
 
@@ -238,7 +240,7 @@ A curated ten to fifteen tools across three or four servers is a rich classroom.
 
 ## 12. Skills
 
-A skill is a name, a description, an instruction body, and optional bundled reference material. Skill names and one-line descriptions are injected into the system prompt; the full body is retrieved on demand through an internal load tool, so skills cost almost nothing until used. The load tool is internal, not an MCP tool: it never triggers a permission prompt in any permission mode. They travel through the same registry, allowlist, and execution path as MCP tools.
+A skill is a name, a description, an instruction body, and optional bundled reference material. Skill names and one-line descriptions are injected into the system prompt; the full body is retrieved on demand through an internal load tool, so skills cost almost nothing until used. The load tool is internal, not an MCP tool: it never triggers a permission prompt in any permission mode, though a load does consume a per-turn tool-call step like any other tool invocation — it is a model round trip. They travel through the same registry, allowlist, and execution path as MCP tools.
 
 **The educator has complete control of the library.** Library skills are authored in the panel, uploaded as files, or **imported from the skills.sh registry**, which the panel can browse server-side (a preliminary, best-effort integration — the registry format is compatible with Setun's skill model, but the integration degrades to manual upload if the registry changes). Imported and uploaded skill text is untrusted content: it arrives **disabled** and takes effect only when the educator enables it. Enablement is **per classroom and per student** — a skill can be offered to a whole class or to individual students.
 
@@ -256,7 +258,11 @@ Artifacts are detected by the renderer from fenced code blocks with recognised l
 
 **Tier 1 — compiled.** TypeScript, JSX, and Svelte compile through `esbuild-wasm` in a worker inside the sandbox origin, against pinned self-hosted ESM runtimes — **React and Svelte**, the two frameworks models most reliably emit; no other frameworks are hosted. The compiler is fetched only when a student first opens a non-static artifact, and cached thereafter. Compilation is triggered by an explicit **Run** action or a heavily debounced idle, never per keystroke.
 
+**Artifact continuity is a heuristic**, since no model-side protocol exists: a fenced artifact block whose language matches the conversation's most recent artifact becomes a new version of that artifact; a different language starts a new one. The guess is presentational only — every version is retained, so a wrong guess loses nothing.
+
 Students edit artifact source in CodeMirror; edits recompile locally with no model request. Every edit is versioned, which yields undo, a diff view — *what did the AI actually change?* is a good discussion prompt — and a creations gallery.
+
+**Student edits flow back to the model.** When an artifact has been edited since the model last emitted it, the next message in that conversation carries the current source, clearly marked as the student's edited version — so "I broke it, help me fix it" works without pasting code by hand.
 
 Utility CSS inside artifacts comes from a self-hosted UnoCSS runtime. No public CDN is contacted at any point during normal operation.
 
@@ -280,7 +286,13 @@ Automated tests attempt parent DOM access, cookie and storage access, authentica
 
 ## 15. Image generation
 
-Image generation runs through the gateway adapter and is subject to the same classroom enablement, allowlist, permission, and budget rules as text. It is offered only on aliases carrying the image-generation capability flag (§9), and the server refuses generation requests against unflagged aliases before any gateway call. Generated images are stored locally and served from Setun; no external image URL is ever handed to the browser. Images appear in the student's creations gallery alongside artifacts.
+Image generation runs through the gateway adapter and is subject to the same classroom enablement, allowlist, permission, and budget rules as text. It is offered only on aliases carrying the image-generation capability flag (§9), and the server refuses generation requests against unflagged aliases before any gateway call.
+
+**Two trigger paths, one execution path.** Inside chat, the agent loop exposes an internal generate-image tool whenever the classroom allowlists a generation-capable alias — the model calls it when a student asks in conversation, subject to the classroom's permission mode like any other tool. Alongside it, the composer offers an explicit image mode that sends the prompt straight to generation on a chosen generation-capable alias. Both paths converge on the same server-side execution, enforcement, and storage code; the paths differ only in who initiates the call.
+
+**Accounting.** Each generated image debits a fixed token-equivalent — panel-configurable, default in Appendix A — against the student's daily allowance and the classroom cap, because image endpoints do not reliably report usage and generation must never be free.
+
+Generated images are stored locally and served from Setun; no external image URL is ever handed to the browser. Images appear in the student's creations gallery alongside artifacts.
 
 ---
 
@@ -308,7 +320,7 @@ A dense, single-operator tool. It provides:
 - Classroom configuration: open and lock, weekly schedule, temporary windows, model allowlist (with data-protection flags and the no-DPA confirmation), tool permission mode, skill authoring policy, attachment policy, classroom instructions, session policy, interface language, feature toggles, retention and creations policy, budgets and allowances, force-logout.
 - Model aliases: create and edit aliases — friendly name, gateway identifier, dialect, availability, data-protection flag, image-input and image-generation capability flags, optional input/output prices, utility-alias designation.
 - Roster: per-student status, usage and allowance (with cost estimate), last activity, per-student instructions and attachment overrides, with disable, enable, rotate credential, clear display name, remove, and delete actions.
-- Provisioning: batch creation of pseudonymous accounts — labels are generated word pairs from a localised wordlist, unique within a classroom, speakable in class — and printable credential cards.
+- Provisioning: batch creation of pseudonymous accounts — labels are generated word pairs from a localised wordlist shipped in the repository (one per locale), unique within a classroom, speakable in class — and printable credential cards.
 - MCP: configured servers (from the on-disk configuration), negotiated protocol version, reachability, per-tool enablement and sensitive flags.
 - Skills: the shared library with panel authoring, file upload, and skills.sh browsing and import; per-classroom and per-student enablement; review of student-authored skills, including the approval queue when pre-approval is on.
 
@@ -316,7 +328,7 @@ A dense, single-operator tool. It provides:
 
 ## 18. Student dashboard
 
-Deliberately thin: account status, classroom open or closed with the next window, daily allowance used (with the approximate cost where prices are configured), an interface-language override, conversation list with search, creations gallery, and the student's own skills.
+Deliberately thin: account status, classroom open or closed with the next window, daily allowance used (with the approximate cost where prices are configured), an interface-language override, the optional display name (set, changed, or cleared here), conversation list with search, creations gallery, and the student's own skills.
 
 Its purpose is partly transparency — everything the system knows about a student is visible to that student, and none of it is their real name.
 
@@ -338,7 +350,7 @@ Tables, described in prose to keep implementation free:
 - **McpServer** and **McpTool** — configuration reference, negotiated protocol version, per-tool enablement, sensitive flag. Endpoints and credential references live in the on-disk configuration, not here.
 - **Skill** — origin (panel-authored, uploaded, imported, student), owner, body, resources, enablement state, approval state, reserved executable marker.
 - **ModelAlias** — friendly name, gateway model identifier, dialect, availability, data-protection flag, image-input and image-generation capability flags, optional per-million-token input and output prices (USD), utility designation.
-- **UsageEvent** — classroom, student (null for internal utility work, which counts against the classroom cap only), model alias, input and output tokens recorded separately, tool calls, timestamp; the source of allowance and cap accounting.
+- **UsageEvent** — classroom, student (null for internal utility work, which counts against the classroom cap only), model alias, input and output tokens recorded separately, tool calls, a flag marking gateway-reported versus estimated figures (§10; generated images record their fixed token-equivalent, §15), timestamp; the source of allowance and cap accounting. Rows are retained indefinitely — volume is trivial at pilot scale.
 - **LoginAttempt** — rate-limiting state per IP and credential digest.
 
 Allowlists are join tables between Classroom and ModelAlias, McpTool, and Skill respectively; the Skill allowlist additionally supports per-student rows, and per-student attachment overrides follow the same pattern.
@@ -403,7 +415,7 @@ End-to-end coverage with Playwright for three flows: a student logging in, chatt
 
 **M2 — Classroom.** Classroom model, membership, open and lock, weekly schedules, temporary windows, classroom-state push channel, model alias management and allowlists, three-layer budgets and allowances with the cost-estimate display, classroom and per-student instructions, interface-language settings, session policies and force-logout, server-side enforcement across every path, student closed screen.
 
-**M3 — Tools.** MCP client with `2026-07-28` support and legacy adapters, on-disk server configuration and tool allowlisting, permission modes and sensitive flags, tool execution inside the agent loop, elicitation handling, skills registry with authoring policies, uploads, and skills.sh import, image generation, student attachments with policy enforcement.
+**M3 — Tools.** MCP client with `2026-07-28` support and legacy adapters, on-disk server configuration and tool allowlisting, permission modes and sensitive flags, tool execution inside the agent loop, elicitation handling, skills registry with authoring policies, uploads, and skills.sh import, image generation (agent-loop tool and composer image mode), student attachments with policy enforcement.
 
 **M4 — Build.** Artifact detection, sandbox origin and policy, Tier 0 rendering, CodeMirror editing, versioning and diff, Tier 1 compilation, creations gallery, escape test suite.
 
@@ -445,6 +457,8 @@ Selecting a preset fills all five fields; fields remain individually editable af
 
 ### Other defaults
 
+- **Budget day** — allowances and caps reset at midnight in the classroom's timezone (§10).
+- **Image generation** — token-equivalent per generated image: 10k tokens, panel-editable, debited against the student allowance and classroom cap (§15).
 - **Attachments** — images ≤ 5 MB, text/code files ≤ 256 KB, at most 5 attachments per message. Default allowed types: PNG, JPEG, WebP, and plain-text/code files.
 - **Login rate limiting** — per credential digest: after 5 consecutive failures within 15 minutes, progressive delay starting at 1 s and doubling to a 60 s ceiling. Per IP: at most 30 attempts per 15-minute window, then refusal until the window passes. Failure responses are uniform in both content and timing behaviour.
 - **Sessions** — student sliding expiry 14 days (§7); educator sliding expiry 7 days (§7).
