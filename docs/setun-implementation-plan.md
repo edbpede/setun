@@ -191,60 +191,60 @@ hooks = [
 
 ### 2.1 Educator authentication (§7)
 
-- [ ] `src/lib/server/auth/educator.ts` — account seeded from env at first boot (re-seed + restart is the recovery path, §6.2); `Bun.password` (argon2id) per `.agents/rules/svelte5-sveltekit-app.md`; own session namespace, sliding 7-day expiry
-- [ ] `(educator)/` login route and guard: educator role required on every educator endpoint (§21), enforced in the layout server load and re-checked in actions
-- [ ] `bun test`: seeding, verify, role separation; security tests: student session cannot reach educator endpoints (§22)
+- [x] `src/lib/server/auth/educator.ts` — account seeded from env at first boot (re-seed + restart is the recovery path, §6.2); `Bun.password` (argon2id) per `.agents/rules/svelte5-sveltekit-app.md`; own session namespace, sliding 7-day expiry
+- [x] `(educator)/` login route and guard: educator role required on every educator endpoint (§21), enforced in the layout server load and re-checked in actions
+- [x] `bun test`: seeding, verify, role separation; security tests: student session cannot reach educator endpoints (§22)
 
 ### 2.2 Classroom model and settings (§8, §19)
 
-- [ ] Extend the classroom schema: state, IANA timezone (default `Europe/Copenhagen`), weekly schedule, temporary windows, session policy, retention and creations policy, budgets and caps, tool permission mode, skill authoring policy, attachment policy, classroom instructions, interface language, feature flags — plus the Classroom↔ModelAlias allowlist join table
-- [ ] Per-student columns: per-student instructions, interface-language override, status
-- [ ] `src/lib/server/classroom/` — settings query modules and a typed settings-resolution module (classroom defaults + per-student overrides, the granularity principle §2)
+- [x] Extend the classroom schema: state, IANA timezone (default `Europe/Copenhagen`), weekly schedule, temporary windows, session policy, retention and creations policy, budgets and caps, tool permission mode, skill authoring policy, attachment policy, classroom instructions, interface language, feature flags — plus the Classroom↔ModelAlias allowlist join table
+- [x] Per-student columns: per-student instructions, interface-language override, status
+- [x] `src/lib/server/classroom/` — settings query modules and a typed settings-resolution module (classroom defaults + per-student overrides, the granularity principle §2)
 
 ### 2.3 Availability and schedules (§8)
 
-- [ ] `src/lib/server/classroom/schedule.ts` — resolution of open/locked state from explicit state + weekly schedule + one-off windows, all via `date-fns` + `date-fns-tz` in the classroom timezone; **no hand-rolled offset or DST arithmetic** (§5); computes next-opening for the closed screen
-- [ ] Educator controls: Open now (with durations incl. until end of current window), Lock (immediate), schedule and window editing — Superforms 2 + Valibot form actions (§5)
-- [ ] `bun test`: schedule resolution including daylight-saving boundaries in both directions (§22)
+- [x] `src/lib/server/classroom/schedule.ts` — resolution of open/locked state from explicit state + weekly schedule + one-off windows, all via `date-fns` + `date-fns-tz` in the classroom timezone; **no hand-rolled offset or DST arithmetic** (§5); computes next-opening for the closed screen
+- [x] Educator controls: Open now (with durations incl. until end of current window), Lock (immediate), schedule and window editing — Superforms 2 + Valibot form actions (§5)
+- [x] `bun test`: schedule resolution including daylight-saving boundaries in both directions (§22)
 
 ### 2.4 Server-side enforcement (§8, §21)
 
-- [ ] `src/lib/server/classroom/enforcement.ts` — one guard invoked by every path that can reach a model: chat send, (later) tool execution and image generation, and every API endpoint; checks availability, model allowlist, session validity; a streaming response may finish after a lock, new requests are refused; hiding a UI control is never access control
-- [ ] Student closed screen: friendly status with next scheduled opening — never a raw authorisation error (§8)
-- [ ] Security tests via direct API access: out-of-hours refusal, disabled model refusal, refusal after lock mid-session (§22)
+- [x] `src/lib/server/classroom/enforcement.ts` — one guard invoked by every path that can reach a model: chat send, (later) tool execution and image generation, and every API endpoint; checks availability, model allowlist, session validity; a streaming response may finish after a lock, new requests are refused; hiding a UI control is never access control
+- [x] Student closed screen: friendly status with next scheduled opening — never a raw authorisation error (§8)
+- [x] Security tests via direct API access: out-of-hours refusal, disabled model refusal, refusal after lock mid-session (§22)
 
 ### 2.5 Classroom-state push channel (§6, §8)
 
-- [ ] `src/routes/api/` classroom-state SSE endpoint pushing open/locked/next-window/allowance to connected tabs; enforcement never depends on it (§6)
-- [ ] Client rune module consuming the channel; chat UI reacts to lock immediately
-- [ ] Integration test: state change reaches a connected client; enforcement holds when the channel is severed
+- [x] `src/routes/api/` classroom-state SSE endpoint pushing open/locked/next-window/allowance to connected tabs; enforcement never depends on it (§6)
+- [x] Client rune module consuming the channel; chat UI reacts to lock immediately
+- [x] Integration test: state change reaches a connected client; enforcement holds when the channel is severed
 
 ### 2.6 Model alias management (§9)
 
-- [ ] `(educator)/` alias CRUD: friendly name, gateway identifier, dialect, availability, data-protection flag, image-input and image-generation capability flags, optional per-million-token USD prices (single price applies to both directions), utility designation — Superforms 2 + Valibot
-- [ ] Per-classroom allowlist editing with data-protection flags displayed and the explicit **no-DPA confirmation** dialog stating what it means (§16)
-- [ ] Request validation against the classroom allowlist in enforcement (2.4); students only ever see friendly names
-- [ ] Gateway health and available-model count surfaced for the Phase 5 dashboard (server module now, display later)
+- [x] `(educator)/` alias CRUD: friendly name, gateway identifier, dialect, availability, data-protection flag, image-input and image-generation capability flags, optional per-million-token USD prices (single price applies to both directions), utility designation — Superforms 2 + Valibot
+- [x] Per-classroom allowlist editing with data-protection flags displayed and the explicit **no-DPA confirmation** dialog stating what it means (§16)
+- [x] Request validation against the classroom allowlist in enforcement (2.4); students only ever see friendly names
+- [x] Gateway health and available-model count surfaced for the Phase 5 dashboard (server module now, display later)
 
 ### 2.7 Budgets, allowances, accounting (§10)
 
-- [ ] `src/lib/server/agent/budgets.ts` — the three layers: per-turn caps (steps, wall-clock, tokens) enforced inside the loop with graceful stop at a clean boundary and partial content preserved; per-student daily allowance and per-classroom daily cap checked at turn start; per-turn caps bound mid-turn overshoot
-- [ ] Usage recording to `usage-event`: input/output tokens separately, gateway-reported vs estimated flag; budget day = calendar day in the classroom timezone (§10); utility-alias calls count toward the classroom cap only, skipped with fallback when the cap is exhausted
-- [ ] Panel budget forms with the three presets (Cautious / Standard default / Generous) filling all five Appendix A fields, each field editable after
-- [ ] Friendly refusal and mid-turn notices — never presented as errors (§10)
-- [ ] `bun test`: budget and allowance resolution, day-boundary reset in classroom timezone, preset values, utility accounting (§22)
+- [x] `src/lib/server/agent/budgets.ts` — the three layers: per-turn caps (steps, wall-clock, tokens) enforced inside the loop with graceful stop at a clean boundary and partial content preserved; per-student daily allowance and per-classroom daily cap checked at turn start; per-turn caps bound mid-turn overshoot
+- [x] Usage recording to `usage-event`: input/output tokens separately, gateway-reported vs estimated flag; budget day = calendar day in the classroom timezone (§10); utility-alias calls count toward the classroom cap only, skipped with fallback when the cap is exhausted
+- [x] Panel budget forms with the three presets (Cautious / Standard default / Generous) filling all five Appendix A fields, each field editable after
+- [x] Friendly refusal and mid-turn notices — never presented as errors (§10)
+- [x] `bun test`: budget and allowance resolution, day-boundary reset in classroom timezone, preset values, utility accounting (§22)
 
 ### 2.8 Cost estimate display (§10)
 
-- [ ] `src/lib/server/classroom/cost-estimate.ts` — USD + DKK estimates from per-alias prices and the configurable exchange rate (default 7.00 DKK/USD, Appendix A); display-only, enforcement never depends on prices
-- [ ] Shown on the student allowance display and educator usage views
+- [x] `src/lib/server/classroom/cost-estimate.ts` — USD + DKK estimates from per-alias prices and the configurable exchange rate (default 7.00 DKK/USD, Appendix A); display-only, enforcement never depends on prices
+- [x] Shown on the student allowance display and educator usage views
 
 ### 2.9 Instructions, language, session policy (§7, §8, §10)
 
-- [ ] Classroom and per-student instructions editable in `(educator)/`; wired into the Phase 1 system-prompt layering; `bun test` layering with all layers populated (§22)
-- [ ] Interface language: classroom setting + student self-service override, driving Paraglide locale; educator panel follows the educator's own preference (§8)
-- [ ] Session policy per classroom: sliding (duration editable) or per-lesson (sessions end at classroom close); force-logout = bulk session invalidation, immediate (§7)
-- [ ] Security tests: sessions dead after force-logout and after rotation (§22)
+- [x] Classroom and per-student instructions editable in `(educator)/`; wired into the Phase 1 system-prompt layering; `bun test` layering with all layers populated (§22)
+- [x] Interface language: classroom setting + student self-service override, driving Paraglide locale; educator panel follows the educator's own preference (§8)
+- [x] Session policy per classroom: sliding (duration editable) or per-lesson (sessions end at classroom close); force-logout = bulk session invalidation, immediate (§7)
+- [x] Security tests: sessions dead after force-logout and after rotation (§22)
 
 ---
 

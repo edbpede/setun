@@ -2,9 +2,14 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { createDatabase } from "../../src/lib/server/db/client";
 import { applyMigrations } from "../../src/lib/server/db/migrate";
-import { createClassroom, listClassrooms } from "../../src/lib/server/db/queries/classrooms";
-import { createAlias, listAvailableAliases } from "../../src/lib/server/db/queries/model-aliases";
 import { provisionStudent } from "../../src/lib/server/auth/provisioning";
+import { allowAlias } from "../../src/lib/server/db/queries/classroom-aliases";
+import {
+  createClassroom,
+  listClassrooms,
+  setClassroomState,
+} from "../../src/lib/server/db/queries/classrooms";
+import { createAlias, listAvailableAliases } from "../../src/lib/server/db/queries/model-aliases";
 
 /**
  * Provision a student in the end-to-end database and print the code as JSON.
@@ -36,6 +41,14 @@ const classroom = listClassrooms(db)[0] ?? createClassroom(db, { name: "E2E" });
 if (listAvailableAliases(db).length === 0) {
   createAlias(db, { name: "E2E", gatewayModelId: "stub-model", dialect: "openai" });
 }
+
+// Allowlist every alias for the classroom and open it: a classroom with no
+// allowlist and no schedule refuses everything, which is correct behaviour and
+// not what the chat flows are testing (§8, §9).
+for (const alias of listAvailableAliases(db)) {
+  allowAlias(db, { classroomId: classroom.id, modelAliasId: alias.id });
+}
+setClassroomState(db, { classroomId: classroom.id, state: "open" });
 
 const { student, code } = await provisionStudent(db, {
   classroomId: classroom.id,

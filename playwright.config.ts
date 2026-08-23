@@ -22,6 +22,16 @@ export const E2E_DATABASE_PATH = "./test-results/e2e/setun.sqlite";
 /** Test-only pepper. Real deployments supply a secret via `.env` (§6.2, §7). */
 export const E2E_PEPPER = "e2e-pepper-not-a-real-secret";
 
+/**
+ * The operator account, seeded from deployment configuration at boot (§7, §6.2).
+ *
+ * Test-only values. There is no in-application password recovery, so re-seeding
+ * these and restarting is how a real deployment resets the credential — which is
+ * exactly what a fresh e2e run does.
+ */
+export const E2E_EDUCATOR_USERNAME = "e2e-educator";
+export const E2E_EDUCATOR_PASSWORD = "e2e-educator-password-not-a-real-secret";
+
 const appEnv = {
   PORT: String(APP_PORT),
   // adapter-node's CSRF origin check compares against this. Unset, the adapter
@@ -31,6 +41,8 @@ const appEnv = {
   SETUN_DATABASE_PATH: E2E_DATABASE_PATH,
   SETUN_STUDENT_CODE_PEPPER: E2E_PEPPER,
   SETUN_CPA_LISTENER_KEY: "e2e-listener-key",
+  SETUN_EDUCATOR_SEED_USERNAME: E2E_EDUCATOR_USERNAME,
+  SETUN_EDUCATOR_SEED_PASSWORD: E2E_EDUCATOR_PASSWORD,
   // The stub gateway stands in for CPA; everything from the route down is real.
   SETUN_CPA_BASE_URL: `http://127.0.0.1:${GATEWAY_PORT}`,
   SETUN_APP_ORIGIN: APP_ORIGIN,

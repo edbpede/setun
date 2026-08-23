@@ -19,6 +19,11 @@ function sseChunk(payload: unknown): string {
   return `data: ${JSON.stringify(payload)}\n\n`;
 }
 
+/** A prompt containing this asks the stub to answer slowly. */
+export const SLOW_MARKER = "LANGSOM-SVAR";
+
+const SLOW_WORD_DELAY_MS = 400;
+
 export async function startStubGateway(
   options: { reply?: string; delayMs?: number; port?: number } = {},
 ): Promise<StubGateway> {
@@ -36,10 +41,20 @@ export async function startStubGateway(
       return;
     }
 
-    // Drain the request body so the client's write completes.
-    for await (const _ of request) {
-      // ignored
-    }
+    // Drain the request body so the client's write completes — and read it, so
+    // a test can ask for a slow answer.
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(chunk as Buffer);
+    const payload = Buffer.concat(chunks).toString();
+
+    /**
+     * A deliberately slow answer, for the one case that needs a turn still in
+     * flight while something else happens to it — a classroom locking mid-stream
+     * (PRD §8). The marker travels in the prompt because that is the only part
+     * of the request a test controls.
+     */
+    const slow = payload.includes(SLOW_MARKER);
+    const perWordDelay = slow ? SLOW_WORD_DELAY_MS : options.delayMs;
 
     response.writeHead(200, {
       "content-type": "text/event-stream",
@@ -49,7 +64,7 @@ export async function startStubGateway(
     // One word per chunk, so the test observes genuine incremental streaming.
     for (const word of reply.split(" ")) {
       response.write(sseChunk({ choices: [{ delta: { content: `${word} ` } }] }));
-      if (options.delayMs) await new Promise((r) => setTimeout(r, options.delayMs));
+      if (perWordDelay) await new Promise((r) => setTimeout(r, perWordDelay));
     }
 
     response.write(
