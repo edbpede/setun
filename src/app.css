@@ -1,0 +1,52 @@
+/*
+ * Global stylesheet. The theme variables themselves are emitted by
+ * `unocss-preset-shadcn` from the clean-slate port in `uno.config.ts` — this file
+ * only carries what the preset's preflight does not.
+ */
+
+/*
+ * presetWind4 ships the Tailwind v4 preflight, which dropped the Wind3 rule
+ * `button, [role="button"] { cursor: pointer }`. Nothing warns when it goes
+ * missing; every button silently reverts to the default arrow cursor.
+ */
+button:not(:disabled),
+[role="button"]:not(:disabled) {
+  cursor: pointer;
+}
+
+/*
+ * Upstream defect shim — unocss-preset-shadcn 1.0.1.
+ *
+ * The preset declares its theme variables from `themeCSSVarKeys` as `--chart-1`…
+ * `--chart-5` and `--sidebar`, but its own colour utilities resolve
+ * `oklch(var(--chart1))` and `oklch(var(--sidebar-background))`. The names never
+ * meet, so `bg-chart-*` and `bg-sidebar` resolve to an invalid colour and fall
+ * back to transparent. Verified against generated CSS, not assumed.
+ *
+ * Aliased in both scopes: a `var()` reference is substituted at the element where
+ * it is declared, so a `:root`-only alias would freeze the light value and leak
+ * it into any `.dark` subtree.
+ */
+:root,
+.dark {
+  --chart1: var(--chart-1);
+  --chart2: var(--chart-2);
+  --chart3: var(--chart-3);
+  --chart4: var(--chart-4);
+  --chart5: var(--chart-5);
+  --sidebar-background: var(--sidebar);
+}
+
+/*
+ * Light is the default and the only mode the pilot ships. The preset still emits
+ * the `.dark` block; it stays dormant until a `.dark` class is applied.
+ */
+:root {
+  color-scheme: light;
+  --tracking-normal: 0em;
+}
+
+/* clean-slate drives body letter-spacing from its tracking scale. */
+body {
+  letter-spacing: var(--tracking-normal);
+}
