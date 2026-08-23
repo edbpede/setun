@@ -22,47 +22,47 @@ All UI and UX design work uses the `frontend-design` skill (`~/.agents/skills/fr
 
 ### 0.1 Project scaffold
 
-- [ ] Scaffold with `bunx sv create` per `.agents/rules/svelte5-sveltekit-app.md`: SvelteKit 2, Svelte 5, TypeScript, `@sveltejs/adapter-node` (production entry `bun ./build/index.js`, §5)
-- [ ] `package.json` scripts use `bun --bun run dev` / `bun --bun run build`; `bun run check` runs `svelte-check` (Vite does not type-check)
-- [ ] `tsconfig.json` extends `./.svelte-kit/tsconfig.json` with `strict`, `moduleResolution: "bundler"`, `verbatimModuleSyntax`, `isolatedModules` per the rules file
-- [ ] `bunfig.toml` with `[test]` preload for the `bun test` setup file
-- [ ] `src/app.d.ts` skeleton typing `App.Locals` (empty for now, filled in Phase 1) and `App.Error` as `{ message: string }` — production errors carry no detail (§21)
+- [x] Scaffold with `bunx sv create` per `.agents/rules/svelte5-sveltekit-app.md`: SvelteKit 2, Svelte 5, TypeScript, `@sveltejs/adapter-node` (production entry `bun ./build/index.js`, §5)
+- [x] `package.json` scripts use `bun --bun run dev` / `bun --bun run build`; `bun run check` runs `svelte-check` (Vite does not type-check)
+- [x] `tsconfig.json` extends `./.svelte-kit/tsconfig.json` with `strict`, `moduleResolution: "bundler"`, `verbatimModuleSyntax`, `isolatedModules` per the rules file
+- [x] `bunfig.toml` with `[test]` preload for the `bun test` setup file
+- [x] `src/app.d.ts` skeleton typing `App.Locals` (empty for now, filled in Phase 1) and `App.Error` as `{ message: string }` — production errors carry no detail (§21)
 
 ### 0.2 Styling stack and day-one validation (§5)
 
-- [ ] `uno.config.ts`: `presetWind4` + `unocss-preset-animations` + `unocss-preset-shadcn`, with the corrections mandated by `.agents/rules/svelte5-sveltekit-app.md`:
-  - [ ] `radius` theme key (not `borderRadius`) restating the shadcn radius scale
-  - [ ] `font` theme key (not `fontFamily`) with single-string values
-  - [ ] `content.pipeline.include` covering `.ts` variant files — without it shadcn-svelte components render unstyled
-- [ ] `vite.config.ts` with `UnoCSS()` **before** `sveltekit()`; `virtual:uno.css` imported once in the root layout; no `@unocss/reset/tailwind.css` (presetWind4 ships its own preflight)
-- [ ] Global stylesheet restores the button cursor preflight (`button:not(:disabled) { cursor: pointer }`) per the rules file
-- [ ] Port the tweakcn **clean-slate** theme into the preset-shadcn CSS-variable theme (§5) — space-separated HSL values
-- [ ] Hand-write `components.json`; add empty `tailwind.config.js` to satisfy the CLI's `add` command; add `src/lib/utils.ts` with `cn()`; **never run `shadcn-svelte init`** (rules file, §5)
-- [ ] **Stack validation:** `bunx shadcn-svelte@latest add` one non-trivial component (dialog) plus button; render both on a scratch route and verify radius, fonts, colours, and animations against the clean-slate variables before anything else is built (§5)
+- [x] `uno.config.ts`: `presetWind4` + `unocss-preset-animations` + `unocss-preset-shadcn`, with the corrections mandated by `.agents/rules/svelte5-sveltekit-app.md`:
+  - [x] `radius` theme key (not `borderRadius`) restating the shadcn radius scale
+  - [x] `font` theme key (not `fontFamily`) with single-string values
+  - [x] `content.pipeline.include` covering `.ts` variant files — without it shadcn-svelte components render unstyled
+- [x] `vite.config.ts` with `UnoCSS()` **before** `sveltekit()`; `virtual:uno.css` imported once in the root layout; no `@unocss/reset/tailwind.css` (presetWind4 ships its own preflight)
+- [x] Global stylesheet restores the button cursor preflight (`button:not(:disabled) { cursor: pointer }`) per the rules file
+- [x] Port the tweakcn **clean-slate** theme into the preset-shadcn CSS-variable theme (§5) — source of truth `https://tweakcn.com/r/themes/clean-slate.json` (a Tailwind project would install it with `bunx shadcn@latest add https://tweakcn.com/r/themes/clean-slate.json`; Setun runs UnoCSS, so the variables are ported by hand). **Light mode is the default.** Values are space-separated **oklch** components, not HSL: `unocss-preset-shadcn` 1.0.1's Wind4 entry resolves `oklch(var(--token))`, and the upstream theme is authored in oklch — verified against generated CSS
+- [x] Hand-write `components.json`; add empty `tailwind.config.js` to satisfy the CLI's `add` command; add `src/lib/utils.ts` with `cn()`; **never run `shadcn-svelte init`** (rules file, §5)
+- [x] **Stack validation:** `bunx shadcn-svelte@latest add` one non-trivial component (dialog) plus button; render both on a scratch route and verify radius, fonts, colours, and animations against the clean-slate variables before anything else is built (§5)
 
 ### 0.3 Lint, type-check, tests, CI (§5, §22)
 
-- [ ] `biome.json` per the rules file; `bunx biome check --write` locally, `bunx biome ci` in CI; Biome is not the authority on `.svelte` templates — `svelte-check` is
-- [ ] `bun test` skeleton: one passing placeholder test under `src/lib/server/`, `bun:test` imports
-- [ ] Vitest Browser Mode skeleton: client/server project split in `vite.config.ts` per the rules file, `vitest-browser-svelte` setup, one passing placeholder component test
-- [ ] Playwright skeleton: config with two dev-server origins reserved (app + sandbox, §6), one passing placeholder e2e test
-- [ ] GitHub Actions workflow with **five separate gates**: `svelte-check`, Biome, `bun test`, Vitest, Playwright (§5)
+- [x] `biome.json` per the rules file; `bunx biome check --write` locally, `bunx biome ci` in CI; Biome is not the authority on `.svelte` templates — `svelte-check` is
+- [x] `bun test` skeleton: one passing placeholder test under `src/lib/server/`, `bun:test` imports
+- [x] Vitest Browser Mode skeleton: client/server project split in `vite.config.ts` per the rules file, `vitest-browser-svelte` setup, one passing placeholder component test
+- [x] Playwright skeleton: config with two dev-server origins reserved (app + sandbox, §6), one passing placeholder e2e test
+- [x] GitHub Actions workflow with **five separate gates**: `svelte-check`, Biome, `bun test`, Vitest, Playwright (§5)
 
 ### 0.4 Internationalisation (§5)
 
-- [ ] Paraglide JS wired with `en` (default) and `da` locales; compile step in dev and build; Paraglide output directory excluded from Biome and prek formatting hooks
-- [ ] Convention established and documented in a repo `README` note: **all user-facing text flows through Paraglide messages — no string literals in components** (§5); the scratch validation route from 0.2 converted to messages as the first example
+- [x] Paraglide JS wired with `en` (default) and `da` locales; compile step in dev and build; Paraglide output directory excluded from Biome and prek formatting hooks
+- [x] Convention established and documented in a repo `README` note: **all user-facing text flows through Paraglide messages — no string literals in components** (§5); the scratch validation route from 0.2 converted to messages as the first example
 
 ### 0.5 Docker Compose skeleton (§6.2)
 
-- [ ] `docker-compose.yml`: three services — app (adapter-node build under Bun), CPA (pinned image version, **no published host port**, management API disabled/localhost-bound, self-update off, §9), Caddy (plain proxy, no custom builds, §5) — with volumes for SQLite database, file storage, and backups
-- [ ] Caddyfile: two hostnames — application origin and sandbox origin (§6.2); sandbox serves static files only (content mounted in Phase 4); TLS via ACME or internal CA
-- [ ] `.env.example` enumerating **every** required variable (§6.2): student-code HMAC pepper, educator seed credentials, CPA listener key, both origin URLs, MCP credential names placeholder — with a one-line comment each; boot-time validation that fails with a clear message on any missing variable lands in Phase 1 alongside the server entry
+- [x] `docker-compose.yml`: three services — app (adapter-node build under Bun), CPA (pinned image version, **no published host port**, management API disabled/localhost-bound, self-update off, §9), Caddy (plain proxy, no custom builds, §5) — with volumes for SQLite database, file storage, and backups. CPA reference: upstream `https://github.com/router-for-me/CLIProxyAPI`, local checkout at `../CLIProxyAPI` (sibling of this repository) — read `config.example.yaml` and `internal/config/config_types.go` there for the authoritative option set
+- [x] Caddyfile: two hostnames — application origin and sandbox origin (§6.2); sandbox serves static files only (content mounted in Phase 4); TLS via ACME or internal CA
+- [x] `.env.example` enumerating **every** required variable (§6.2): student-code HMAC pepper, educator seed credentials, CPA listener key, both origin URLs, MCP credential names placeholder — with a one-line comment each; boot-time validation that fails with a clear message on any missing variable lands in Phase 1 alongside the server entry
 
 ### 0.6 Git hooks — `prek`
 
-- [ ] Install `prek`; commit `prek.toml` at the repo root; document `prek install` in contributor setup
-- [ ] Adjust the template below to the actual scaffold: exclude `.svelte-kit/`, `build/`, and the Paraglide output directory from formatting hooks; confirm `bun run check` and `bun test` entries match the real script names (`rev` values verified current as of 2026-08-23)
+- [x] Install `prek`; commit `prek.toml` at the repo root; document `prek install` in contributor setup
+- [x] Adjust the template below to the actual scaffold: exclude `.svelte-kit/`, `build/`, and the Paraglide output directory from formatting hooks; confirm `bun run check` and `bun test` entries match the real script names (`rev` values verified current as of 2026-08-23)
 
 ```toml
 # Configuration file for `prek`, a git hook framework written in Rust.

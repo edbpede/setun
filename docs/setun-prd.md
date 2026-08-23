@@ -170,6 +170,8 @@ Setun maintains its own **model alias table** — friendly names such as Fast, B
 
 CPA runs with listener authentication enabled and its management API disabled or bound to localhost, since that API can rewrite provider configuration. Its self-updating admin panel is turned off and the image version pinned.
 
+**Source.** CPA is `https://github.com/router-for-me/CLIProxyAPI`, published as the `eceasy/cli-proxy-api` image. A local checkout is kept alongside this repository at `../CLIProxyAPI`; its `config.example.yaml` and `internal/config/config_types.go` are the authoritative reference for gateway configuration options, and are read there rather than guessed at. Setun uses it unmodified.
+
 Gateway failures produce a single student-facing message about temporary unavailability. Upstream URLs, provider identifiers, OAuth errors, tokens, and stack traces never reach the browser. Gateway health and available-model counts appear in the educator panel.
 
 No classroom, student, or credential data is ever stored in CPA. If CPA is replaced, only the adapter changes. Provider accounts themselves — API keys and subscription OAuth logins — are configured in CPA's own configuration and login flows by the operator on the host; Setun neither stores nor manages provider enrolment.
