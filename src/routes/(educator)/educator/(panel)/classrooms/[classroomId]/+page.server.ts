@@ -10,14 +10,18 @@ import { resolveAvailability, resolveOpenUntil } from "$lib/server/classroom/sch
 import {
   AliasIdSchema,
   AllowAliasSchema,
+  AllowToolSchema,
   ApplyPresetSchema,
   BudgetsSchema,
   blankToNull,
   ClassroomPolicySchema,
+  GrantSkillSchema,
   ScheduleSchema,
   SetStateSchema,
+  SkillStateSchema,
   StudentInstructionsSchema,
   TemporaryWindowsSchema,
+  ToolPolicySchema,
 } from "$lib/server/classroom/schemas";
 import { classroomStateChannel } from "$lib/server/classroom/state-channel";
 import {
@@ -30,8 +34,23 @@ import {
   setClassroomState,
   updateClassroomSettings,
 } from "$lib/server/db/queries/classrooms";
+import {
+  allowTool,
+  disallowTool,
+  listAllowedToolIds,
+  listMcpServers,
+  listMcpTools,
+} from "$lib/server/db/queries/mcp";
 import { listAliases } from "$lib/server/db/queries/model-aliases";
 import { invalidateClassroomSessions } from "$lib/server/db/queries/sessions";
+import {
+  grantSkill,
+  listLibrarySkills,
+  listSkillGrants,
+  listStudentSkillsForClassroom,
+  revokeSkill,
+  updateSkill,
+} from "$lib/server/db/queries/skills";
 import { setStudentInstructions } from "$lib/server/db/queries/students";
 import type { Actions, PageServerLoad } from "./$types";
 
@@ -47,6 +66,7 @@ import type { Actions, PageServerLoad } from "./$types";
 
 const budgetsAdapter = valibot(BudgetsSchema);
 const policyAdapter = valibot(ClassroomPolicySchema);
+const toolPolicyAdapter = valibot(ToolPolicySchema);
 const scheduleAdapter = valibot(ScheduleSchema);
 const temporaryAdapter = valibot(TemporaryWindowsSchema);
 
@@ -61,6 +81,8 @@ export const load: PageServerLoad = async ({ params }) => {
   const db = getDb();
   const classroom = classroomFor(params.classroomId);
   const allowed = new Set(listAllowedAliasIds(db, classroom.id));
+  const allowedTools = new Set(listAllowedToolIds(db, classroom.id));
+  const grants = listSkillGrants(db, classroom.id);
 
   return {
     classroom,
@@ -75,6 +97,47 @@ export const load: PageServerLoad = async ({ params }) => {
     // Account state, counters and the educator's own text — never anything a
     // pupil wrote (§16).
     students: resolveRoster(db, classroom),
+    // Which of the configured servers' tools this class may use (§11). The
+    // global enablement and the sensitive flag live on the tools page; what is
+    // chosen here is the per-classroom subset.
+    toolServers: listMcpServers(db)
+      .map((server) => ({
+        id: server.id,
+        label: server.label,
+        enabled: server.enabled,
+        tools: listMcpTools(db, server.id).map((tool) => ({
+          id: tool.id,
+          name: tool.name,
+          description: tool.description,
+          enabled: tool.enabled,
+          sensitive: tool.sensitive,
+          allowed: allowedTools.has(tool.id),
+        })),
+      }))
+      .filter((server) => server.tools.length > 0),
+    // Library skills, with who they are offered to in this class (§12).
+    skills: listLibrarySkills(db).map((skill) => ({
+      id: skill.id,
+      name: skill.name,
+      description: skill.description,
+      origin: skill.origin,
+      enabled: skill.enabled,
+      classWide: grants.some((grant) => grant.skillId === skill.id && grant.studentId === null),
+      studentIds: grants
+        .filter((grant) => grant.skillId === skill.id && grant.studentId !== null)
+        .map((grant) => grant.studentId as string),
+    })),
+    // Every pupil-written skill in the class — the oversight list of §12. The
+    // body is included because "view" is one of the three actions §12 names.
+    studentSkills: listStudentSkillsForClassroom(db, classroom.id).map((row) => ({
+      id: row.skill.id,
+      name: row.skill.name,
+      description: row.skill.description,
+      body: row.skill.body,
+      enabled: row.skill.enabled,
+      approvalState: row.skill.approvalState,
+      studentLabel: row.studentLabel,
+    })),
     // Seeded field by field rather than from the whole row: the form's shape is
     // the schema's, and a row that grows a column should not silently start
     // feeding it.
@@ -96,13 +159,23 @@ export const load: PageServerLoad = async ({ params }) => {
         interfaceLanguage: classroom.interfaceLanguage,
         sessionPolicy: classroom.sessionPolicy,
         sessionSlidingDays: classroom.sessionSlidingDays,
-        permissionMode: classroom.permissionMode,
-        skillAuthoringPolicy: classroom.skillAuthoringPolicy,
         conversationRetentionDays: classroom.conversationRetentionDays,
-        attachmentsEnabled: classroom.attachmentsEnabled,
       },
       policyAdapter,
       { id: "policy" },
+    ),
+    toolPolicyForm: await superValidate(
+      {
+        permissionMode: classroom.permissionMode,
+        skillAuthoringPolicy: classroom.skillAuthoringPolicy,
+        attachmentsEnabled: classroom.attachmentsEnabled,
+        attachmentImageMaxBytes: classroom.attachmentImageMaxBytes,
+        attachmentTextMaxBytes: classroom.attachmentTextMaxBytes,
+        attachmentMaxPerMessage: classroom.attachmentMaxPerMessage,
+        imageTokenEquivalent: classroom.imageTokenEquivalent,
+      },
+      toolPolicyAdapter,
+      { id: "tool-policy" },
     ),
     scheduleForm: await superValidate(
       { weeklySchedule: classroom.weeklySchedule },
@@ -241,6 +314,125 @@ export const actions: Actions = {
       },
     });
     return { form };
+  },
+
+  /** Tools, skills, attachments and image generation, in one block (§11, §12, §15). */
+  saveToolPolicy: async ({ request, params, locals }) => {
+    requireEducatorPage(locals);
+    const classroom = classroomFor(params.classroomId);
+
+    const form = await superValidate(request, toolPolicyAdapter, { id: "tool-policy" });
+    if (!form.valid) return fail(400, { form });
+
+    updateClassroomSettings(getDb(), { classroomId: classroom.id, settings: form.data });
+
+    // Attachments and the permission mode change what a pupil may do right now.
+    classroomStateChannel.publish(classroom.id);
+    return { form };
+  },
+
+  /** Select one configured tool for this classroom (§11). */
+  allowTool: async ({ request, params, locals }) => {
+    requireEducatorPage(locals);
+    const classroom = classroomFor(params.classroomId);
+
+    const body = await request.formData();
+    const parsed = v.safeParse(AllowToolSchema, { mcpToolId: body.get("mcpToolId") });
+    if (!parsed.success) return kitFail(400, { invalid: true });
+
+    allowTool(getDb(), { classroomId: classroom.id, mcpToolId: parsed.output.mcpToolId });
+    return { saved: true };
+  },
+
+  disallowTool: async ({ request, params, locals }) => {
+    requireEducatorPage(locals);
+    const classroom = classroomFor(params.classroomId);
+
+    const body = await request.formData();
+    const parsed = v.safeParse(AllowToolSchema, { mcpToolId: body.get("mcpToolId") });
+    if (!parsed.success) return kitFail(400, { invalid: true });
+
+    disallowTool(getDb(), { classroomId: classroom.id, mcpToolId: parsed.output.mcpToolId });
+    return { saved: true };
+  },
+
+  /**
+   * Offer a library skill to the class, or to one pupil (§12).
+   *
+   * "Enablement is per classroom and per student — a skill can be offered to a
+   * whole class or to individual students", which is one row either way.
+   */
+  grantSkill: async ({ request, params, locals }) => {
+    requireEducatorPage(locals);
+    const classroom = classroomFor(params.classroomId);
+
+    const body = await request.formData();
+    const parsed = v.safeParse(GrantSkillSchema, {
+      skillId: body.get("skillId"),
+      studentId: body.get("studentId") ?? "",
+    });
+    if (!parsed.success) return kitFail(400, { invalid: true });
+
+    grantSkill(getDb(), {
+      classroomId: classroom.id,
+      skillId: parsed.output.skillId,
+      studentId: parsed.output.studentId,
+    });
+    return { saved: true };
+  },
+
+  revokeSkill: async ({ request, params, locals }) => {
+    requireEducatorPage(locals);
+    const classroom = classroomFor(params.classroomId);
+
+    const body = await request.formData();
+    const parsed = v.safeParse(GrantSkillSchema, {
+      skillId: body.get("skillId"),
+      studentId: body.get("studentId") ?? "",
+    });
+    if (!parsed.success) return kitFail(400, { invalid: true });
+
+    revokeSkill(getDb(), {
+      classroomId: classroom.id,
+      skillId: parsed.output.skillId,
+      studentId: parsed.output.studentId,
+    });
+    return { saved: true };
+  },
+
+  /**
+   * Oversight of a pupil's own skill: disable it, or approve a pending one (§12).
+   *
+   * The immediate-with-oversight default gives the panel "view, disable and
+   * delete"; the pre-approval policy adds the approval this action performs.
+   */
+  setStudentSkillState: async ({ request, params, locals }) => {
+    requireEducatorPage(locals);
+    const classroom = classroomFor(params.classroomId);
+
+    const body = await request.formData();
+    const parsed = v.safeParse(SkillStateSchema, {
+      skillId: body.get("skillId"),
+      enabled: body.get("enabled") ?? undefined,
+      approvalState: body.get("approvalState") ?? undefined,
+    });
+    if (!parsed.success) return kitFail(400, { invalid: true });
+
+    // Scoped to this classroom's own pupils: an educator page must not be a way
+    // to reach a skill belonging to another class (§21).
+    const owned = listStudentSkillsForClassroom(getDb(), classroom.id).some(
+      (row) => row.skill.id === parsed.output.skillId,
+    );
+    if (!owned) return kitFail(404, { invalid: true });
+
+    updateSkill(getDb(), {
+      skillId: parsed.output.skillId,
+      ...(parsed.output.enabled === undefined ? {} : { enabled: parsed.output.enabled === "true" }),
+      ...(parsed.output.approvalState === undefined
+        ? {}
+        : { approvalState: parsed.output.approvalState }),
+    });
+    return { saved: true };
   },
 
   /**

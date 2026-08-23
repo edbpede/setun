@@ -99,17 +99,6 @@ const field = "rounded-md border border-input bg-background px-3 py-2 text-sm te
       </label>
     </div>
 
-    <!--
-      Written now, enforced in Phase 3: the permission mode gates tool execution
-      (§11) and the authoring policy gates student-written skills (§12). They are
-      stored here so those phases configure nothing new.
-    -->
-    <input type="hidden" name="permissionMode" value={$form.permissionMode} />
-    <input type="hidden" name="skillAuthoringPolicy" value={$form.skillAuthoringPolicy} />
-    {#if $form.attachmentsEnabled}
-      <input type="hidden" name="attachmentsEnabled" value="on" />
-    {/if}
-
     <button
       type="submit"
       disabled={$submitting}

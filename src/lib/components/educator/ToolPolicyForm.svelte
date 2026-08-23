@@ -1,0 +1,152 @@
+<script lang="ts">
+import { type SuperValidated, superForm } from "sveltekit-superforms";
+import type * as v from "valibot";
+import * as m from "$lib/paraglide/messages";
+import type { ToolPolicySchema } from "$lib/server/classroom/schemas";
+
+/**
+ * What a class may do with tools, skills and files (PRD §11, §12, §15).
+ *
+ * The permission mode carries a prominent warning on Open, because §11 asks for
+ * one at the point of selection — an educator choosing it should read what it
+ * means without opening anything.
+ *
+ * Byte caps are shown in megabytes and kilobytes because that is how an educator
+ * thinks about a photograph and a code file; the conversion happens here rather
+ * than in the schema, which stays in the unit the validator enforces.
+ */
+
+type ToolPolicyData = v.InferOutput<typeof ToolPolicySchema>;
+
+interface Props {
+  data: SuperValidated<ToolPolicyData>;
+}
+
+let { data }: Props = $props();
+
+// svelte-ignore state_referenced_locally
+const { form, errors, enhance, submitting } = superForm(data, { id: "tool-policy" });
+
+const MB = 1024 * 1024;
+const KB = 1024;
+
+const field = "rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground";
+</script>
+
+<section class="flex flex-col gap-3">
+  <h2 class="text-sm font-medium text-foreground">{m.educator_tool_policy_title()}</h2>
+
+  <form method="POST" action="?/saveToolPolicy" use:enhance class="flex flex-col gap-4">
+    <label class="flex flex-col gap-1">
+      <span class="text-xs text-muted-foreground">{m.educator_permission_mode_label()}</span>
+      <select name="permissionMode" bind:value={$form.permissionMode} class="h-9 {field}">
+        <option value="strict">{m.educator_permission_strict()}</option>
+        <option value="standard">{m.educator_permission_standard()}</option>
+        <option value="open">{m.educator_permission_open()}</option>
+      </select>
+    </label>
+
+    {#if $form.permissionMode === "open"}
+      <!-- "Selecting it shows a prominent warning in the panel" (§11). -->
+      <p
+        class="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive"
+        role="status"
+      >
+        {m.educator_permission_open_warning()}
+      </p>
+    {/if}
+
+    <label class="flex flex-col gap-1">
+      <span class="text-xs text-muted-foreground">{m.educator_skill_authoring_label()}</span>
+      <select
+        name="skillAuthoringPolicy"
+        bind:value={$form.skillAuthoringPolicy}
+        class="h-9 {field}"
+      >
+        <option value="immediate">{m.educator_skill_authoring_immediate()}</option>
+        <option value="pre-approval">{m.educator_skill_authoring_pre_approval()}</option>
+        <option value="disabled">{m.educator_skill_authoring_disabled()}</option>
+      </select>
+    </label>
+
+    <label class="flex items-center gap-2">
+      <input
+        type="checkbox"
+        name="attachmentsEnabled"
+        bind:checked={$form.attachmentsEnabled}
+        class="size-4"
+      />
+      <span class="text-sm text-foreground">{m.educator_attachments_enabled_label()}</span>
+    </label>
+
+    <div class="grid gap-3 sm:grid-cols-3">
+      <label class="flex flex-col gap-1">
+        <span class="text-xs text-muted-foreground">{m.educator_attachment_image_cap_label()}</span>
+        <input
+          type="number"
+          min="1"
+          value={Math.round($form.attachmentImageMaxBytes / MB)}
+          oninput={(event) => {
+            $form.attachmentImageMaxBytes = Math.max(1, Number(event.currentTarget.value)) * MB;
+          }}
+          class="h-9 {field}"
+        />
+        <input type="hidden" name="attachmentImageMaxBytes" value={$form.attachmentImageMaxBytes} />
+        {#if $errors.attachmentImageMaxBytes}
+          <span class="text-xs text-destructive">{$errors.attachmentImageMaxBytes}</span>
+        {/if}
+      </label>
+
+      <label class="flex flex-col gap-1">
+        <span class="text-xs text-muted-foreground">{m.educator_attachment_text_cap_label()}</span>
+        <input
+          type="number"
+          min="1"
+          value={Math.round($form.attachmentTextMaxBytes / KB)}
+          oninput={(event) => {
+            $form.attachmentTextMaxBytes = Math.max(1, Number(event.currentTarget.value)) * KB;
+          }}
+          class="h-9 {field}"
+        />
+        <input type="hidden" name="attachmentTextMaxBytes" value={$form.attachmentTextMaxBytes} />
+        {#if $errors.attachmentTextMaxBytes}
+          <span class="text-xs text-destructive">{$errors.attachmentTextMaxBytes}</span>
+        {/if}
+      </label>
+
+      <label class="flex flex-col gap-1">
+        <span class="text-xs text-muted-foreground">{m.educator_attachment_count_label()}</span>
+        <input
+          name="attachmentMaxPerMessage"
+          type="number"
+          bind:value={$form.attachmentMaxPerMessage}
+          class="h-9 {field}"
+        />
+        {#if $errors.attachmentMaxPerMessage}
+          <span class="text-xs text-destructive">{$errors.attachmentMaxPerMessage}</span>
+        {/if}
+      </label>
+    </div>
+
+    <label class="flex flex-col gap-1 sm:max-w-xs">
+      <span class="text-xs text-muted-foreground">{m.educator_image_tokens_label()}</span>
+      <input
+        name="imageTokenEquivalent"
+        type="number"
+        bind:value={$form.imageTokenEquivalent}
+        class="h-9 {field}"
+      />
+      {#if $errors.imageTokenEquivalent}
+        <span class="text-xs text-destructive">{$errors.imageTokenEquivalent}</span>
+      {/if}
+    </label>
+
+    <button
+      type="submit"
+      disabled={$submitting}
+      class="h-9 self-start rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
+    >
+      {m.educator_save()}
+    </button>
+  </form>
+</section>
