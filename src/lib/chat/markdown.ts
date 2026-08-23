@@ -73,8 +73,6 @@ export function renderMarkdown(source: string): string {
     ALLOWED_ATTR,
     // Rejects `javascript:` and `data:` URLs; only these three schemes survive.
     ALLOWED_URI_REGEXP: /^(?:https?|mailto):/i,
-    // No <template>, no shadow content, no SVG or MathML namespaces.
-    USE_PROFILES: { html: true },
   });
 }
 
