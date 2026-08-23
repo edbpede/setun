@@ -25,6 +25,10 @@ services:
       SETUN_CPA_BASE_URL: http://cpa:8317
       SETUN_APP_ORIGIN: ${SETUN_APP_ORIGIN:?set in .env}
       SETUN_SANDBOX_ORIGIN: ${SETUN_SANDBOX_ORIGIN:?set in .env}
+      # adapter-node's own origin, used for its CSRF origin check. Without it the
+      # adapter assumes https and rejects every form POST that arrives over a
+      # different scheme than it guessed. Always the application origin.
+      ORIGIN: ${SETUN_APP_ORIGIN:?set in .env}
       SETUN_DATABASE_PATH: /data/db/setun.sqlite
       SETUN_STORAGE_PATH: /data/storage
       SETUN_BACKUP_PATH: /data/backups

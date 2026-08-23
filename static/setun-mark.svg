@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="Setun">
+  <title>Setun</title>
+  <!--
+    Setun was the 1958 Soviet computer built on balanced ternary: three states
+    rather than two, written minus, zero, plus. The mark is those three trits
+    stacked in reading order inside a rounded tile.
+
+    This is the standalone asset — favicon, link previews, anywhere the file is
+    referenced rather than inlined, so `currentColor` would not resolve and the
+    clean-slate primary (#6366f1) is written out. `SetunMark.svelte` is the
+    in-app form and inherits the theme instead.
+
+    Two things are tuned for 16px rather than for the drawing: glyph weight,
+    because thinner bars wash out to a grey smudge in a browser tab, and the gap
+    between the zero and the plus's arm, because at favicon size anything closer
+    fuses into a single vertical blob.
+  -->
+  <rect width="32" height="32" rx="7" fill="#6366f1" />
+  <g fill="#ffffff">
+    <!-- minus -->
+    <rect x="12" y="8.6" width="8" height="2.8" rx="1.4" />
+    <!-- zero -->
+    <circle cx="16" cy="15.8" r="2.1" />
+    <!-- plus -->
+    <rect x="12" y="21.4" width="8" height="2.8" rx="1.4" />
+    <rect x="14.6" y="19.6" width="2.8" height="6.4" rx="1.4" />
+  </g>
+</svg>
