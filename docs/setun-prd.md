@@ -1,6 +1,6 @@
 # Setun — Product Requirements Document
 
-**Version:** 0.4
+**Version:** 0.5
 **Status:** Ready for implementation planning — all open decisions resolved, defaults pinned
 **Licence:** AGPL-3.0
 **Target:** Classroom pilot, 5–20 students and one educator
@@ -57,6 +57,7 @@ Not an LMS, gradebook, or timetable system. No school-wide identity integration,
 **Artifact compilation:** `esbuild-wasm`, lazily loaded, executed inside the sandbox origin
 **Sandbox styling:** self-hosted `@unocss/runtime`
 **Syntax highlighting:** Shiki, fine-grained core, JS regex engine, small language set
+**Date and time:** `date-fns` with `date-fns-tz` for all schedule resolution in classroom timezones — no hand-rolled offset or DST arithmetic anywhere
 **Reverse proxy:** Caddy, kept a plain proxy — no custom builds or plugins
 **Lint / format / type-check:** Biome for lint and format; `svelte-check` as the authority on template and type correctness, run in CI
 **CI:** GitHub Actions — `svelte-check`, Biome, `bun test`, Vitest, and Playwright as separate gates
@@ -135,7 +136,7 @@ The code carries at least 120 bits of entropy, generated from a cryptographicall
 
 The server stores a keyed digest of the code — HMAC-SHA-256 with a pepper held outside the database — uniquely indexed for direct lookup. The plaintext code is never persisted. It is displayed exactly twice: once at provisioning and once at rotation, on a printable credential card. After that screen it can only be replaced, never recovered. A short non-secret tail may be retained purely to identify a card during support.
 
-Successful login establishes a normal session with an `HttpOnly`, `Secure`, appropriately `SameSite` cookie, scoped so the sandbox origin can never read it. Students do not re-enter the code per request.
+Successful login establishes a normal session with an `HttpOnly`, `Secure`, `SameSite=Lax` cookie, scoped so the sandbox origin can never read it. Students do not re-enter the code per request.
 
 **Session lifetime is a per-classroom policy** with two modes: **sliding expiry**, defaulting to 14 days from last activity (a weekly-used device stays logged in all term; an abandoned one expires), and **per-lesson**, where sessions end when the classroom closes and students re-authenticate each lesson. The educator selects the mode and duration in the panel and can force-logout an entire classroom with one action (bulk session invalidation).
 
@@ -165,13 +166,13 @@ When access is unavailable, students see a plain, friendly status screen with th
 
 CPA is treated as an internal, replaceable gateway, spoken to through a single adapter module. The adapter supports **two dialects behind one internal interface**: OpenAI-compatible (`/v1/chat/completions`, `/v1/models`, `/v1/images` — the default) and Anthropic-native Messages. Each model alias selects its dialect; nothing above the adapter knows which was used, because the adapter emits only the normalised event stream of §10. Image generation runs through the same adapter.
 
-Setun maintains its own **model alias table** — friendly names such as Fast, Balanced, Powerful, mapped to concrete CPA model identifiers. Aliases are **managed in the educator panel**: name, gateway model identifier, dialect, availability, a **data-protection flag** recording whether the backing access carries a data processing agreement (API-key) or not (subscription OAuth), a **capability flag for image input** (gating attachments, §10), and **optional per-million-token prices** feeding the display-only cost estimate (§10). Students only ever see the friendly name. Classrooms allow a subset of aliases and the backend validates every request against that subset. One alias is designated the **utility alias**, used for internal work such as title generation.
+Setun maintains its own **model alias table** — friendly names such as Fast, Balanced, Powerful, mapped to concrete CPA model identifiers. Aliases are **managed in the educator panel**: name, gateway model identifier, dialect, availability, a **data-protection flag** recording whether the backing access carries a data processing agreement (API-key) or not (subscription OAuth), a **capability flag for image input** (gating attachments, §10), a **capability flag for image generation** (gating §15 — generation is offered and accepted only on flagged aliases), and **optional per-million-token prices in USD, input and output separately** feeding the display-only cost estimate (§10); when only one of the two prices is filled it applies to both directions. Students only ever see the friendly name. Classrooms allow a subset of aliases and the backend validates every request against that subset. One alias is designated the **utility alias**, used for internal work such as title generation.
 
 CPA runs with listener authentication enabled and its management API disabled or bound to localhost, since that API can rewrite provider configuration. Its self-updating admin panel is turned off and the image version pinned.
 
 Gateway failures produce a single student-facing message about temporary unavailability. Upstream URLs, provider identifiers, OAuth errors, tokens, and stack traces never reach the browser. Gateway health and available-model counts appear in the educator panel.
 
-No classroom, student, or credential data is ever stored in CPA. If CPA is replaced, only the adapter changes.
+No classroom, student, or credential data is ever stored in CPA. If CPA is replaced, only the adapter changes. Provider accounts themselves — API keys and subscription OAuth logins — are configured in CPA's own configuration and login flows by the operator on the host; Setun neither stores nor manages provider enrolment.
 
 **Operational note.** Where CPA is backed by subscription OAuth accounts rather than API keys, concurrency is the binding constraint: twenty students in one lesson window will hit provider rate limits. The alias table should therefore include at least one alias backed by a conventional API key, so a lesson degrades rather than fails. The data-protection dimension of this choice is governed by §16.
 
@@ -191,7 +192,9 @@ Because MCP and skills are in scope, the core is not a stream proxy but an **age
 2. **Per-student daily allowance** — a token allowance per student per day, so one student cannot drain the class. Students see their own allowance and consumption on the dashboard.
 3. **Per-classroom daily cap** — the cost ceiling for the whole class.
 
-Budgets are checked when a turn starts; a turn already streaming completes within its per-turn caps even if an allowance empties mid-turn — the per-turn layer bounds the overshoot. Exhausting an allowance or cap refuses new turns with a friendly, non-technical message; it is never presented as an error.
+Budgets are checked when a turn starts; a turn already streaming completes within its per-turn caps even if an allowance empties mid-turn — the per-turn layer bounds the overshoot. Hitting a per-turn cap mid-turn ends the turn gracefully: the loop stops at the next clean boundary, partial content is preserved, and the student sees a friendly notice — never an error. Exhausting an allowance or cap refuses new turns with a friendly, non-technical message; it is never presented as an error.
+
+**Internal utility-alias calls** (today, title generation) count toward the per-classroom daily cap but never toward a student's personal allowance; when the classroom cap is exhausted, utility work is skipped and its fallback used.
 
 Alongside the enforced token figures, the panel and student dashboard show an **approximate cost (USD and DKK)** computed from the optional per-alias prices and a configurable exchange rate. Estimates are display only — enforcement never depends on a price being present or current.
 
@@ -225,7 +228,7 @@ Setun is an MCP **client**. Students never configure servers; servers are **defi
 
 A declined tool call returns a refusal result to the model and the loop continues. Permission requests are rendered with the same unmissable server attribution as elicitation.
 
-**Multi-round-trip requests** fold into the agent loop: an interim result requesting input is **surfaced to the student by default** — rendered with server attribution and a restricted set of input types — and the original request is retried with the responses attached. Per-server automatic answers from classroom policy are a later refinement, not a pilot feature.
+**Multi-round-trip requests** fold into the agent loop: an interim result requesting input is **surfaced to the student by default** — rendered with server attribution and a restricted set of input types (free text, number, boolean, single-choice selection — the flat elicitation primitives; nothing richer) — and the original request is retried with the responses attached. Per-server automatic answers from classroom policy are a later refinement, not a pilot feature.
 
 **Security posture.** Tool results are untrusted input — students will discover prompt injection through fetched content, which is a good lesson, but it means no MCP server may hold privileges over application data, and no student credential is ever passed into a tool call. Nothing resembling a credential prompt is ever displayed. Header injection derived from tool parameters is disabled or strictly allowlisted per server. Sampling, roots, and logging are deprecated upstream and are not implemented — sampling in particular would let a third-party server spend the class's model quota. Long-running task extensions are out of scope for the pilot.
 
@@ -235,7 +238,7 @@ A curated ten to fifteen tools across three or four servers is a rich classroom.
 
 ## 12. Skills
 
-A skill is a name, a description, an instruction body, and optional bundled reference material. Skill names and one-line descriptions are injected into the system prompt; the full body is retrieved on demand through an internal load tool, so skills cost almost nothing until used. They travel through the same registry, allowlist, and execution path as MCP tools.
+A skill is a name, a description, an instruction body, and optional bundled reference material. Skill names and one-line descriptions are injected into the system prompt; the full body is retrieved on demand through an internal load tool, so skills cost almost nothing until used. The load tool is internal, not an MCP tool: it never triggers a permission prompt in any permission mode. They travel through the same registry, allowlist, and execution path as MCP tools.
 
 **The educator has complete control of the library.** Library skills are authored in the panel, uploaded as files, or **imported from the skills.sh registry**, which the panel can browse server-side (a preliminary, best-effort integration — the registry format is compatible with Setun's skill model, but the integration degrades to manual upload if the registry changes). Imported and uploaded skill text is untrusted content: it arrives **disabled** and takes effect only when the educator enables it. Enablement is **per classroom and per student** — a skill can be offered to a whole class or to individual students.
 
@@ -277,7 +280,7 @@ Automated tests attempt parent DOM access, cookie and storage access, authentica
 
 ## 15. Image generation
 
-Image generation runs through the gateway adapter and is subject to the same classroom enablement, allowlist, permission, and budget rules as text. Generated images are stored locally and served from Setun; no external image URL is ever handed to the browser. Images appear in the student's creations gallery alongside artifacts.
+Image generation runs through the gateway adapter and is subject to the same classroom enablement, allowlist, permission, and budget rules as text. It is offered only on aliases carrying the image-generation capability flag (§9), and the server refuses generation requests against unflagged aliases before any gateway call. Generated images are stored locally and served from Setun; no external image URL is ever handed to the browser. Images appear in the student's creations gallery alongside artifacts.
 
 ---
 
@@ -303,8 +306,8 @@ A dense, single-operator tool. It provides:
 
 - Dashboard: classroom state, active students, gateway health, current window, usage against budgets and caps, and a one-click lock.
 - Classroom configuration: open and lock, weekly schedule, temporary windows, model allowlist (with data-protection flags and the no-DPA confirmation), tool permission mode, skill authoring policy, attachment policy, classroom instructions, session policy, interface language, feature toggles, retention and creations policy, budgets and allowances, force-logout.
-- Model aliases: create and edit aliases — friendly name, gateway identifier, dialect, availability, data-protection flag, image-input capability flag, optional prices, utility-alias designation.
-- Roster: per-student status, usage and allowance (with cost estimate), last activity, per-student instructions and attachment overrides, with disable, enable, rotate credential, remove, and delete actions.
+- Model aliases: create and edit aliases — friendly name, gateway identifier, dialect, availability, data-protection flag, image-input and image-generation capability flags, optional input/output prices, utility-alias designation.
+- Roster: per-student status, usage and allowance (with cost estimate), last activity, per-student instructions and attachment overrides, with disable, enable, rotate credential, clear display name, remove, and delete actions.
 - Provisioning: batch creation of pseudonymous accounts — labels are generated word pairs from a localised wordlist, unique within a classroom, speakable in class — and printable credential cards.
 - MCP: configured servers (from the on-disk configuration), negotiated protocol version, reachability, per-tool enablement and sensitive flags.
 - Skills: the shared library with panel authoring, file upload, and skills.sh browsing and import; per-classroom and per-student enablement; review of student-authored skills, including the approval queue when pre-approval is on.
@@ -324,7 +327,7 @@ Its purpose is partly transparency — everything the system knows about a stude
 Tables, described in prose to keep implementation free:
 
 - **Classroom** — name, state, timezone, schedule, temporary windows, retention and creations policy, budgets and caps, session policy, tool permission mode, skill authoring policy, attachment policy, classroom instructions, interface language, feature flags.
-- **Student** — classroom reference, pseudonymous label (generated word pair), optional display name, per-student instructions, interface-language override, status, credential digest and hint, timestamps.
+- **Student** — classroom reference (a student belongs to exactly one classroom), pseudonymous label (generated word pair), optional display name, per-student instructions, interface-language override, status, credential digest and hint, timestamps.
 - **Session** — owner (student or educator), expiry, invalidation marker.
 - **Educator** — conventional account record, password hash.
 - **Conversation** — owner, title, model alias, active leaf, timestamps.
@@ -334,8 +337,8 @@ Tables, described in prose to keep implementation free:
 - **Attachment** — owner, message reference, kind (image or text), original filename, size, local storage path; deleted with its conversation.
 - **McpServer** and **McpTool** — configuration reference, negotiated protocol version, per-tool enablement, sensitive flag. Endpoints and credential references live in the on-disk configuration, not here.
 - **Skill** — origin (panel-authored, uploaded, imported, student), owner, body, resources, enablement state, approval state, reserved executable marker.
-- **ModelAlias** — friendly name, gateway model identifier, dialect, availability, data-protection flag, image-input capability flag, optional per-million-token prices, utility designation.
-- **UsageEvent** — student, model alias, tokens, tool calls, timestamp; the source of allowance and cap accounting.
+- **ModelAlias** — friendly name, gateway model identifier, dialect, availability, data-protection flag, image-input and image-generation capability flags, optional per-million-token input and output prices (USD), utility designation.
+- **UsageEvent** — classroom, student (null for internal utility work, which counts against the classroom cap only), model alias, input and output tokens recorded separately, tool calls, timestamp; the source of allowance and cap accounting.
 - **LoginAttempt** — rate-limiting state per IP and credential digest.
 
 Allowlists are join tables between Classroom and ModelAlias, McpTool, and Skill respectively; the Skill allowlist additionally supports per-student rows, and per-student attachment overrides follow the same pattern.
@@ -374,7 +377,7 @@ Attachment uploads are validated server-side — content sniffed against the edu
 
 Artifacts execute on an isolated origin under a restrictive policy, with escape attempts covered by automated tests and no external network access. No CDN is required for normal operation.
 
-Backups — a nightly snapshot job: SQLite online backup via `VACUUM INTO` plus the images and skills directories, last N days retained on the volume — have been restored successfully at least once.
+Backups — a nightly snapshot job: SQLite online backup via `VACUUM INTO` plus the images and skills directories, last 14 days retained on the volume (Appendix A) — have been restored successfully at least once.
 
 ---
 
@@ -447,4 +450,5 @@ Selecting a preset fills all five fields; fields remain individually editable af
 - **Sessions** — student sliding expiry 14 days (§7); educator sliding expiry 7 days (§7).
 - **Retention** — conversations 30 days (§16); creations kept until deleted (§16).
 - **Full-text search** — FTS5 with the `unicode61` tokenizer, `remove_diacritics 2`, so Danish text searches forgivingly.
-- **Cost display** — exchange rate defaults to 7.00 DKK/USD, panel-editable; estimates are display-only (§10).
+- **Cost display** — per-alias prices are USD per million tokens, input and output separately; a single filled price applies to both directions. Exchange rate defaults to 7.00 DKK/USD, panel-editable; estimates are display-only (§10).
+- **Backups** — nightly, last 14 days retained on the backup volume.
