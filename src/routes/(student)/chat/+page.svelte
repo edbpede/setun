@@ -60,10 +60,14 @@ $effect(() => {
   scroller?.scrollTo({ top: scroller.scrollHeight });
 });
 
+/** Active fetch controller — cancelled when the student presses Stop. */
+let consumeController: AbortController | null = null;
+
 /** Read an SSE endpoint into the streaming-turn container. */
 async function consume(url: string, init: RequestInit): Promise<void> {
+  consumeController = new AbortController();
   try {
-    const response = await fetch(url, init);
+    const response = await fetch(url, { ...init, signal: consumeController.signal });
 
     if (response.status === 409) {
       refusal = m.chat_turn_in_flight();
@@ -80,14 +84,16 @@ async function consume(url: string, init: RequestInit): Promise<void> {
     const headerTurnId = response.headers.get("x-setun-turn-id");
     if (headerTurnId) conversation.turn.turnId = headerTurnId;
 
-    for await (const { seq, event } of readEventStream(response)) {
+    for await (const { seq, event } of readEventStream(response, consumeController.signal)) {
       conversation.turn.apply(event, seq);
     }
   } catch {
-    // The connection dropped. The turn keeps running on the server and stays
-    // resumable, so this is not an error the student needs to see (§10).
+    // The connection dropped or was aborted. The turn keeps running on the
+    // server and stays resumable, so this is not an error the student needs
+    // to see (§10).
     conversation.turn.detach();
   } finally {
+    consumeController = null;
     // Pick up the persisted assistant message, the generated title and the new
     // active leaf in one round trip.
     conversation.turn.clear();
@@ -119,6 +125,10 @@ async function send(): Promise<void> {
 }
 
 async function abort(): Promise<void> {
+  // Cancel the client-side fetch immediately — this covers the race window
+  // before the response header delivers the real turn ID.
+  consumeController?.abort();
+
   const turnId = conversation.turn.turnId;
   if (!turnId || turnId === "pending") return;
 
