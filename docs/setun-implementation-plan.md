@@ -122,62 +122,62 @@ hooks = [
 
 ### 1.1 Structure and server entry
 
-- [ ] Create the §6.1 skeleton: `src/lib/server/{gateway,agent,auth,db}` now, remaining folders (`mcp`, `skills`, `classroom`, `storage`, `jobs`) as their phases arrive; `src/lib/{components,state,i18n}`; route groups `(student)`, `(educator)`, `api`. Follow the splitting principle (§6.1): one responsibility per file, one domain concern per folder, split on a second reason to change or a second audience of importers — no numeric size limits
-- [ ] `hooks.server.ts`: session resolution into `event.locals` (typed in `app.d.ts`) per `.agents/rules/svelte5-sveltekit-app.md` — request state lives on `locals`, never at module scope
-- [ ] Boot sequence in the server entry: validate required env vars (fail loudly, §6.2), apply Drizzle migrations before the listener starts (§6), mark any in-flight turns interrupted (§10)
+- [x] Create the §6.1 skeleton: `src/lib/server/{gateway,agent,auth,db}` now, remaining folders (`mcp`, `skills`, `classroom`, `storage`, `jobs`) as their phases arrive; `src/lib/{components,state,i18n}`; route groups `(student)`, `(educator)`, `api`. Follow the splitting principle (§6.1): one responsibility per file, one domain concern per folder, split on a second reason to change or a second audience of importers — no numeric size limits
+- [x] `hooks.server.ts`: session resolution into `event.locals` (typed in `app.d.ts`) per `.agents/rules/svelte5-sveltekit-app.md` — request state lives on `locals`, never at module scope
+- [x] Boot sequence in the server entry: validate required env vars (fail loudly, §6.2), apply Drizzle migrations before the listener starts (§6), mark any in-flight turns interrupted (§10)
 
 ### 1.2 Database (§19)
 
-- [ ] `src/lib/server/db/schema/` — Drizzle schema, one file per aggregate: `classroom` (minimal columns now, settings grow in Phase 2), `student`, `session`, `educator`, `conversation`, `message` (tree: parent reference, content parts, usage), `model-alias`, `usage-event`, `login-attempt`
-- [ ] `src/lib/server/db/` — connection module (`bun:sqlite` + Drizzle), migration runner, and query modules per aggregate (e.g. `queries/conversations.ts`) — domain logic never lives in `+server.ts` (§6.1)
-- [ ] `bun test`: message-tree invariants (sibling creation, active-leaf tracking), query-module round trips against an in-memory database
+- [x] `src/lib/server/db/schema/` — Drizzle schema, one file per aggregate: `classroom` (minimal columns now, settings grow in Phase 2), `student`, `session`, `educator`, `conversation`, `message` (tree: parent reference, content parts, usage), `model-alias`, `usage-event`, `login-attempt`
+- [x] `src/lib/server/db/` — connection module (`bun:sqlite` + Drizzle), migration runner, and query modules per aggregate (e.g. `queries/conversations.ts`) — domain logic never lives in `+server.ts` (§6.1)
+- [x] `bun test`: message-tree invariants (sibling creation, active-leaf tracking), query-module round trips against an in-memory database
 
 ### 1.3 Student authentication (§7)
 
-- [ ] `src/lib/server/auth/codes.ts` — 120-bit codes from crypto-secure randomness, Crockford Base32, grouped display format, HMAC-SHA-256 digest with the env pepper, non-secret tail for card identification; plaintext never persisted
-- [ ] `src/lib/server/auth/pseudonyms.ts` — word-pair label generation from the localised wordlists shipped in the repo (`en` + `da`, §17), unique within a classroom
-- [ ] `src/lib/server/auth/provisioning.ts` — create student records (label + digest + hint); plus a first-boot dev seed (one classroom, one student, code printed once to the operator console) so M1 is verifiable before the Phase 5 provisioning UI exists
-- [ ] `src/lib/server/auth/sessions.ts` — student session create/resolve/invalidate; `HttpOnly`, `Secure`, `SameSite=Lax` cookie scoped to the application origin so the sandbox origin can never read it; sliding 14-day expiry default (§7, Appendix A)
-- [ ] `src/lib/server/auth/rate-limit.ts` — SQLite-backed, per IP and per credential digest, progressive delay per Appendix A, uniform failure responses in content and timing
-- [ ] `src/routes/(student)/login/` — plain progressively-enhanced form action (§5: trivial forms don't use Superforms), Valibot-validated input
-- [ ] `bun test`: entropy source, digest uniqueness and lookup, no plaintext persistence, rotation invalidating sessions, rate-limiter thresholds and uniform responses, pseudonym uniqueness (§22)
+- [x] `src/lib/server/auth/codes.ts` — 120-bit codes from crypto-secure randomness, Crockford Base32, grouped display format, HMAC-SHA-256 digest with the env pepper, non-secret tail for card identification; plaintext never persisted
+- [x] `src/lib/server/auth/pseudonyms.ts` — word-pair label generation from the localised wordlists shipped in the repo (`en` + `da`, §17), unique within a classroom
+- [x] `src/lib/server/auth/provisioning.ts` — create student records (label + digest + hint); plus a first-boot dev seed (one classroom, one student, code printed once to the operator console) so M1 is verifiable before the Phase 5 provisioning UI exists
+- [x] `src/lib/server/auth/sessions.ts` — student session create/resolve/invalidate; `HttpOnly`, `Secure`, `SameSite=Lax` cookie scoped to the application origin so the sandbox origin can never read it; sliding 14-day expiry default (§7, Appendix A)
+- [x] `src/lib/server/auth/rate-limit.ts` — SQLite-backed, per IP and per credential digest, progressive delay per Appendix A, uniform failure responses in content and timing
+- [x] `src/routes/(student)/login/` — plain progressively-enhanced form action (§5: trivial forms don't use Superforms), Valibot-validated input
+- [x] `bun test`: entropy source, digest uniqueness and lookup, no plaintext persistence, rotation invalidating sessions, rate-limiter thresholds and uniform responses, pseudonym uniqueness (§22)
 
 ### 1.4 Gateway adapter (§9)
 
-- [ ] `src/lib/server/gateway/events.ts` — the normalised internal event types: text delta, tool call started, permission request, tool result, usage, error, done (§10); this is the wire format everything above the adapter consumes
-- [ ] `src/lib/server/gateway/openai/` and `src/lib/server/gateway/anthropic/` — dialect implementations behind one internal interface; chat completions, models listing, images endpoint (OpenAI dialect); Anthropic-native Messages; each alias selects its dialect
-- [ ] `src/lib/server/gateway/client.ts` — CPA HTTP client: listener-key auth, streaming parse, error mapping to a single student-facing unavailability message; upstream URLs, provider identifiers, OAuth errors, and tokens never reach the browser (§9, §21); credentials redacted from logs (§16)
-- [ ] Model alias query module: alias table lookup, dialect selection, utility-alias designation; alias records seeded via the dev seed until the Phase 2 management UI
-- [ ] `bun test`: dialect event normalisation against recorded fixtures for both dialects, error mapping, usage extraction, estimated-usage fallback (~4 chars/token, flagged as estimated — never zero, §10)
+- [x] `src/lib/server/gateway/events.ts` — the normalised internal event types: text delta, tool call started, permission request, tool result, usage, error, done (§10); this is the wire format everything above the adapter consumes
+- [x] `src/lib/server/gateway/openai/` and `src/lib/server/gateway/anthropic/` — dialect implementations behind one internal interface; chat completions, models listing, images endpoint (OpenAI dialect); Anthropic-native Messages; each alias selects its dialect
+- [x] `src/lib/server/gateway/client.ts` — CPA HTTP client: listener-key auth, streaming parse, error mapping to a single student-facing unavailability message; upstream URLs, provider identifiers, OAuth errors, and tokens never reach the browser (§9, §21); credentials redacted from logs (§16)
+- [x] Model alias query module: alias table lookup, dialect selection, utility-alias designation; alias records seeded via the dev seed until the Phase 2 management UI
+- [x] `bun test`: dialect event normalisation against recorded fixtures for both dialects, error mapping, usage extraction, estimated-usage fallback (~4 chars/token, flagged as estimated — never zero, §10)
 
 ### 1.5 Agent loop, zero-tool case (§10)
 
-- [ ] `src/lib/server/agent/system-prompt.ts` — layered assembly: fixed base prompt → classroom instructions → per-student instructions → skill index (later layers empty until Phases 2–3, but the layering function and its `bun test` coverage exist now, §22)
-- [ ] `src/lib/server/agent/loop.ts` — assemble context from the active message path, call the adapter, emit normalised events, terminate on model stop; tool execution slots in during Phase 3
-- [ ] `src/lib/server/agent/turn-buffer.ts` — persist every event to the database as it streams, so resume replays from one source of truth (§10)
-- [ ] `src/lib/server/agent/concurrency.ts` — one turn in flight per student across all conversations, enforced server-side; a new send requires aborting the running turn (§10)
-- [ ] `bun test`: loop termination conditions, buffering order, single-turn enforcement (§22)
+- [x] `src/lib/server/agent/system-prompt.ts` — layered assembly: fixed base prompt → classroom instructions → per-student instructions → skill index (later layers empty until Phases 2–3, but the layering function and its `bun test` coverage exist now, §22)
+- [x] `src/lib/server/agent/loop.ts` — assemble context from the active message path, call the adapter, emit normalised events, terminate on model stop; tool execution slots in during Phase 3
+- [x] `src/lib/server/agent/turn-buffer.ts` — persist every event to the database as it streams, so resume replays from one source of truth (§10)
+- [x] `src/lib/server/agent/concurrency.ts` — one turn in flight per student across all conversations, enforced server-side; a new send requires aborting the running turn (§10)
+- [x] `bun test`: loop termination conditions, buffering order, single-turn enforcement (§22)
 
 ### 1.6 Streaming transport (§10)
 
-- [ ] `src/routes/api/` — POST message endpoint returning the SSE stream of normalised events; Valibot-validated input; thin route delegating to `$lib/server/agent` (§6.1)
-- [ ] Resume endpoint: replay buffered events then tail the live turn — one code path for live and resumed turns (§10)
-- [ ] Abort endpoint: cancels the upstream request and marks the turn; boot-time interrupted-turn marking (1.1) surfaces a friendly cut-short notice on resume
-- [ ] Integration tests (`bun test` against a running server): stream, disconnect/resume, abort, both dialects, error propagation (§22)
+- [x] `src/routes/api/` — POST message endpoint returning the SSE stream of normalised events; Valibot-validated input; thin route delegating to `$lib/server/agent` (§6.1)
+- [x] Resume endpoint: replay buffered events then tail the live turn — one code path for live and resumed turns (§10)
+- [x] Abort endpoint: cancels the upstream request and marks the turn; boot-time interrupted-turn marking (1.1) surfaces a friendly cut-short notice on resume
+- [x] Integration tests (`bun test` against a running server): stream, disconnect/resume, abort, both dialects, error propagation (§22)
 
 ### 1.7 Conversation persistence (§10)
 
-- [ ] Conversation CRUD in query modules: create, list (owner-scoped), delete; message tree append, edit-as-sibling, regenerate-as-sibling, active-leaf update
-- [ ] Title generation: async utility-alias call after the first exchange, fallback to first-message truncation (§10); accounting hook stubs recorded now, enforced in Phase 2
-- [ ] `bun test`: owner scoping on every query, sibling semantics
+- [x] Conversation CRUD in query modules: create, list (owner-scoped), delete; message tree append, edit-as-sibling, regenerate-as-sibling, active-leaf update
+- [x] Title generation: async utility-alias call after the first exchange, fallback to first-message truncation (§10); accounting hook stubs recorded now, enforced in Phase 2
+- [x] `bun test`: owner scoping on every query, sibling semantics
 
 ### 1.8 Chat UI (§10, §20)
 
-- [ ] `src/lib/state/` — client rune modules (`.svelte.ts`) for conversation, streaming turn, and composer state, following the container pattern in `.agents/rules/svelte5-sveltekit-app.md` (class or getter/setter object, never bare reassignable exports); SSR-safe state via context, not module singletons
-- [ ] `src/lib/components/chat/` — message list, streaming message, composer; markdown via `marked` + mandatory `DOMPurify` sanitisation (§5); Shiki (fine-grained core, JS regex engine, small language set) highlighting only after a fenced block closes — plain preformatted text while streaming (§20)
-- [ ] `src/routes/(student)/` — chat route wiring load functions and the SSE client; edit and regenerate actions on the message tree; abort control
-- [ ] All text through Paraglide messages (§5); design via the `frontend-design` skill, clean-slate baseline
-- [ ] Vitest Browser Mode: composer and streaming-message components (§22); Playwright: login → chat → logout happy path (first cut of the §22 student flow)
+- [x] `src/lib/state/` — client rune modules (`.svelte.ts`) for conversation, streaming turn, and composer state, following the container pattern in `.agents/rules/svelte5-sveltekit-app.md` (class or getter/setter object, never bare reassignable exports); SSR-safe state via context, not module singletons
+- [x] `src/lib/components/chat/` — message list, streaming message, composer; markdown via `marked` + mandatory `DOMPurify` sanitisation (§5); Shiki (fine-grained core, JS regex engine, small language set) highlighting only after a fenced block closes — plain preformatted text while streaming (§20)
+- [x] `src/routes/(student)/` — chat route wiring load functions and the SSE client; edit and regenerate actions on the message tree; abort control
+- [x] All text through Paraglide messages (§5); design via the `frontend-design` skill, clean-slate baseline
+- [x] Vitest Browser Mode: composer and streaming-message components (§22); Playwright: login → chat → logout happy path (first cut of the §22 student flow)
 
 ---
 
