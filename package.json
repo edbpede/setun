@@ -8,7 +8,7 @@
     "build": "bun --bun vite build",
     "preview": "bun --bun vite preview",
     "start": "bun ./build/index.js",
-    "prepare": "paraglide-js compile --project ./project.inlang --outdir ./src/lib/paraglide && svelte-kit sync || echo ''",
+    "prepare": "test -f project.inlang/settings.json || exit 0; paraglide-js compile --project ./project.inlang --outdir ./src/lib/paraglide && svelte-kit sync",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "lint": "biome ci",
