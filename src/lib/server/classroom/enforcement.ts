@@ -71,10 +71,7 @@ export function checkModelAccess(input: CheckAccessInput): EnforcementResult {
   const availability = resolveAvailability(classroom, now);
 
   if (!availability.open) {
-    return denied(
-      availability.reason === "explicit-lock" ? "classroom-locked" : "outside-schedule",
-      availability,
-    );
+    return denied(availabilityRefusal(availability), availability);
   }
 
   if (!isAliasAllowed(db, { classroomId: classroom.id, modelAliasId })) {
@@ -94,6 +91,16 @@ export function checkModelAccess(input: CheckAccessInput): EnforcementResult {
   }
 
   return { allowed: true, classroom, availability };
+}
+
+/**
+ * Which refusal a closed classroom is, in the client's vocabulary.
+ *
+ * Shared so the send path and the two conversation-creation paths cannot drift
+ * into describing the same closed room differently (§8, §21).
+ */
+export function availabilityRefusal(availability: AvailabilityStatus): EnforcementRefusal {
+  return availability.reason === "explicit-lock" ? "classroom-locked" : "outside-schedule";
 }
 
 function denied(reason: EnforcementRefusal, availability: AvailabilityStatus): EnforcementResult {

@@ -3,6 +3,7 @@ import * as v from "valibot";
 import { requireStudentPage } from "$lib/server/auth/guards";
 import { destroySession, SESSION_COOKIE_NAME } from "$lib/server/auth/sessions";
 import { getDb } from "$lib/server/boot";
+import { classroomAvailability } from "$lib/server/classroom/enforcement";
 import { resolveClassroomStatus } from "$lib/server/classroom/status";
 import { listClassroomAliases } from "$lib/server/db/queries/classroom-aliases";
 import {
@@ -85,6 +86,10 @@ export const actions: Actions = {
   create: async ({ locals }) => {
     const student = requireStudentPage(locals);
     const db = getDb();
+
+    // Closed or out-of-hours: redirect lands on the ClassroomClosed screen.
+    const availability = classroomAvailability(db, student.classroomId);
+    if (!availability?.open) redirect(303, "/chat");
 
     const alias = listClassroomAliases(db, student.classroomId)[0];
     if (!alias) redirect(303, "/chat");

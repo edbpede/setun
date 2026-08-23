@@ -2,6 +2,7 @@ import { error, json } from "@sveltejs/kit";
 import * as v from "valibot";
 import { requireStudentApi } from "$lib/server/auth/guards";
 import { getDb } from "$lib/server/boot";
+import { availabilityRefusal, classroomAvailability } from "$lib/server/classroom/enforcement";
 import { isAliasAllowed, listClassroomAliases } from "$lib/server/db/queries/classroom-aliases";
 import { createConversation, listConversations } from "$lib/server/db/queries/conversations";
 import type { RequestHandler } from "./$types";
@@ -36,6 +37,19 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
   const parsed = v.safeParse(CreateSchema, await request.json().catch(() => ({})));
   if (!parsed.success) error(400, "Invalid request");
+
+  // A locked or out-of-hours classroom cannot mint conversations either: the
+  // UI hides the button, but hiding a control is never access control (§8).
+  const availability = classroomAvailability(db, student.classroomId);
+  if (!availability?.open) {
+    return json(
+      {
+        error: availability ? availabilityRefusal(availability) : "classroom-not-found",
+        nextOpeningAt: availability?.nextOpeningAt?.toISOString() ?? null,
+      },
+      { status: 403 },
+    );
+  }
 
   // Only aliases the educator allowlisted for this classroom, and only ones
   // still in service. An absent row is a denial, so a client naming any other
