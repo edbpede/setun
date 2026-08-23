@@ -433,11 +433,33 @@ hooks = [
 
 ---
 
+## Phase delivery flow
+
+**One phase = one branch = one PR**, regardless of phase size. A phase's PR merges into `main` only when the phase's exit criterion holds. Follow these steps throughout the work on every phase:
+
+1. **Prepare the branch before making changes.**
+   - If on `main`, create a new branch before starting. If on a non-main branch, rename it if needed.
+   - Use the appropriate prefix: `feat/`, `fix/`, or `refactor/` (e.g. `feat/phase-0-bootstrap`, `feat/phase-1-core-loop`).
+   - Use a concise, descriptive branch name.
+   - Keep all related work in one branch and one PR.
+
+2. **Commit changes at logical points.**
+   - Create commits throughout the work when a meaningful unit is complete, or group them afterward when that produces a cleaner history.
+   - Use judgment to avoid both overly large commits and unnecessary commit fragmentation — a task or a coherent group of subtasks is a natural commit boundary.
+   - Always follow the Conventional Commits standard; keep commits logical, focused, and clearly categorized.
+   - Push the branch as needed and ensure all final commits are pushed.
+
+3. **Open the PR only after the phase is fully complete.**
+   - Confirm the phase's exit criterion holds and the final state has been reviewed or validated. Do not open a draft or partial PR unless explicitly requested.
+   - Create the PR with `gh`, with a Conventional Commit-style PR title.
+   - Write a detailed, professional description covering the changes, rationale, and validation performed. No emojis.
+   - Use `rtk proxy` when needed to prevent `rtk` from interfering with the PR description.
+
 ## Working agreement
 
 - **Read the rules first.** Every implementation session reads `.agents/rules/svelte5-sveltekit-app.md` (and any rules files added later under `.agents/rules/`) at session start, before writing code.
-- **This file is the single source of progress truth.** Tick checkboxes in this document as work lands, in the same commit or PR as the work itself. A box is ticked only when its named tests pass.
+- **This file is the single source of progress truth.** Tick checkboxes in this document as work lands, on the phase branch alongside the work itself. A box is ticked only when its named tests pass.
 - **PRD wins.** `docs/setun-prd.md` v0.6 is final. Do not reopen decisions, add features, or change scope. A genuine contradiction between PRD and this plan is resolved in the PRD's favour and this plan is corrected.
 - **Conventional Commits**, enforced by the `conventional-pre-commit` hook on commit-msg.
-- **Branch workflow.** From Phase 0 onward, all work happens on feature branches merged into `main` — the `no-commit-to-branch` prek hook blocks direct commits to `main`. (History to date was committed directly to `main`; the hook changes that.)
+- **Branch workflow.** From Phase 0 onward, all work happens on the phase branches of the delivery flow above, merged into `main` via the phase PR — the `no-commit-to-branch` prek hook blocks direct commits to `main`. (History to date was committed directly to `main`; the hook changes that.)
 - **Verification.** `prek run --all-files` and the relevant test layer pass before any merge; CI's five gates pass on every PR.
