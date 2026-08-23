@@ -1,6 +1,7 @@
 import type { AppDatabase } from "../db/client";
 import { getClassroom } from "../db/queries/classrooms";
-import type { Classroom, InterfaceLanguage, Student } from "../db/schema";
+import type { Classroom, InterfaceLanguage, ModelAlias, Student } from "../db/schema";
+import type { AttachmentPolicy } from "../storage/attachments";
 
 /**
  * Resolved per-student settings (PRD §2, §8, §10).
@@ -54,6 +55,31 @@ export function resolveStudentSettings(
 function blankToNull(value: string | null): string | null {
   const trimmed = value?.trim();
   return trimmed ? trimmed : null;
+}
+
+/**
+ * The attachment policy in force for one student on one conversation (§10).
+ *
+ * Four sources, one answer: the classroom's toggle and type list, the student's
+ * override, the Appendix A caps the classroom may have edited, and the alias's
+ * image-input capability flag. The last is why this takes an alias — "attaching
+ * an image on a non-capable alias is refused with a friendly message before any
+ * gateway call" (§10), and the refusal has to know which model the conversation
+ * is on.
+ */
+export function resolveAttachmentPolicy(
+  classroom: Classroom,
+  student: Pick<Student, "attachmentsEnabled">,
+  alias: Pick<ModelAlias, "supportsImageInput">,
+): AttachmentPolicy {
+  return {
+    enabled: student.attachmentsEnabled ?? classroom.attachmentsEnabled,
+    allowedTypes: classroom.attachmentTypes,
+    imageMaxBytes: classroom.attachmentImageMaxBytes,
+    textMaxBytes: classroom.attachmentTextMaxBytes,
+    maxPerMessage: classroom.attachmentMaxPerMessage,
+    aliasSupportsImageInput: alias.supportsImageInput,
+  };
 }
 
 /**

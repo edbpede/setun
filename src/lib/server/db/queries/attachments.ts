@@ -84,3 +84,28 @@ export function deleteAttachment(
     .where(and(eq(attachment.id, input.attachmentId), eq(attachment.studentId, input.studentId)))
     .run();
 }
+
+/**
+ * The attachments referenced by a set of messages, for their owner.
+ *
+ * Used to re-read the images on the active path when a turn is assembled: the
+ * parts name the attachments, and this resolves them without a second
+ * ownership question — the student id is in the query (§21).
+ */
+export function listAttachmentsByIds(
+  db: AppDatabase,
+  input: { attachmentIds: readonly string[]; studentId: string },
+): Attachment[] {
+  if (input.attachmentIds.length === 0) return [];
+
+  return db
+    .select()
+    .from(attachment)
+    .where(
+      and(
+        inArray(attachment.id, [...input.attachmentIds]),
+        eq(attachment.studentId, input.studentId),
+      ),
+    )
+    .all();
+}

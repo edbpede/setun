@@ -225,16 +225,26 @@ export async function executeTool(input: {
         return { text: "No prompt was given, so no image was generated.", isError: true };
       }
 
-      const result = await generateImage({
-        db: context.db,
-        adapter: context.adapter,
-        files: context.files,
-        classroom: context.classroom,
-        studentId: context.studentId,
-        conversationId: context.conversationId,
-        prompt,
-        signal: input.signal,
-      });
+      let result: Awaited<ReturnType<typeof generateImage>>;
+      try {
+        result = await generateImage({
+          db: context.db,
+          adapter: context.adapter,
+          files: context.files,
+          classroom: context.classroom,
+          studentId: context.studentId,
+          conversationId: context.conversationId,
+          prompt,
+          signal: input.signal,
+        });
+      } catch (cause) {
+        if (cause instanceof Error && cause.name === "AbortError") throw cause;
+
+        // Storing the image failed. That is the tool's problem to report, not
+        // the turn's to die of — the pupil keeps the conversation (§10, §21).
+        console.warn("image generation failed to store", { cause: describe(cause) });
+        return { text: imageRefusalForModel("unavailable"), isError: true };
+      }
 
       if (!result.ok) {
         return { text: imageRefusalForModel(result.refusal), isError: true };
@@ -299,6 +309,11 @@ function normaliseExecution(result: McpToolResult): ToolExecution {
     isError: result.isError,
     elicitation: result.elicitation,
   };
+}
+
+/** Errors are logged without stack traces or infrastructure detail (§16, §21). */
+function describe(cause: unknown): string {
+  return cause instanceof Error ? `${cause.name}: ${cause.message}` : String(cause);
 }
 
 /** What the model is told when generation was refused (§15). */

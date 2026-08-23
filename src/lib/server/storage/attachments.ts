@@ -155,3 +155,41 @@ function longestBacktickRun(text: string): number {
   for (const run of text.matchAll(/`+/g)) longest = Math.max(longest, run[0].length);
   return longest;
 }
+
+/**
+ * Read the image attachments on a message path, encoded for the gateway (§10).
+ *
+ * Images travel to the model inline, so the bytes have to be read at some point;
+ * doing it here keeps the loop pure over stored parts and keeps the filesystem
+ * out of every termination-condition test.
+ */
+export async function loadAttachmentImages(
+  files: { read(storagePath: string): Promise<Uint8Array | null> },
+  attachments: readonly {
+    id: string;
+    kind: AttachmentKind;
+    mediaType: string;
+    storagePath: string;
+  }[],
+): Promise<Map<string, { mediaType: string; data: string }>> {
+  const images = new Map<string, { mediaType: string; data: string }>();
+
+  for (const record of attachments) {
+    if (record.kind !== "image") continue;
+
+    const bytes = await files.read(record.storagePath);
+    // A file that has gone is simply not sent: the message still makes sense
+    // without it, and failing the turn over a missing attachment would not.
+    if (!bytes) continue;
+
+    images.set(record.id, { mediaType: record.mediaType, data: encodeBase64(bytes) });
+  }
+
+  return images;
+}
+
+function encodeBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
