@@ -84,6 +84,16 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<GatewayEvent
 
   let reason: TurnEndReason = "stop";
   let completion = "";
+  /**
+   * The provisional figure already handed to the budget.
+   *
+   * Estimating each delta on its own would round every fragment up separately,
+   * so the same answer would cost more the more finely the gateway sliced it —
+   * up to four times more when it streams a character at a time. Estimating the
+   * text so far and recording only the increase keeps the running figure equal
+   * to one estimate over the whole completion, whatever the chunking.
+   */
+  let provisional = 0;
   let sawUsage = false;
   /** Whether the request reached the provider at all — see `trailingUsage`. */
   let reachedUpstream = false;
@@ -100,7 +110,9 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<GatewayEvent
         completion += event.text;
         // A provisional figure while the step is in flight, so the token cap can
         // bind mid-stream; the gateway's own number supersedes it below.
-        budget.recordProvisionalTokens(estimateTokens(event.text));
+        const estimate = estimateTokens(completion);
+        budget.recordProvisionalTokens(estimate - provisional);
+        provisional = estimate;
       }
       if (event.type === "usage") {
         sawUsage = true;
