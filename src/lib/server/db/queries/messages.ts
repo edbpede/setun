@@ -50,10 +50,10 @@ export function appendMessage(
  */
 export function appendSibling(
   db: AppDatabase,
-  input: { siblingOfId: string; role: MessageRole; parts: MessagePart[] },
+  input: { siblingOfId: string; conversationId: string; role: MessageRole; parts: MessagePart[] },
 ): Message | undefined {
   const original = db.select().from(message).where(eq(message.id, input.siblingOfId)).get();
-  if (!original) return undefined;
+  if (!original || original.conversationId !== input.conversationId) return undefined;
 
   return appendMessage(db, {
     conversationId: original.conversationId,

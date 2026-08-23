@@ -92,6 +92,7 @@ describe("message tree", () => {
     // Regenerating: a second assistant message under the same prompt.
     const regenerated = appendSibling(db, {
       siblingOfId: answer.id,
+      conversationId: conversation.id,
       role: "assistant",
       parts: [{ type: "text", text: "second answer" }],
     });
@@ -117,6 +118,7 @@ describe("message tree", () => {
 
     const edited = appendSibling(db, {
       siblingOfId: prompt.id,
+      conversationId: conversation.id,
       role: "user",
       parts: [{ type: "text", text: "second try" }],
     });
@@ -125,8 +127,31 @@ describe("message tree", () => {
     expect(getActivePath(db, edited?.id ?? "")).toHaveLength(1);
   });
 
+  it("rejects a sibling targeting a message in another conversation", () => {
+    const conversation = newConversation();
+    const prompt = appendMessage(db, {
+      conversationId: conversation.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "private" }],
+    });
+    const other = newConversation();
+
+    // Attempt to branch another conversation's message into ours.
+    expect(
+      appendSibling(db, {
+        siblingOfId: prompt.id,
+        conversationId: other.id,
+        role: "user",
+        parts: [{ type: "text", text: "injected" }],
+      }),
+    ).toBeUndefined();
+  });
+
   it("returns undefined when the sibling target does not exist", () => {
-    expect(appendSibling(db, { siblingOfId: "missing", role: "user", parts: [] })).toBeUndefined();
+    expect(
+      appendSibling(db, { siblingOfId: "missing", conversationId: "any", role: "user", parts: [] }),
+    ).toBeUndefined();
   });
 
   it("tracks the active leaf across a branch switch", () => {
@@ -151,6 +176,7 @@ describe("message tree", () => {
 
     const regenerated = appendSibling(db, {
       siblingOfId: answer.id,
+      conversationId: conversation.id,
       role: "assistant",
       parts: [{ type: "text", text: "a2" }],
     });

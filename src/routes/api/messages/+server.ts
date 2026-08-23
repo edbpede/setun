@@ -60,6 +60,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   const prompt = editOfMessageId
     ? appendSibling(db, {
         siblingOfId: editOfMessageId,
+        conversationId,
         role: "user",
         parts: [{ type: "text", text }],
       })
