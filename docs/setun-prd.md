@@ -1,7 +1,7 @@
 # Setun — Product Requirements Document
 
-**Version:** 0.3
-**Status:** Ready for implementation planning — all open decisions resolved
+**Version:** 0.4
+**Status:** Ready for implementation planning — all open decisions resolved, defaults pinned
 **Licence:** AGPL-3.0
 **Target:** Classroom pilot, 5–20 students and one educator
 
@@ -51,6 +51,7 @@ Not an LMS, gradebook, or timetable system. No school-wide identity integration,
 **Internationalisation:** Paraglide JS — compile-time, typed messages; English is the default locale, Danish ships complete at pilot; all user-facing text flows through messages, never string literals in components
 **Editor:** CodeMirror 6
 **Markdown rendering:** `marked`, output sanitised with `DOMPurify` — model output is untrusted HTML source; sanitisation is mandatory, not optional
+**Forms and validation:** Valibot is the single schema library — every form action and every API endpoint validates its input through a Valibot schema, no exceptions. Superforms 2 (Valibot adapter) powers the educator panel's forms; trivial forms such as login use plain progressively-enhanced form actions
 **Database:** SQLite via `bun:sqlite`, schema and queries through Drizzle ORM, full-text search via FTS5
 **Gateway:** CLIProxyAPI, pinned version, unmodified
 **Artifact compilation:** `esbuild-wasm`, lazily loaded, executed inside the sandbox origin
@@ -118,6 +119,12 @@ sandbox/              # separate-origin artifact host: runner page, compiler wor
 
 **Splitting principle.** A file holds one responsibility; a module (folder) holds one domain concern with a small explicit public surface, importable without pulling in siblings. Split when a file accumulates a second reason to change or a second audience of importers — never because of line count alone, and no numeric size limits. Route files stay thin: parse, authorise, delegate to `$lib/server` modules, shape the response. Domain logic never lives in `+server.ts` or `+page.server.ts`.
 
+### 6.2 Deployment requirements
+
+Two DNS hostnames are required — the application origin and the sandbox origin — both terminating TLS at Caddy: automatic HTTPS via ACME where the host is publicly reachable, Caddy's internal CA on closed networks. The operator surface is exactly three files: the Compose file, one `.env`, and the MCP server configuration file (§11), plus mounted volumes for the SQLite database, file storage, and backups.
+
+Required environment variables, enumerated so nothing is discovered late: the student-code HMAC pepper; the educator seed credentials (consumed at first boot; re-seeding them and restarting is also the password-recovery path, §7); the CPA listener key shared between Setun and CPA; the two origin URLs; and any credentials the MCP configuration references by name. Absence of a required variable fails boot with a clear message rather than starting degraded.
+
 ---
 
 ## 7. Identity and authentication
@@ -132,9 +139,9 @@ Successful login establishes a normal session with an `HttpOnly`, `Secure`, appr
 
 **Session lifetime is a per-classroom policy** with two modes: **sliding expiry**, defaulting to 14 days from last activity (a weekly-used device stays logged in all term; an abandoned one expires), and **per-lesson**, where sessions end when the classroom closes and students re-authenticate each lesson. The educator selects the mode and duration in the panel and can force-logout an entire classroom with one action (bulk session invalidation).
 
-Login is rate limited **in-application, SQLite-backed** — per IP and per credential digest, with progressive delay and uniform failure responses that never disclose whether a code exists. Caddy performs no rate limiting. Rotation and disabling both invalidate existing sessions immediately.
+Login is rate limited **in-application, SQLite-backed** — per IP and per credential digest, with progressive delay (thresholds in Appendix A) and uniform failure responses that never disclose whether a code exists. Caddy performs no rate limiting. Rotation and disabling both invalidate existing sessions immediately.
 
-Educator authentication is separate and conventional: a single account seeded from deployment configuration at first boot, password hashed with `Bun.password` (argon2id), with its own session namespace. OIDC may be added later without affecting student auth.
+Educator authentication is separate and conventional: a single account seeded from deployment configuration at first boot, password hashed with `Bun.password` (argon2id), with its own session namespace and a **sliding 7-day expiry**. There is no in-application password recovery — a forgotten educator password is reset by re-seeding the credential in deployment configuration and restarting, the same channel that created the account. OIDC may be added later without affecting student auth.
 
 ---
 
@@ -176,9 +183,9 @@ Because MCP and skills are in scope, the core is not a stream proxy but an **age
 
 **The system prompt is layered:** Setun's fixed base prompt, then optional **classroom instructions**, then optional **per-student instructions** — both educator-authored in the panel, both inherited invisibly by the student's conversations. This is the educator's steering instrument ("answer in Danish", "always explain before showing code", extra scaffolding for one student). Students never author system prompts; student-driven behaviour change flows through skills (§12). The skill index (§12) is appended last.
 
-**Attachments.** Students may attach **images** (forwarded to the model, only on aliases carrying the image-input capability flag) and **plain text or code files** (inlined into the message as text). Attachment policy follows the granularity principle: a per-classroom toggle with per-student overrides, an educator-controlled allowed-type list, and size caps with sensible defaults. Uploads are validated server-side — content sniffing against the allowlist, size limits — stored locally alongside generated images, served only by Setun to their owner, and deleted with their conversation. Attaching an image on a non-capable alias is refused with a friendly message before any gateway call. PDFs and office documents are out of scope for the pilot.
+**Attachments.** Students may attach **images** (forwarded to the model, only on aliases carrying the image-input capability flag) and **plain text or code files** (inlined into the message as text). Attachment policy follows the granularity principle: a per-classroom toggle with per-student overrides, an educator-controlled allowed-type list, and size caps (defaults in Appendix A). Uploads are validated server-side — content sniffing against the allowlist, size limits — stored locally alongside generated images, served only by Setun to their owner, and deleted with their conversation. Attaching an image on a non-capable alias is refused with a friendly message before any gateway call. PDFs and office documents are out of scope for the pilot.
 
-**Budgets are three layers**, all denominated in **tokens** — the unit the gateway actually reports — and all panel-configurable per classroom with sensible defaults:
+**Budgets are three layers**, all denominated in **tokens** — the unit the gateway actually reports — and all panel-configurable per classroom. The panel offers three **budget presets** — Cautious, Standard *(the default)*, and Generous — which fill every budget field with the Appendix A values; a preset is a starting point, and every field remains individually editable afterwards:
 
 1. **Per-turn caps** — maximum tool-call steps, wall-clock time, and tokens per turn. These stop a runaway loop.
 2. **Per-student daily allowance** — a token allowance per student per day, so one student cannot drain the class. Students see their own allowance and consumption on the dashboard.
@@ -240,9 +247,9 @@ The schema reserves a marker for executable skills, but code-executing skills �
 
 ## 13. Artifacts
 
-Artifacts are detected by the renderer from fenced code blocks with recognised language tags. No tool call, no model-side capability, no special protocol — this works with any model the gateway offers.
+Artifacts are detected by the renderer from fenced code blocks with recognised language tags: `html` and `svg` become Tier 0 artifacts; `jsx`, `tsx`, and `svelte` become Tier 1 artifacts. Every other tag — including bare `js`, `ts`, and `css` — remains an ordinary highlighted code block, because a fragment without markup has nothing to render. No tool call, no model-side capability, no special protocol — this works with any model the gateway offers.
 
-**Tier 0 — static.** HTML, CSS, and JavaScript render immediately in a sandboxed iframe with no build step. Most classroom work lands here, and it costs nothing to run.
+**Tier 0 — static.** HTML documents (with whatever CSS and JavaScript they embed) and SVG render immediately in a sandboxed iframe with no build step. Most classroom work lands here, and it costs nothing to run.
 
 **Tier 1 — compiled.** TypeScript, JSX, and Svelte compile through `esbuild-wasm` in a worker inside the sandbox origin, against pinned self-hosted ESM runtimes — **React and Svelte**, the two frameworks models most reliably emit; no other frameworks are hosted. The compiler is fetched only when a student first opens a non-static artifact, and cached thereafter. Compilation is triggered by an explicit **Run** action or a heavily debounced idle, never per keystroke.
 
@@ -414,3 +421,30 @@ Assignments and lesson presets. Artifact export as a downloadable project. PDF a
 An educator opens the panel and presses **Open classroom**. Students open their Chromebooks, enter a pseudonymous code, and begin. One asks for an interactive page showing how a neural network passes information between layers, and receives a working application they can read, change, break, and argue with. At the end of the lesson the educator presses **Lock classroom**, and new requests stop — verifiably, at the API, not only in the interface.
 
 No student supplied a name, an email address, or a phone number to participate. No provider credential left the server. No generated code could reach the authenticated application. And the whole thing runs on three containers and a single database file.
+
+---
+
+## Appendix A — Defaults and presets
+
+Every value here is a starting point, editable in the panel; none is hard-coded. They exist so the implementation never has to interpret "sensible".
+
+### Budget presets
+
+Selecting a preset fills all five fields; fields remain individually editable afterwards.
+
+| Field | Cautious | Standard *(default)* | Generous |
+|---|---|---|---|
+| Per-turn tool-call steps | 10 | 20 | 30 |
+| Per-turn wall-clock | 3 min | 5 min | 10 min |
+| Per-turn tokens | 50k | 100k | 200k |
+| Per-student daily allowance | 100k | 250k | 500k |
+| Per-classroom daily cap | 1M | 2.5M | 5M |
+
+### Other defaults
+
+- **Attachments** — images ≤ 5 MB, text/code files ≤ 256 KB, at most 5 attachments per message. Default allowed types: PNG, JPEG, WebP, and plain-text/code files.
+- **Login rate limiting** — per credential digest: after 5 consecutive failures within 15 minutes, progressive delay starting at 1 s and doubling to a 60 s ceiling. Per IP: at most 30 attempts per 15-minute window, then refusal until the window passes. Failure responses are uniform in both content and timing behaviour.
+- **Sessions** — student sliding expiry 14 days (§7); educator sliding expiry 7 days (§7).
+- **Retention** — conversations 30 days (§16); creations kept until deleted (§16).
+- **Full-text search** — FTS5 with the `unicode61` tokenizer, `remove_diacritics 2`, so Danish text searches forgivingly.
+- **Cost display** — exchange rate defaults to 7.00 DKK/USD, panel-editable; estimates are display-only (§10).
