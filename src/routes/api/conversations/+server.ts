@@ -2,8 +2,8 @@ import { error, json } from "@sveltejs/kit";
 import * as v from "valibot";
 import { requireStudentApi } from "$lib/server/auth/guards";
 import { getDb } from "$lib/server/boot";
+import { isAliasAllowed, listClassroomAliases } from "$lib/server/db/queries/classroom-aliases";
 import { createConversation, listConversations } from "$lib/server/db/queries/conversations";
-import { getAliasById, listAvailableAliases } from "$lib/server/db/queries/model-aliases";
 import type { RequestHandler } from "./$types";
 
 /**
@@ -37,18 +37,20 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   const parsed = v.safeParse(CreateSchema, await request.json().catch(() => ({})));
   if (!parsed.success) error(400, "Invalid request");
 
-  // An explicit alias must be one that exists and is available; otherwise take
-  // the first available one. Phase 2.6 narrows this to the classroom allowlist.
-  const alias = parsed.output.modelAliasId
-    ? getAliasById(db, parsed.output.modelAliasId)
-    : listAvailableAliases(db)[0];
+  // Only aliases the educator allowlisted for this classroom, and only ones
+  // still in service. An absent row is a denial, so a client naming any other
+  // alias is refused rather than quietly given a different model (§8, §9, §21).
+  const classroomId = student.classroomId;
+  const requested = parsed.output.modelAliasId;
 
-  if (!alias?.available) error(409, "Model unavailable");
+  if (requested && !isAliasAllowed(db, { classroomId, modelAliasId: requested })) {
+    error(409, "Model unavailable");
+  }
 
-  const conversation = createConversation(db, {
-    studentId: student.id,
-    modelAliasId: alias.id,
-  });
+  const modelAliasId = requested ?? listClassroomAliases(db, classroomId)[0]?.id;
+  if (!modelAliasId) error(409, "Model unavailable");
+
+  const conversation = createConversation(db, { studentId: student.id, modelAliasId });
 
   return json({ id: conversation.id }, { status: 201 });
 };

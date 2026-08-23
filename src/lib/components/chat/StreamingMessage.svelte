@@ -16,15 +16,14 @@ interface Props {
 
 let { turn }: Props = $props();
 
-let noticeText = $derived(
-  turn.notice === "aborted"
-    ? m.chat_notice_aborted()
-    : turn.notice === "interrupted"
-      ? m.chat_notice_interrupted()
-      : turn.notice === "error"
-        ? m.chat_notice_error()
-        : null,
-);
+const NOTICES: Record<NonNullable<StreamingTurn["notice"]>, () => string> = {
+  aborted: m.chat_notice_aborted,
+  interrupted: m.chat_notice_interrupted,
+  error: m.chat_notice_error,
+  budget: m.chat_notice_budget,
+};
+
+let noticeText = $derived(turn.notice ? NOTICES[turn.notice]() : null);
 </script>
 
 {#if turn.streaming || !turn.isEmpty || noticeText}
