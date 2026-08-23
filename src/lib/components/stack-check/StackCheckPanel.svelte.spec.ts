@@ -6,7 +6,7 @@ import StackCheckPanel from "./StackCheckPanel.svelte";
 
 describe("StackCheckPanel", () => {
   it("keeps the dialog closed until the trigger is activated", async () => {
-    render(StackCheckPanel);
+    await render(StackCheckPanel);
 
     await expect.element(page.getByText(m.stack_check_dialog_title())).not.toBeInTheDocument();
 
@@ -17,7 +17,7 @@ describe("StackCheckPanel", () => {
   });
 
   it("closes the dialog again from the footer control", async () => {
-    render(StackCheckPanel);
+    await render(StackCheckPanel);
 
     await page.getByTestId("dialog-trigger").click();
     await expect.element(page.getByText(m.stack_check_dialog_title())).toBeVisible();
@@ -30,7 +30,7 @@ describe("StackCheckPanel", () => {
   });
 
   it("resolves every clean-slate colour token to a real colour", async () => {
-    render(StackCheckPanel);
+    await render(StackCheckPanel);
 
     // A colour utility whose CSS variable does not resolve degrades to transparent
     // rather than failing loudly. `bg-sidebar` and `bg-chart-*` are the two the
@@ -46,7 +46,7 @@ describe("StackCheckPanel", () => {
   });
 
   it("resolves the clean-slate radius scale from the --radius variable", async () => {
-    render(StackCheckPanel);
+    await render(StackCheckPanel);
 
     const lg = page.getByTestId("radius-lg").element();
     const md = page.getByTestId("radius-md").element();
