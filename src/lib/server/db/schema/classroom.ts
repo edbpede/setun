@@ -130,6 +130,23 @@ export const classroom = sqliteTable("classroom", {
     .$type<string[]>()
     .notNull()
     .default(["image/png", "image/jpeg", "image/webp", "text/plain"]),
+  /** Appendix A: images <= 5 MB, text/code <= 256 KB, at most 5 per message (§10). */
+  attachmentImageMaxBytes: integer()
+    .notNull()
+    .default(5 * 1024 * 1024),
+  attachmentTextMaxBytes: integer()
+    .notNull()
+    .default(256 * 1024),
+  attachmentMaxPerMessage: integer().notNull().default(5),
+
+  /**
+   * The token-equivalent one generated image costs (§15, Appendix A: 10k).
+   *
+   * "Image endpoints do not reliably report usage and generation must never be
+   * free", so the figure is a policy the panel sets rather than something the
+   * gateway reports.
+   */
+  imageTokenEquivalent: integer().notNull().default(10_000),
 
   /** The educator's steering instrument, layered into the system prompt (§10). */
   classroomInstructions: text(),

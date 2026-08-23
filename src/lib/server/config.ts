@@ -34,6 +34,20 @@ const ConfigSchema = v.object({
   /** A distinct host from the app origin — artifacts are isolated by origin (§14). */
   sandboxOrigin: v.pipe(nonEmpty("SETUN_SANDBOX_ORIGIN is required"), v.url()),
   databasePath: nonEmpty("SETUN_DATABASE_PATH is required"),
+  /**
+   * Where attachments and generated images are written (§15, §21).
+   *
+   * Outside any web root by construction: nothing serves this directory, and
+   * every read goes through an owner-scoped endpoint.
+   */
+  storagePath: nonEmpty("SETUN_STORAGE_PATH is required"),
+  /**
+   * The on-disk MCP server configuration, the third operator file of §6.2.
+   *
+   * Optional: a deployment that uses no tools has no file to point at, and
+   * requiring one would fail boot over a feature it does not use (§11).
+   */
+  mcpConfigPath: v.optional(v.string()),
 });
 
 export type ServerConfig = v.InferOutput<typeof ConfigSchema>;
@@ -58,6 +72,8 @@ function readEnvironment() {
     appOrigin: env.SETUN_APP_ORIGIN ?? "http://localhost:5173",
     sandboxOrigin: env.SETUN_SANDBOX_ORIGIN ?? "http://localhost:5174",
     databasePath: env.SETUN_DATABASE_PATH ?? "./data/setun.sqlite",
+    storagePath: env.SETUN_STORAGE_PATH ?? "./data/storage",
+    mcpConfigPath: env.SETUN_MCP_CONFIG_PATH,
   };
 }
 
@@ -76,6 +92,17 @@ export function validateConfig(raw: Record<string, unknown> = readEnvironment())
     return `${path}: ${issue.message}`;
   });
   throw new ConfigurationError(issues);
+}
+
+/**
+ * The raw environment, for the few modules that resolve names out of it.
+ *
+ * The MCP configuration references credentials *by variable name* (§11), so the
+ * name is only known at runtime and cannot be a field on the schema above. This
+ * keeps the `$env` import in the one module that already owns it.
+ */
+export function credentialEnvironment(): Readonly<Record<string, string | undefined>> {
+  return env;
 }
 
 let cached: ServerConfig | null = null;
