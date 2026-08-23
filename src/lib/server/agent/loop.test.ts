@@ -161,3 +161,111 @@ describe("runTurn termination", () => {
     expect(events.at(-1)).toEqual({ type: "done", reason: "stop" });
   });
 });
+
+describe("replaying a turn that used tools (§10, §11)", () => {
+  it("pairs each stored call with the result it was given", () => {
+    const messages = assembleContext([
+      { role: "user", parts: [{ type: "text", text: "Slå det op" }] },
+      {
+        role: "assistant",
+        parts: [
+          { type: "text", text: "Et øjeblik" },
+          {
+            type: "tool-call",
+            toolCallId: "call-1",
+            toolName: "docs__search",
+            serverLabel: "Docs",
+            arguments: { q: "loops" },
+            decision: "auto",
+          },
+          { type: "tool-result", toolCallId: "call-1", result: "42 treffer", isError: false },
+        ],
+      },
+    ]);
+
+    expect(messages.slice(1)).toEqual([
+      { role: "user", content: "Slå det op" },
+      {
+        role: "assistant",
+        content: "Et øjeblik",
+        toolCalls: [{ id: "call-1", name: "docs__search", arguments: '{"q":"loops"}' }],
+      },
+      { role: "tool", toolCallId: "call-1", content: "42 treffer" },
+    ]);
+  });
+
+  it("replays a declined call with its refusal, so the model is not left guessing (§11)", () => {
+    const messages = assembleContext([
+      {
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-call",
+            toolCallId: "call-1",
+            toolName: "docs__search",
+            serverLabel: "Docs",
+            arguments: {},
+            decision: "declined",
+          },
+          {
+            type: "tool-result",
+            toolCallId: "call-1",
+            result: "The student declined this tool call.",
+            isError: true,
+          },
+        ],
+      },
+    ]);
+
+    expect(messages.at(-1)).toEqual({
+      role: "tool",
+      toolCallId: "call-1",
+      content: "The student declined this tool call.",
+    });
+  });
+
+  it("drops a result whose call is not in the same message", () => {
+    const messages = assembleContext([
+      {
+        role: "assistant",
+        parts: [{ type: "tool-result", toolCallId: "orphan", result: "x", isError: false }],
+      },
+    ]);
+
+    // An orphan tool message would leave the upstream waiting on a call it
+    // never saw, so it does not travel.
+    expect(messages).toHaveLength(2);
+    expect(messages[1].role).toBe("assistant");
+  });
+
+  it("sends an image attachment inline, and nothing when its file has gone (§10, §21)", () => {
+    const path = [
+      {
+        role: "user" as const,
+        parts: [
+          { type: "text" as const, text: "Hvad er der på billedet?" },
+          {
+            type: "attachment" as const,
+            attachmentId: "att-1",
+            kind: "image" as const,
+            filename: "foto.png",
+            mediaType: "image/png",
+          },
+        ],
+      },
+    ];
+
+    const withImage = assembleContext(
+      path,
+      undefined,
+      new Map([["att-1", { mediaType: "image/png", data: "AAA" }]]),
+    );
+    expect(withImage[1].content).toEqual([
+      { type: "text", text: "Hvad er der på billedet?" },
+      { type: "image", mediaType: "image/png", data: "AAA" },
+    ]);
+
+    // A file that has gone is simply not sent; the message still makes sense.
+    expect(assembleContext(path)[1].content).toBe("Hvad er der på billedet?");
+  });
+});

@@ -96,9 +96,9 @@ function encodeStoredMessage(
     .filter(
       (part): part is Extract<MessagePart, { type: "tool-call" }> => part.type === "tool-call",
     )
-    // A call the student declined never ran, so there is no result to pair with
-    // it; replaying it would leave the model waiting on an answer for ever.
-    .filter((part) => part.decision !== "declined")
+    // Calls the student declined are replayed too, paired with the refusal that
+    // was returned for them: the model asked, and being told plainly that it was
+    // refused is what stops it asking again on the next turn (§11).
     .map((part) => ({
       id: part.toolCallId,
       name: part.toolName,
