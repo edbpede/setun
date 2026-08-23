@@ -1,0 +1,19 @@
+{
+  "$schema": "https://inlang.com/schema/inlang-message-format",
+  "app_name": "Setun",
+  "home_tagline": "Et læringsmiljø med privatliv først til undervisning i AI og teknologiforståelse.",
+  "home_stack_check_link": "Validering af teknologistak",
+  "stack_check_title": "Validering af teknologistak",
+  "stack_check_intro": "Denne midlertidige rute viser shadcn-svelte-komponenter med clean-slate-temaets variabler. Al tekst her kommer fra Paraglide-beskeder — ingen tekststrenge i komponenter.",
+  "stack_check_open_dialog": "Åbn dialog",
+  "stack_check_dialog_title": "Clean-slate-dialog",
+  "stack_check_dialog_description": "Hvis hjørneradius, farver, skrifttyper og åbningsanimation svarer til clean-slate-temaet, er UnoCSS og shadcn-svelte sat rigtigt op.",
+  "stack_check_dialog_close": "Luk",
+  "stack_check_variant_heading": "Knapvarianter",
+  "stack_check_colour_heading": "Farvetokens",
+  "stack_check_radius_heading": "Radiusskala",
+  "stack_check_font_heading": "Skriftskala",
+  "stack_check_font_sans": "Inter viser sans-skrifttypen.",
+  "stack_check_font_mono": "JetBrains Mono viser mono-skrifttypen.",
+  "stack_check_font_serif": "Merriweather viser serif-skrifttypen."
+}

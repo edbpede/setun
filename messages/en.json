@@ -1,0 +1,19 @@
+{
+  "$schema": "https://inlang.com/schema/inlang-message-format",
+  "app_name": "Setun",
+  "home_tagline": "A privacy-first learning environment for teaching AI and Teknologiforståelse.",
+  "home_stack_check_link": "Stack validation",
+  "stack_check_title": "Stack validation",
+  "stack_check_intro": "This scratch route renders shadcn-svelte components against the clean-slate theme variables. Every string here comes from a Paraglide message — no literals in components.",
+  "stack_check_open_dialog": "Open dialog",
+  "stack_check_dialog_title": "Clean-slate dialog",
+  "stack_check_dialog_description": "If the radius, colours, fonts and open animation match the clean-slate theme, the UnoCSS and shadcn-svelte pairing is wired correctly.",
+  "stack_check_dialog_close": "Close",
+  "stack_check_variant_heading": "Button variants",
+  "stack_check_colour_heading": "Colour tokens",
+  "stack_check_radius_heading": "Radius scale",
+  "stack_check_font_heading": "Type scale",
+  "stack_check_font_sans": "Inter renders the sans stack.",
+  "stack_check_font_mono": "JetBrains Mono renders the mono stack.",
+  "stack_check_font_serif": "Merriweather renders the serif stack."
+}
