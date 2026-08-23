@@ -8,6 +8,12 @@ declare global {
     interface Locals {
       /** The authenticated student, or null. Resolved from the session cookie (PRD §7). */
       student: import("$lib/server/db/schema").Student | null;
+      /**
+       * The authenticated educator, or null. A separate session namespace from
+       * the student one, so a student session can never satisfy an educator
+       * guard (PRD §7, §21).
+       */
+      educator: import("$lib/server/db/schema").Educator | null;
       /** The presented session token, kept so logout can invalidate exactly this session. */
       sessionToken: string | null;
     }

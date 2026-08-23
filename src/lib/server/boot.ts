@@ -1,5 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { seedEducator } from "./auth/educator";
 import { seedDevelopmentData } from "./auth/seed";
 import { getConfig } from "./config";
 import { type AppDatabase, createDatabase } from "./db/client";
@@ -43,6 +44,16 @@ function boot(): Services {
   if (interrupted > 0) {
     console.info(`marked ${interrupted} in-flight turn(s) interrupted after restart`);
   }
+
+  // The operator account, from deployment configuration, on every boot: this is
+  // the documented password-recovery path, so it must take effect on a restart
+  // and not only on a first boot (§7, §6.2).
+  void seedEducator(db, {
+    username: config.educatorUsername,
+    password: config.educatorPassword,
+  }).then((result) => {
+    if (result.seeded) console.info(`seeded educator account '${config.educatorUsername}'`);
+  });
 
   // An empty database gets one classroom and one student so M1 is verifiable
   // before the Phase 5 provisioning UI. The code is printed once and never
