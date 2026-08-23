@@ -1,0 +1,26 @@
+# Two hostnames, both terminating TLS here (PRD §6.2):
+#
+#   the application origin — everything authenticated
+#   the sandbox origin     — static artifact host, no application access
+#
+# TLS: automatic HTTPS via ACME where the host is publicly reachable. On a closed
+# network, replace the `tls` line in each block with `tls internal` to use Caddy's
+# internal CA.
+
+{
+	email {$SETUN_ACME_EMAIL}
+}
+
+# Application origin.
+{$SETUN_APP_HOSTNAME} {
+	encode zstd gzip
+	reverse_proxy app:3000
+}
+
+# Sandbox origin — prebuilt static files only. It proxies nothing, so generated
+# code has no route back into the application from here (§6, §14).
+{$SETUN_SANDBOX_HOSTNAME} {
+	encode zstd gzip
+	root * /srv/sandbox
+	file_server
+}

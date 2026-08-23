@@ -1,0 +1,42 @@
+# CLIProxyAPI configuration — pinned image v7.2.140, unmodified upstream (PRD §9).
+#
+# This is the operator's gateway file, not Setun's: provider accounts (API keys and
+# subscription OAuth logins) are enrolled here and through CPA's own login flows on
+# the host. Setun neither stores nor manages provider enrolment, and no classroom,
+# student, or credential data is ever stored in CPA.
+#
+# Reference: https://github.com/router-for-me/CLIProxyAPI
+#            local checkout: ../CLIProxyAPI (config.example.yaml lists every option)
+
+# Bind inside the container only. Compose publishes no port for this service, so
+# CPA is reachable exclusively from the app over the internal network (§6).
+host: ""
+port: 8317
+
+# Listener authentication. This list is what the app authenticates with; the value
+# must equal SETUN_CPA_LISTENER_KEY in .env (§9).
+api-keys:
+  - "replace-with-the-value-of-SETUN_CPA_LISTENER_KEY"
+
+remote-management:
+  # The management API can rewrite provider configuration, so it is disabled
+  # outright. An empty secret-key means CPA registers no /v0/management routes at
+  # all — they return 404 rather than being merely guarded (§9, §21).
+  # Leaving MANAGEMENT_PASSWORD unset in the environment is part of this: setting it
+  # re-enables the routes.
+  secret-key: ""
+  allow-remote: false
+  # No control panel asset is downloaded or served, and it never self-updates (§9).
+  disable-control-panel: true
+  disable-auto-update-panel: true
+
+# Debug logging off: request logging at normal levels must not carry prompt or
+# response content (§16, §21).
+debug: false
+
+pprof:
+  enable: false
+
+# Untrusted in-process code. Off.
+plugins:
+  enabled: false
