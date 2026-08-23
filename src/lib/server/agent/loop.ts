@@ -3,6 +3,8 @@ import type { DialectName, GatewayAdapter } from "../gateway/adapter";
 import type { GatewayMessage } from "../gateway/dialect";
 import { GatewayError } from "../gateway/errors";
 import type { GatewayEvent, TurnEndReason } from "../gateway/events";
+import { estimateTokens, resolveUsage } from "../gateway/usage";
+import { BUDGET_PRESETS, type BudgetSettings, TurnBudget } from "./budgets";
 import { buildSystemPrompt, type SystemPromptLayers } from "./system-prompt";
 
 /**
@@ -13,9 +15,8 @@ import { buildSystemPrompt, type SystemPromptLayers } from "./system-prompt";
  * exhausted. Plain chat is the zero-tool case."
  *
  * M1 is that zero-tool case: one gateway call per turn. Tool execution slots
- * into the marked point in Phase 3.6 and budget enforcement into Phase 2.7 —
- * the loop already terminates on a single `done` event carrying a reason, which
- * is the shape both need.
+ * into the marked point in Phase 3.6. The per-turn budget layer of §10 is
+ * enforced here — this is the only place that knows where a clean boundary is.
  */
 
 export interface RunTurnInput {
@@ -25,8 +26,18 @@ export interface RunTurnInput {
   /** The active path of the message tree, oldest first (§10). */
   readonly path: readonly Pick<Message, "role" | "parts">[];
   readonly promptLayers?: SystemPromptLayers;
+  /**
+   * The classroom's per-turn caps (§10).
+   *
+   * Defaulted to the Standard preset rather than to "unlimited": Standard is
+   * what Appendix A gives a classroom, and a caller that forgets to pass
+   * budgets should get the shipped policy, not none.
+   */
+  readonly budgets?: BudgetSettings;
   /** Aborting the turn cancels the upstream request (§10). */
   readonly signal?: AbortSignal;
+  /** Injectable clock, so the wall-clock cap is testable without waiting. */
+  readonly now?: () => number;
 }
 
 /** Flatten a stored message's parts into the text the dialect sends. */
@@ -58,33 +69,88 @@ export function assembleContext(
  */
 export async function* runTurn(input: RunTurnInput): AsyncGenerator<GatewayEvent> {
   const messages = assembleContext(input.path, input.promptLayers);
+  const now = input.now ?? Date.now;
+  const budget = new TurnBudget(input.budgets ?? BUDGET_PRESETS.standard, now());
+
+  /**
+   * Linked to the caller's signal so a per-turn cap cancels the upstream
+   * request exactly as an abort does. Without it, a generation that has already
+   * blown its token cap keeps costing tokens after the loop stopped reading.
+   */
+  const upstream = new AbortController();
+  const relayAbort = () => upstream.abort();
+  if (input.signal?.aborted) upstream.abort();
+  else input.signal?.addEventListener("abort", relayAbort, { once: true });
 
   let reason: TurnEndReason = "stop";
+  let completion = "";
+  let sawUsage = false;
+  /** Whether the request reached the provider at all — see `trailingUsage`. */
+  let reachedUpstream = false;
 
   try {
     for await (const event of input.adapter.streamChat(input.dialect, {
       model: input.model,
       messages,
-      signal: input.signal,
+      signal: upstream.signal,
     })) {
+      reachedUpstream = true;
+
+      if (event.type === "text-delta") {
+        completion += event.text;
+        // A provisional figure while the step is in flight, so the token cap can
+        // bind mid-stream; the gateway's own number supersedes it below.
+        budget.recordProvisionalTokens(estimateTokens(event.text));
+      }
+      if (event.type === "usage") {
+        sawUsage = true;
+        budget.settleStepTokens(event.inputTokens + event.outputTokens);
+      }
+
       yield event;
+
+      // The clean boundary §10 asks for: the event just yielded is durable, the
+      // student keeps every word that reached them, and nothing further is read.
+      if (budget.exceeded(now()) !== null) {
+        reason = "budget";
+        upstream.abort();
+        break;
+      }
     }
 
+    budget.recordStep();
+
     // Phase 3.6 continues the loop here: if the model requested tools, execute
-    // the permitted ones, append their results, and call the adapter again.
-    // The zero-tool case terminates as soon as the model stops.
+    // the permitted ones, append their results, and call the adapter again —
+    // re-checking `budget.exceeded()` before each further call. The zero-tool
+    // case terminates as soon as the model stops.
   } catch (cause) {
-    if (isAbort(cause, input.signal)) {
-      reason = "aborted";
-    } else {
-      reason = "error";
-      yield {
-        type: "error",
-        // One student-facing message for every gateway failure; the upstream
-        // detail stays in the operator log (§9, §21).
-        message: cause instanceof GatewayError ? cause.code : "unavailable",
-      };
+    // The abort we issued ourselves surfacing as a cancelled read: the reason is
+    // already decided, and a budget stop is not a failure.
+    if (reason !== "budget") {
+      if (isAbort(cause, input.signal)) {
+        reason = "aborted";
+      } else {
+        reason = "error";
+        yield {
+          type: "error",
+          // One student-facing message for every gateway failure; the upstream
+          // detail stays in the operator log (§9, §21).
+          message: cause instanceof GatewayError ? cause.code : "unavailable",
+        };
+      }
     }
+  } finally {
+    input.signal?.removeEventListener("abort", relayAbort);
+  }
+
+  // An abort or a budget stop cuts the dialect off before it reports usage, and
+  // those tokens were still spent: usage is never counted as zero (§10).
+  if (!sawUsage && reachedUpstream) {
+    yield resolveUsage({
+      promptText: messages.map((message) => message.content).join("\n"),
+      completionText: completion,
+    });
   }
 
   yield { type: "done", reason };

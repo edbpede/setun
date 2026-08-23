@@ -1,8 +1,10 @@
 import type { AppDatabase } from "../db/client";
 import { setConversationTitle } from "../db/queries/conversations";
 import { getUtilityAlias } from "../db/queries/model-aliases";
-import { recordUsageEvent } from "../db/queries/usage";
+import { classroomDailyConsumption, recordUsageEvent } from "../db/queries/usage";
+import type { Classroom } from "../db/schema";
 import type { GatewayAdapter } from "../gateway/adapter";
+import { budgetDayRange, budgetsOf, mayRunUtilityWork } from "./budgets";
 
 /**
  * Conversation titles (PRD §10).
@@ -11,9 +13,8 @@ import type { GatewayAdapter } from "../gateway/adapter";
  * the first exchange, falling back to a truncation of the first user message."
  *
  * Utility work counts toward the per-classroom daily cap but never a student's
- * personal allowance, so its usage event records a null student (§10). Phase 2.7
- * adds the cap check that skips this work and uses the fallback when the
- * classroom cap is exhausted.
+ * personal allowance, so its usage event records a null student — and when that
+ * cap is exhausted the work is skipped and the fallback used (§10).
  */
 
 const MAX_TITLE_LENGTH = 60;
@@ -61,14 +62,26 @@ export async function generateConversationTitle(input: {
   adapter: GatewayAdapter;
   conversationId: string;
   studentId: string;
-  classroomId: string;
+  classroom: Classroom;
   firstMessage: string;
+  now?: Date;
 }): Promise<string> {
-  const { db } = input;
+  const { db, classroom } = input;
+  const now = input.now ?? new Date();
   const fallback = fallbackTitle(input.firstMessage);
   const utility = getUtilityAlias(db);
 
-  if (!utility?.available) {
+  // "When the classroom cap is exhausted, utility work is skipped and its
+  // fallback used" (§10) — a title is never worth the last of a class's day.
+  const range = budgetDayRange(classroom.timezone, now);
+  const classroomTokens = classroomDailyConsumption(db, {
+    classroomId: classroom.id,
+    from: range.start,
+    until: range.end,
+  });
+  const affordable = mayRunUtilityWork(budgetsOf(classroom), { classroomTokens });
+
+  if (!utility?.available || !affordable) {
     setConversationTitle(db, {
       conversationId: input.conversationId,
       studentId: input.studentId,
@@ -90,7 +103,7 @@ export async function generateConversationTitle(input: {
       if (event.type === "usage") {
         // Null student: the classroom cap only, never a personal allowance (§10).
         recordUsageEvent(db, {
-          classroomId: input.classroomId,
+          classroomId: classroom.id,
           studentId: null,
           modelAliasId: utility.id,
           inputTokens: event.inputTokens,

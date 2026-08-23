@@ -1,3 +1,4 @@
+import { classroomStateChannel } from "../classroom/state-channel";
 import type { AppDatabase } from "../db/client";
 import { setActiveLeaf } from "../db/queries/conversations";
 import { appendMessage, recordMessageUsage } from "../db/queries/messages";
@@ -6,6 +7,7 @@ import { recordUsageEvent } from "../db/queries/usage";
 import type { Message, ModelAlias } from "../db/schema";
 import type { GatewayAdapter } from "../gateway/adapter";
 import type { GatewayEvent } from "../gateway/events";
+import type { BudgetSettings } from "./budgets";
 import { liveTurns } from "./live-turns";
 import { runTurn } from "./loop";
 import type { SystemPromptLayers } from "./system-prompt";
@@ -31,6 +33,8 @@ export interface ExecuteTurnInput {
   readonly parentMessageId: string | null;
   readonly path: readonly Pick<Message, "role" | "parts">[];
   readonly promptLayers?: SystemPromptLayers;
+  /** The classroom's per-turn caps; the loop stops the turn at a clean boundary (§10). */
+  readonly budgets?: BudgetSettings;
 }
 
 /**
@@ -55,6 +59,7 @@ export async function executeTurn(input: ExecuteTurnInput): Promise<void> {
       model: input.alias.gatewayModelId,
       path: input.path,
       promptLayers: input.promptLayers,
+      budgets: input.budgets,
       signal,
     })) {
       if (event.type === "text-delta") text += event.text;
@@ -139,6 +144,10 @@ function persistOutcome(
       outputTokens: input.usage.outputTokens,
       estimated: input.usage.estimated,
     });
+
+    // The allowance just moved, so every tab watching this classroom is told —
+    // without which a pupil's own meter would lag by up to a poll interval (§8).
+    classroomStateChannel.publish(input.classroomId);
   }
 
   if (assistantMessage) {
