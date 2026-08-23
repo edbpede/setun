@@ -258,71 +258,71 @@ hooks = [
 
 ### 3.1 MCP client (§11)
 
-- [ ] `src/lib/server/mcp/transport.ts` — Streamable HTTP only; the deprecated HTTP+SSE transport is not implemented
-- [ ] `src/lib/server/mcp/negotiation.ts` — `server/discover` probe with legacy-handshake fallback; negotiated version stored per server
-- [ ] `src/lib/server/mcp/legacy/` — adapters at the transport edge (absent result-type field, legacy session semantics, both error-code ranges) — not a union-of-all-versions abstraction (§11)
-- [ ] `src/lib/server/mcp/catalogue.ts` — server-wide tool-catalogue cache honouring freshness and cache-scope hints; filtered per classroom; no per-student connections (§11)
-- [ ] `bun test`: version negotiation, legacy normalisation, catalogue cache behaviour (§22)
+- [x] `src/lib/server/mcp/transport.ts` — Streamable HTTP only; the deprecated HTTP+SSE transport is not implemented
+- [x] `src/lib/server/mcp/negotiation.ts` — `server/discover` probe with legacy-handshake fallback; negotiated version stored per server
+- [x] `src/lib/server/mcp/legacy/` — adapters at the transport edge (absent result-type field, legacy session semantics, both error-code ranges) — not a union-of-all-versions abstraction (§11)
+- [x] `src/lib/server/mcp/catalogue.ts` — server-wide tool-catalogue cache honouring freshness and cache-scope hints; filtered per classroom; no per-student connections (§11)
+- [x] `bun test`: version negotiation, legacy normalisation, catalogue cache behaviour (§22)
 
 ### 3.2 Server configuration (§11)
 
-- [ ] On-disk, version-controlled MCP configuration file (the third operator file, §6.2): endpoints, credential references by env-var name — never in the database; validated at boot with clear failure
-- [ ] Header-injection from tool parameters disabled or strictly allowlisted per server (§11); sampling, roots, and logging not implemented (§11)
+- [x] On-disk, version-controlled MCP configuration file (the third operator file, §6.2): endpoints, credential references by env-var name — never in the database; validated at boot with clear failure
+- [x] Header-injection from tool parameters disabled or strictly allowlisted per server (§11); sampling, roots, and logging not implemented (§11)
 
 ### 3.3 Tool enablement (§11, §19)
 
-- [ ] `mcp-server` and `mcp-tool` schema (configuration reference, negotiated version, per-tool enablement, sensitive flag) + Classroom↔McpTool allowlist join
-- [ ] `(educator)/` MCP routes: toggle configured servers, select individual tools per classroom, set sensitive flags, show negotiated version and reachability
-- [ ] Security tests: disabled tool refused at the API (§22)
+- [x] `mcp-server` and `mcp-tool` schema (configuration reference, negotiated version, per-tool enablement, sensitive flag) + Classroom↔McpTool allowlist join
+- [x] `(educator)/` MCP routes: toggle configured servers, select individual tools per classroom, set sensitive flags, show negotiated version and reachability
+- [x] Security tests: disabled tool refused at the API (§22)
 
 ### 3.4 Permission modes (§11)
 
-- [ ] `src/lib/server/agent/permissions.ts` — mode application before any tool executes: strict (always ask), standard (sensitive-flagged ask), open (never ask; prominent panel warning on selection); declined calls return a refusal result and the loop continues
-- [ ] Permission-request event flows through the existing normalised stream; `src/lib/components/chat/` permission prompt with unmissable server attribution (§11)
-- [ ] Vitest Browser Mode: permission prompt approve/decline; integration tests: round trip in each mode (§22)
+- [x] `src/lib/server/agent/permissions.ts` — mode application before any tool executes: strict (always ask), standard (sensitive-flagged ask), open (never ask; prominent panel warning on selection); declined calls return a refusal result and the loop continues
+- [x] Permission-request event flows through the existing normalised stream; `src/lib/components/chat/` permission prompt with unmissable server attribution (§11)
+- [x] Vitest Browser Mode: permission prompt approve/decline; integration tests: round trip in each mode (§22)
 
 ### 3.5 Elicitation (§11)
 
-- [ ] Interim-result handling in the loop: surface to the student with server attribution, restricted input types only (free text, number, boolean, single choice), retry the original request with responses attached; nothing resembling a credential prompt is ever displayed (§11)
-- [ ] Integration test: elicitation round trip (§22)
+- [x] Interim-result handling in the loop: surface to the student with server attribution, restricted input types only (free text, number, boolean, single choice), retry the original request with responses attached; nothing resembling a credential prompt is ever displayed (§11)
+- [x] Integration test: elicitation round trip (§22)
 
 ### 3.6 Tool execution in the loop (§10, §11)
 
-- [ ] `src/lib/server/agent/loop.ts` — execute permitted tool calls, append results, repeat until stop or budget; per-turn step cap from Phase 2 applies; tool results treated as untrusted input — no MCP server holds privileges over application data, no student credential ever passed into a tool call (§11)
-- [ ] Abort during tool execution cancels the running execution (§10)
-- [ ] `bun test`: loop termination with tools; integration: multi-step tool turns
+- [x] `src/lib/server/agent/loop.ts` — execute permitted tool calls, append results, repeat until stop or budget; per-turn step cap from Phase 2 applies; tool results treated as untrusted input — no MCP server holds privileges over application data, no student credential ever passed into a tool call (§11)
+- [x] Abort during tool execution cancels the running execution (§10)
+- [x] `bun test`: loop termination with tools; integration: multi-step tool turns
 
 ### 3.7 Skills registry (§12)
 
-- [ ] `skill` schema: origin (panel/upload/import/student), owner, body, resources, enablement, approval state, reserved executable marker (deferred, §12); Classroom↔Skill allowlist with per-student rows
-- [ ] `src/lib/server/skills/registry.ts` — resolution of active skills per student; name + one-line description injected into the system prompt (last layer, §10); full body via the **internal load tool** — never a permission prompt in any mode, but consuming a per-turn step (§12)
-- [ ] `bun test`: skill index injection, load-tool resolution, enablement resolution per classroom and per student
+- [x] `skill` schema: origin (panel/upload/import/student), owner, body, resources, enablement, approval state, reserved executable marker (deferred, §12); Classroom↔Skill allowlist with per-student rows
+- [x] `src/lib/server/skills/registry.ts` — resolution of active skills per student; name + one-line description injected into the system prompt (last layer, §10); full body via the **internal load tool** — never a permission prompt in any mode, but consuming a per-turn step (§12)
+- [x] `bun test`: skill index injection, load-tool resolution, enablement resolution per classroom and per student
 
 ### 3.8 Educator skill library (§12)
 
-- [ ] `(educator)/` skills routes: panel authoring, file upload, skills.sh server-side browsing and import (best-effort; degrades to manual upload, §12)
-- [ ] Imported and uploaded skill text is untrusted: never executed, arrives **disabled**, activates only by explicit educator action (§12, §21); per-classroom and per-student enablement
-- [ ] Security test: disabled skill absent from the prompt and refused by the load tool (§22)
+- [x] `(educator)/` skills routes: panel authoring, file upload, skills.sh server-side browsing and import (best-effort; degrades to manual upload, §12)
+- [x] Imported and uploaded skill text is untrusted: never executed, arrives **disabled**, activates only by explicit educator action (§12, §21); per-classroom and per-student enablement
+- [x] Security test: disabled skill absent from the prompt and refused by the load tool (§22)
 
 ### 3.9 Student skill authoring (§12)
 
-- [ ] Student-facing authoring UI; student skills apply only to that student's conversations
-- [ ] Authoring policy per classroom: immediate-with-oversight (default; panel lists every student skill with view/disable/delete), pre-approval (new and edited versions inactive until approved — approval queue in `(educator)/`), or disabled entirely
-- [ ] Vitest Browser Mode: authoring form; security tests: cross-student skill isolation
+- [x] Student-facing authoring UI; student skills apply only to that student's conversations
+- [x] Authoring policy per classroom: immediate-with-oversight (default; panel lists every student skill with view/disable/delete), pre-approval (new and edited versions inactive until approved — approval queue in `(educator)/`), or disabled entirely
+- [x] Vitest Browser Mode: authoring form; security tests: cross-student skill isolation
 
 ### 3.10 Image generation (§15)
 
-- [ ] `src/lib/server/storage/` — local file storage for generated images, served only by Setun to their owner; no external image URL ever reaches the browser
-- [ ] Single server-side execution path through the gateway adapter, refused on non-flagged aliases before any gateway call; two triggers converge on it: the internal generate-image tool (exposed to the loop when the classroom allowlists a generation-capable alias, subject to the permission mode) and the composer's explicit image mode
-- [ ] Accounting: fixed token-equivalent per image (default 10k, panel-editable, Appendix A) debited against the student allowance and classroom cap
-- [ ] Integration tests: both trigger paths, refusal on unflagged alias, debit recorded
+- [x] `src/lib/server/storage/` — local file storage for generated images, served only by Setun to their owner; no external image URL ever reaches the browser
+- [x] Single server-side execution path through the gateway adapter, refused on non-flagged aliases before any gateway call; two triggers converge on it: the internal generate-image tool (exposed to the loop when the classroom allowlists a generation-capable alias, subject to the permission mode) and the composer's explicit image mode
+- [x] Accounting: fixed token-equivalent per image (default 10k, panel-editable, Appendix A) debited against the student allowance and classroom cap
+- [x] Integration tests: both trigger paths, refusal on unflagged alias, debit recorded
 
 ### 3.11 Attachments (§10)
 
-- [ ] `src/lib/server/storage/attachments.ts` — server-side validation: content sniffing against the educator's type allowlist, size caps (Appendix A: images ≤ 5 MB, text ≤ 256 KB, ≤ 5 per message); stored outside any web root, served only to the owner with restrictive content-type headers, never to or from the sandbox origin (§21); deleted with their conversation
-- [ ] Policy per the granularity principle: classroom toggle, per-student overrides, allowed-type list (§10); image attachments only on image-input-flagged aliases — friendly refusal before any gateway call; text/code files inlined as text
-- [ ] Composer attachment UI
-- [ ] `bun test`: validation matrix; security tests: cross-student attachment access, type and size enforcement (§22)
+- [x] `src/lib/server/storage/attachments.ts` — server-side validation: content sniffing against the educator's type allowlist, size caps (Appendix A: images ≤ 5 MB, text ≤ 256 KB, ≤ 5 per message); stored outside any web root, served only to the owner with restrictive content-type headers, never to or from the sandbox origin (§21); deleted with their conversation
+- [x] Policy per the granularity principle: classroom toggle, per-student overrides, allowed-type list (§10); image attachments only on image-input-flagged aliases — friendly refusal before any gateway call; text/code files inlined as text
+- [x] Composer attachment UI
+- [x] `bun test`: validation matrix; security tests: cross-student attachment access, type and size enforcement (§22)
 
 ---
 

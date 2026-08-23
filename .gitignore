@@ -40,3 +40,7 @@ project.inlang/cache/
 /cpa/config.yaml
 !/cpa/config.example.yaml
 /mcp.json
+
+# The development database and file storage. Attachments and generated images
+# land here, and they are a pupil's own work (PRD §16, §21).
+/data

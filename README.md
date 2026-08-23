@@ -91,6 +91,14 @@ the Compose file, one `.env`, and the MCP configuration file; CPA's own `cpa/con
 the gateway operator's file, where provider accounts are enrolled on the host (PRD §9).
 
 ```sh
-cp .env.example .env    # fill every variable; boot fails loudly on a missing one
+cp .env.example .env            # fill every variable; boot fails loudly on a missing one
+cp mcp.example.json mcp.json    # the tool servers this installation offers (PRD §11)
 docker compose up -d
 ```
+
+`mcp.json` is where MCP servers are defined: an endpoint is a security decision, so it lives
+in reviewable configuration rather than in the database or the panel, and credentials are
+referenced there by the *name* of an environment variable. The panel switches configured
+servers on, chooses which of their tools each class may use, and marks the ones that should
+ask before they run — it can add nothing. A deployment that offers no tools keeps the file
+with an empty `servers` object.
