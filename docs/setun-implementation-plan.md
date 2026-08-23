@@ -10,7 +10,7 @@ This plan says *what to build in what order*. The PRD says *what it must do* —
 
 Follow the normative coding guidelines in `.agents/rules/svelte5-sveltekit-app.md`. Every implementation session reads that file at session start, before writing code. It is authoritative for implementation idiom throughout: runes not stores, snippets not slots, `$app/state` not `$app/stores`, callback props not `createEventDispatcher`, `error()`/`redirect()` called not thrown, `Bun.password` for the educator credential, `event.locals` for request state (never module-scope mutable server state), the four `$env` modules (never `process.env`), hand-written `components.json` (never `shadcn-svelte init` under UnoCSS), the `presetWind4` theme-key corrections (`radius` and `font`, single-string font values), the `.ts` content-pipeline include, the cursor preflight restoration, and the per-layer test-tool table (`bun test` / Vitest Browser Mode / Playwright). SvelteKit remote functions are **not used** (§5) — data flows through load functions, form actions, and `+server.ts` endpoints only.
 
-All UI and UX design work uses the `frontend-design` skill, with the tweakcn clean-slate theme as the baseline vocabulary (§5).
+All UI and UX design work uses the `frontend-design` skill (`~/.agents/skills/frontend-design`), with the tweakcn clean-slate theme as the baseline vocabulary (§5).
 
 ---
 
