@@ -44,10 +44,27 @@ export function stubFetch(
     };
     calls.push(call);
 
-    if (init?.signal?.aborted) {
+    const signal = init?.signal;
+    if (signal?.aborted) {
       throw Object.assign(new Error("aborted"), { name: "AbortError" });
     }
-    return responder(call);
+
+    const response = responder(call);
+    if (!signal) return response;
+
+    // A real `fetch` rejects the moment its signal aborts, however long the
+    // upstream takes. A stub that only checked at entry would let a test think
+    // a timeout worked when nothing had cancelled.
+    return Promise.race([
+      response,
+      new Promise<Response>((_, reject) => {
+        signal.addEventListener(
+          "abort",
+          () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })),
+          { once: true },
+        );
+      }),
+    ]);
   }) as typeof globalThis.fetch;
 
   return { fetch: fetchImpl, calls };

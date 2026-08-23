@@ -1,5 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import * as v from "valibot";
+import { budgetsOf } from "$lib/server/agent/budgets";
 import { assertNoTurnInFlight, TurnInFlightError } from "$lib/server/agent/concurrency";
 import { executeTurn } from "$lib/server/agent/runner";
 import { sseResponse, TURN_ID_HEADER } from "$lib/server/agent/sse-response";
@@ -7,6 +8,8 @@ import { streamTurnEvents } from "$lib/server/agent/stream";
 import { generateConversationTitle } from "$lib/server/agent/title";
 import { requireStudentApi } from "$lib/server/auth/guards";
 import { getDb, getGatewayAdapter } from "$lib/server/boot";
+import { checkModelAccess } from "$lib/server/classroom/enforcement";
+import { resolveStudentSettings } from "$lib/server/classroom/settings";
 import { getOwnedConversation, setActiveLeaf } from "$lib/server/db/queries/conversations";
 import { appendMessage, appendSibling, getActivePath } from "$lib/server/db/queries/messages";
 import { getAliasById } from "$lib/server/db/queries/model-aliases";
@@ -19,6 +22,11 @@ import type { RequestHandler } from "./$types";
  * Thin by §6.1: parse, authorise, delegate to `$lib/server/agent`, shape the
  * response. The turn runs detached from this request, so the same
  * `streamTurnEvents` serves this response and a later resume — one code path.
+ *
+ * This is a path that can reach a model, so it passes through the one
+ * enforcement guard before anything else happens (§8, §21). The composer's own
+ * state is never trusted: a client that never heard about a lock is refused
+ * here exactly as one that did.
  */
 
 const SendSchema = v.object({
@@ -44,8 +52,27 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   const conversation = getOwnedConversation(db, { conversationId, studentId: student.id });
   if (!conversation) error(404, "Not found");
 
+  // Availability, the classroom allowlist and the daily budgets, in one guard.
+  const access = checkModelAccess({
+    db,
+    student,
+    modelAliasId: conversation.modelAliasId,
+  });
+
+  if (!access.allowed) {
+    // A machine-readable code, not a sentence: the browser renders its own
+    // Paraglide message, so no server string reaches a pupil (§8, §21).
+    return json(
+      {
+        error: access.reason,
+        nextOpeningAt: access.availability.nextOpeningAt?.toISOString() ?? null,
+      },
+      { status: 403 },
+    );
+  }
+
   const alias = getAliasById(db, conversation.modelAliasId);
-  if (!alias?.available) error(409, "Model unavailable");
+  if (!alias) error(409, "Model unavailable");
 
   // One turn in flight per student, across all of their conversations (§10).
   try {
@@ -81,6 +108,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     parentMessageId: prompt.id,
   });
 
+  // The educator's steering instrument, inherited invisibly by every
+  // conversation in the classroom (§10).
+  const settings = resolveStudentSettings(access.classroom, student);
+
   // Detached on purpose: a closed tab must not cancel the turn, because the
   // student can resume it (§10).
   void executeTurn({
@@ -93,6 +124,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     alias,
     parentMessageId: prompt.id,
     path: getActivePath(db, prompt.id),
+    promptLayers: {
+      classroomInstructions: settings.classroomInstructions,
+      studentInstructions: settings.studentInstructions,
+    },
+    budgets: budgetsOf(access.classroom),
   });
 
   // Titles are generated after the first exchange, asynchronously, and never
@@ -103,7 +139,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       adapter: getGatewayAdapter(),
       conversationId,
       studentId: student.id,
-      classroomId: student.classroomId,
+      classroom: access.classroom,
       firstMessage: text,
     });
   }

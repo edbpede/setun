@@ -1,5 +1,6 @@
 import type { AppDatabase } from "../db/client";
-import { createClassroom, listClassrooms } from "../db/queries/classrooms";
+import { allowAlias } from "../db/queries/classroom-aliases";
+import { createClassroom, listClassrooms, setClassroomState } from "../db/queries/classrooms";
 import { createAlias, listAvailableAliases } from "../db/queries/model-aliases";
 import { provisionStudent } from "./provisioning";
 
@@ -34,14 +35,23 @@ export async function seedDevelopmentData(
   // Two aliases: one for chat, one designated for internal utility work (§10).
   const model = input.defaultModelId ?? "gpt-4o-mini";
   if (listAvailableAliases(db).length === 0) {
-    createAlias(db, { name: "Balanced", gatewayModelId: model, dialect: "openai" });
+    const chat = createAlias(db, { name: "Balanced", gatewayModelId: model, dialect: "openai" });
     createAlias(db, {
       name: "Utility",
       gatewayModelId: model,
       dialect: "openai",
       isUtility: true,
     });
+
+    // An absent allowlist row is a denial (§8, §9), so the seeded classroom is
+    // given its chat alias explicitly. The utility alias is not allowlisted:
+    // internal work does not go through the classroom allowlist (§10).
+    allowAlias(db, { classroomId: classroom.id, modelAliasId: chat.id });
   }
+
+  // A classroom with no schedule is closed, which is the right default for a
+  // real class and the wrong one for a first boot nobody has configured yet (§8).
+  setClassroomState(db, { classroomId: classroom.id, state: "open" });
 
   const { student, code } = await provisionStudent(db, {
     classroomId: classroom.id,

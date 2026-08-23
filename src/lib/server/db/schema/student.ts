@@ -1,5 +1,5 @@
-import { sqliteTable, text, unique } from "drizzle-orm/sqlite-core";
-import { classroom } from "./classroom";
+import { integer, sqliteTable, text, unique } from "drizzle-orm/sqlite-core";
+import { classroom, INTERFACE_LANGUAGES } from "./classroom";
 import { createdAt, primaryId, updatedAt } from "./helpers";
 
 /**
@@ -23,6 +23,21 @@ export const student = sqliteTable(
     status: text({ enum: ["active", "disabled"] })
       .notNull()
       .default("active"),
+    /**
+     * Educator-authored, applies to this student alone (§10).
+     *
+     * Layered after the classroom instructions, so it refines rather than
+     * replaces them — extra scaffolding for one pupil.
+     */
+    instructions: text(),
+    /** Student-set override of the classroom interface language (§8, §18). */
+    interfaceLanguage: text({ enum: INTERFACE_LANGUAGES }),
+    /**
+     * Per-student attachment override; null follows the classroom (§10).
+     *
+     * The granularity principle: a classroom toggle with per-student overrides (§2).
+     */
+    attachmentsEnabled: integer({ mode: "boolean" }),
     /** HMAC-SHA-256 of the access code under the env pepper. Uniquely indexed for direct lookup (§7). */
     credentialDigest: text().notNull().unique(),
     /** Non-secret trailing characters of the code. Identifies a card; cannot reconstruct it (§7). */

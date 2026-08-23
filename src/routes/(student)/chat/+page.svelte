@@ -6,9 +6,14 @@ import SetunMark from "$lib/components/brand/SetunMark.svelte";
 import ChatMessage from "$lib/components/chat/ChatMessage.svelte";
 import Composer from "$lib/components/chat/Composer.svelte";
 import StreamingMessage from "$lib/components/chat/StreamingMessage.svelte";
+import AllowanceMeter from "$lib/components/classroom/AllowanceMeter.svelte";
+import ClassroomClosed from "$lib/components/classroom/ClassroomClosed.svelte";
 import * as m from "$lib/paraglide/messages";
+import { getLocale } from "$lib/paraglide/runtime";
+import { ClassroomState } from "$lib/state/classroom.svelte";
 import { ComposerState } from "$lib/state/composer.svelte";
 import { ConversationState } from "$lib/state/conversation.svelte";
+import { refusalMessage } from "$lib/state/refusals";
 import type { PageProps } from "./$types";
 
 /**
@@ -22,12 +27,28 @@ let { data }: PageProps = $props();
 
 const conversation = new ConversationState();
 const composer = new ComposerState();
+const classroom = new ClassroomState();
 
 let scroller = $state<HTMLDivElement | null>(null);
 let refusal = $state<string | null>(null);
 
+/**
+ * The status the page renders.
+ *
+ * The load wins whenever the page data is refreshed — every turn ends with an
+ * `invalidateAll`, so the allowance figure is exact then — and the channel
+ * carries it in between, which is what makes a lock visible without a reload.
+ */
+const status = $derived(classroom.status ?? data.status);
+
 /** Guard: a turn we already consumed or are consuming. */
 let consumedTurnId = $state<string | null>(null);
+
+// The push channel keeps the room's state current, so a pupil sees a lock land
+// rather than discovering it by being refused. Enforcement never depends on it:
+// the composer may linger for a moment, and the send is refused all the same
+// (PRD §6, §8).
+$effect(() => classroom.connect());
 
 // Re-seed from the server whenever the loaded conversation changes.
 $effect(() => {
@@ -72,6 +93,16 @@ async function consume(url: string, init: RequestInit): Promise<void> {
     if (response.status === 409) {
       refusal = m.chat_turn_in_flight();
       conversation.turn.detach();
+      return;
+    }
+    if (response.status === 403) {
+      // The server refused this turn — locked, out of hours, an alias the class
+      // may not use, or an exhausted allowance. A friendly sentence, chosen
+      // from a code: no server string is ever shown to a pupil (§8, §10, §21).
+      const body = await response.json().catch(() => null);
+      refusal = refusalMessage(body?.error);
+      conversation.turn.detach();
+      await invalidateAll();
       return;
     }
     if (!response.ok) {
@@ -152,6 +183,9 @@ async function abort(): Promise<void> {
     </div>
 
     <div class="flex shrink-0 items-center gap-2">
+      <div class="hidden w-28 sm:block">
+        <AllowanceMeter allowance={status.allowance} compact />
+      </div>
       <form method="POST" action="?/create" use:enhance>
         <button
           type="submit"
@@ -160,6 +194,25 @@ async function abort(): Promise<void> {
           {m.chat_new_conversation()}
         </button>
       </form>
+      <!--
+        The pupil's own language, overriding the classroom setting for them
+        alone (§8, §18). It moves to the dashboard when that arrives; it lives
+        here now so the setting is reachable at all.
+      -->
+      <form method="POST" action="?/language" use:enhance class="hidden sm:block">
+        <label class="sr-only" for="interface-language">{m.student_language_label()}</label>
+        <select
+          id="interface-language"
+          name="language"
+          value={getLocale()}
+          onchange={(event) => event.currentTarget.form?.requestSubmit()}
+          class="h-7 rounded-md border border-input bg-background px-1.5 text-xs text-foreground"
+        >
+          <option value="da">{m.educator_language_da()}</option>
+          <option value="en">{m.educator_language_en()}</option>
+        </select>
+      </form>
+
       <form method="POST" action="?/logout" use:enhance>
         <button type="submit" class="px-1 text-xs text-muted-foreground hover:text-foreground">
           {m.chat_sign_out()}
@@ -168,6 +221,14 @@ async function abort(): Promise<void> {
     </div>
   </header>
 
+  {#if !status.open}
+    <!--
+      Closed: the status screen replaces the conversation entirely (§8). Hiding
+      the composer is a courtesy, not the control — every send is refused by the
+      server whether or not this tab ever heard about the lock (§21).
+    -->
+    <ClassroomClosed {status} />
+  {:else}
   <div bind:this={scroller} class="flex-1 overflow-y-auto">
     <div class="mx-auto flex max-w-2xl flex-col gap-4 p-3">
       {#if conversation.messages.length === 0 && !conversation.hasPendingAssistantText}
@@ -209,5 +270,6 @@ async function abort(): Promise<void> {
         {m.chat_new_conversation()}
       </button>
     </form>
+  {/if}
   {/if}
 </div>

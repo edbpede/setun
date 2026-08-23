@@ -14,7 +14,7 @@ import type { GatewayEvent } from "$lib/server/gateway/events";
  */
 
 /** Why the last turn ended, when it ended in a way worth telling the student. */
-export type TurnNotice = "aborted" | "interrupted" | "error" | null;
+export type TurnNotice = "aborted" | "interrupted" | "error" | "budget" | null;
 
 export class StreamingTurn {
   /** Text accumulated so far. Rendered as plain preformatted text while streaming (§20). */
@@ -71,6 +71,9 @@ export class StreamingTurn {
         if (event.reason === "aborted") this.notice = "aborted";
         else if (event.reason === "interrupted") this.notice = "interrupted";
         else if (event.reason === "error") this.notice = "error";
+        // A per-turn cap stopped the turn at a clean boundary. The partial
+        // answer stays on screen and the notice is friendly, never an error (§10).
+        else if (event.reason === "budget") this.notice = "budget";
         break;
       default:
         // Tool and permission events arrive in Phase 3; ignored until then.

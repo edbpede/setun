@@ -21,6 +21,12 @@ const nonEmpty = (description: string) =>
 const ConfigSchema = v.object({
   /** Pepper for the student-code HMAC. Changing it invalidates every code (§7). */
   studentCodePepper: nonEmpty("SETUN_STUDENT_CODE_PEPPER is required"),
+  /**
+   * The operator account, seeded at first boot. Re-seeding these and restarting
+   * is the password-recovery path — there is no in-application reset (§7, §6.2).
+   */
+  educatorUsername: nonEmpty("SETUN_EDUCATOR_SEED_USERNAME is required"),
+  educatorPassword: nonEmpty("SETUN_EDUCATOR_SEED_PASSWORD is required"),
   /** Shared with CPA; the only thing authenticating the gateway (§9). */
   cpaListenerKey: nonEmpty("SETUN_CPA_LISTENER_KEY is required"),
   cpaBaseUrl: v.pipe(nonEmpty("SETUN_CPA_BASE_URL is required"), v.url()),
@@ -45,6 +51,8 @@ export class ConfigurationError extends Error {
 function readEnvironment() {
   return {
     studentCodePepper: env.SETUN_STUDENT_CODE_PEPPER,
+    educatorUsername: env.SETUN_EDUCATOR_SEED_USERNAME,
+    educatorPassword: env.SETUN_EDUCATOR_SEED_PASSWORD,
     cpaListenerKey: env.SETUN_CPA_LISTENER_KEY,
     cpaBaseUrl: env.SETUN_CPA_BASE_URL ?? "http://localhost:8317",
     appOrigin: env.SETUN_APP_ORIGIN ?? "http://localhost:5173",

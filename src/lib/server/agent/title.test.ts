@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "bun:test";
 import type { AppDatabase } from "../db/client";
 import { createConversation, getOwnedConversation } from "../db/queries/conversations";
 import { createAlias } from "../db/queries/model-aliases";
+import { recordUsageEvent } from "../db/queries/usage";
 import { createTestDatabase, seedTestFixtures } from "../db/testing";
 import { GatewayAdapter } from "../gateway/adapter";
 import { streamingResponse, stubFetch } from "../gateway/testing";
@@ -50,7 +51,7 @@ function generate(adapter: GatewayAdapter, firstMessage: string, conversationId:
     adapter,
     conversationId,
     studentId: fixtures.student.id,
-    classroomId: fixtures.classroom.id,
+    classroom: fixtures.classroom,
     firstMessage,
   });
 }
@@ -179,5 +180,60 @@ describe("generateConversationTitle", () => {
         conversation.id,
       ),
     ).toBe("Forklar loops");
+  });
+});
+
+describe("the classroom cap skips utility work (plan 2.7, §10, §22)", () => {
+  it("falls back to a truncated title once the classroom cap is exhausted", async () => {
+    const utility = withUtilityAlias();
+    const conversation = newConversation();
+
+    // The class has spent its whole day, on real student work.
+    recordUsageEvent(db, {
+      classroomId: fixtures.classroom.id,
+      studentId: fixtures.student.id,
+      modelAliasId: fixtures.alias.id,
+      inputTokens: fixtures.classroom.perClassroomDailyTokens,
+      outputTokens: 0,
+      estimated: false,
+    });
+
+    let called = false;
+    const title = await generate(
+      adapterOver(() => {
+        called = true;
+        return titleStream("Loops i Python");
+      }),
+      "Forklar loops i Python for mig",
+      conversation.id,
+    );
+
+    // "When the classroom cap is exhausted, utility work is skipped and its
+    // fallback used" (§10) — so the gateway is never called at all.
+    expect(called).toBe(false);
+    expect(title).toBe("Forklar loops i Python for mig");
+    expect(utility.isUtility).toBe(true);
+  });
+
+  it("runs normally while the classroom cap still has headroom", async () => {
+    withUtilityAlias();
+    const conversation = newConversation();
+
+    recordUsageEvent(db, {
+      classroomId: fixtures.classroom.id,
+      studentId: fixtures.student.id,
+      modelAliasId: fixtures.alias.id,
+      inputTokens: 10,
+      outputTokens: 10,
+      estimated: false,
+    });
+
+    const title = await generate(
+      adapterOver(() => titleStream("Loops i Python")),
+      "Forklar loops",
+      conversation.id,
+    );
+
+    expect(title).toBe("Loops i Python");
   });
 });

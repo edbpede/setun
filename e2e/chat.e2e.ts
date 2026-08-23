@@ -44,11 +44,15 @@ test("a student logs in, chats with a streaming answer, and logs out", async ({ 
 
   // The prompt appears immediately; the answer streams in from the gateway.
   await expect(page.getByText("Forklar loops")).toBeVisible();
-  await expect(page.getByText(/Et loop gentager/)).toBeVisible({ timeout: 15_000 });
+
+  // Scoped to the assistant's message: the generated conversation title carries
+  // the same words in the header, and an unscoped match would find both (§10).
+  const answer = page.locator('[data-role="assistant"]').getByText(/Et loop gentager/);
+  await expect(answer).toBeVisible({ timeout: 15_000 });
 
   // The answer survives a reload, so it was persisted rather than only rendered.
   await page.reload();
-  await expect(page.getByText(/Et loop gentager/)).toBeVisible();
+  await expect(page.locator('[data-role="assistant"]').getByText(/Et loop gentager/)).toBeVisible();
 
   await page.getByRole("button", { name: m.chat_sign_out() }).click();
   await expect(page).toHaveURL(/\/login/);
