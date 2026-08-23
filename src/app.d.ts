@@ -4,9 +4,13 @@ declare global {
     /**
      * Request-scoped state. Set in `hooks.server.ts`, read in loads, actions and
      * endpoints — server modules never hold mutable state at module scope.
-     * Filled in Phase 1 (session, student, classroom).
      */
-    interface Locals {}
+    interface Locals {
+      /** The authenticated student, or null. Resolved from the session cookie (PRD §7). */
+      student: import("$lib/server/db/schema").Student | null;
+      /** The presented session token, kept so logout can invalidate exactly this session. */
+      sessionToken: string | null;
+    }
 
     /**
      * Errors reaching the browser carry a message and nothing else — no stack

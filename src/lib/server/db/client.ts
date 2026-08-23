@@ -2,7 +2,15 @@ import { Database } from "bun:sqlite";
 import { type BunSQLiteDatabase, drizzle } from "drizzle-orm/bun-sqlite";
 import * as schema from "./schema";
 
-export type AppDatabase = BunSQLiteDatabase<typeof schema>;
+/**
+ * The Drizzle handle, with the underlying `bun:sqlite` connection exposed.
+ *
+ * Drizzle attaches `$client` at runtime but omits it from the published type.
+ * Declaring it here keeps the raw handle available for the few places that need
+ * SQL Drizzle does not express — migrations, and tests asserting on raw rows —
+ * without an `as any` at each call site.
+ */
+export type AppDatabase = BunSQLiteDatabase<typeof schema> & { $client: Database };
 
 /**
  * Build a database handle over a SQLite file (or `:memory:`).
@@ -22,5 +30,5 @@ export function createDatabase(path: string): AppDatabase {
   // to delete a student's messages, turns and attachments with them (§16).
   sqlite.exec("PRAGMA foreign_keys = ON;");
 
-  return drizzle(sqlite, { schema });
+  return drizzle(sqlite, { schema }) as AppDatabase;
 }

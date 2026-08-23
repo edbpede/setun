@@ -1,0 +1,314 @@
+import { beforeEach, describe, expect, it } from "bun:test";
+import type { AppDatabase } from "../db/client";
+import { createConversation, getOwnedConversation } from "../db/queries/conversations";
+import { appendMessage, listConversationMessages } from "../db/queries/messages";
+import { createTurn, getTurn } from "../db/queries/turns";
+import { createTestDatabase, seedTestFixtures } from "../db/testing";
+import { GatewayAdapter } from "../gateway/adapter";
+import { streamingResponse, stubFetch } from "../gateway/testing";
+import { assertNoTurnInFlight, getActiveTurn, TurnInFlightError } from "./concurrency";
+import { executeTurn } from "./runner";
+import { streamTurnEvents } from "./stream";
+import { readBufferedEvents } from "./turn-buffer";
+
+/**
+ * Turn execution, buffering order, resume and single-turn enforcement
+ * (plan 1.5–1.6, PRD §10, §22).
+ */
+
+let db: AppDatabase;
+let fixtures: ReturnType<typeof seedTestFixtures>;
+
+beforeEach(() => {
+  db = createTestDatabase();
+  fixtures = seedTestFixtures(db);
+});
+
+const OK_STREAM = [
+  JSON.stringify({ choices: [{ delta: { content: "Et " } }] }),
+  JSON.stringify({ choices: [{ delta: { content: "loop" } }] }),
+  JSON.stringify({ choices: [], usage: { prompt_tokens: 11, completion_tokens: 3 } }),
+  "[DONE]",
+];
+
+function adapterOver(responder: Parameters<typeof stubFetch>[0]) {
+  return new GatewayAdapter({
+    baseUrl: "http://cpa:8317",
+    listenerKey: "k",
+    fetch: stubFetch(responder).fetch,
+  });
+}
+
+function startedTurn() {
+  const conversation = createConversation(db, {
+    studentId: fixtures.student.id,
+    modelAliasId: fixtures.alias.id,
+  });
+  const prompt = appendMessage(db, {
+    conversationId: conversation.id,
+    parentId: null,
+    role: "user",
+    parts: [{ type: "text", text: "Forklar loops" }],
+  });
+  const turn = createTurn(db, {
+    conversationId: conversation.id,
+    studentId: fixtures.student.id,
+    parentMessageId: prompt.id,
+  });
+
+  return { conversation, prompt, turn };
+}
+
+function runInput(scaffold: ReturnType<typeof startedTurn>, adapter: GatewayAdapter) {
+  return {
+    db,
+    adapter,
+    turnId: scaffold.turn.id,
+    conversationId: scaffold.conversation.id,
+    studentId: fixtures.student.id,
+    classroomId: fixtures.classroom.id,
+    alias: fixtures.alias,
+    parentMessageId: scaffold.prompt.id,
+    path: [scaffold.prompt],
+  };
+}
+
+describe("executeTurn", () => {
+  it("buffers every event in emission order with dense sequence numbers", async () => {
+    const scaffold = startedTurn();
+    await executeTurn(
+      runInput(
+        scaffold,
+        adapterOver(() => streamingResponse(OK_STREAM)),
+      ),
+    );
+
+    const buffered = readBufferedEvents(db, { turnId: scaffold.turn.id });
+
+    expect(buffered.map((b) => b.seq)).toEqual([0, 1, 2, 3]);
+    expect(buffered.map((b) => b.event.type)).toEqual([
+      "text-delta",
+      "text-delta",
+      "usage",
+      "done",
+    ]);
+  });
+
+  it("persists the assistant message, its usage and the active leaf", async () => {
+    const scaffold = startedTurn();
+    await executeTurn(
+      runInput(
+        scaffold,
+        adapterOver(() => streamingResponse(OK_STREAM)),
+      ),
+    );
+
+    const messages = listConversationMessages(db, scaffold.conversation.id);
+    const assistant = messages.find((m) => m.role === "assistant");
+
+    expect(assistant?.parts).toEqual([{ type: "text", text: "Et loop" }]);
+    expect(assistant?.inputTokens).toBe(11);
+    expect(assistant?.outputTokens).toBe(3);
+    expect(assistant?.usageEstimated).toBe(false);
+
+    const conversation = getOwnedConversation(db, {
+      conversationId: scaffold.conversation.id,
+      studentId: fixtures.student.id,
+    });
+    expect(conversation?.activeLeafId).toBe(assistant?.id);
+  });
+
+  it("records a usage event against the student and classroom", async () => {
+    const scaffold = startedTurn();
+    await executeTurn(
+      runInput(
+        scaffold,
+        adapterOver(() => streamingResponse(OK_STREAM)),
+      ),
+    );
+
+    const rows = db.$client.query("SELECT * FROM usage_event").all() as {
+      studentId: string;
+      classroomId: string;
+      inputTokens: number;
+      estimated: number;
+    }[];
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].studentId).toBe(fixtures.student.id);
+    expect(rows[0].classroomId).toBe(fixtures.classroom.id);
+    expect(rows[0].inputTokens).toBe(11);
+  });
+
+  it("marks the turn completed and links the assistant message", async () => {
+    const scaffold = startedTurn();
+    await executeTurn(
+      runInput(
+        scaffold,
+        adapterOver(() => streamingResponse(OK_STREAM)),
+      ),
+    );
+
+    const turn = getTurn(db, scaffold.turn.id);
+
+    expect(turn?.status).toBe("completed");
+    expect(turn?.assistantMessageId).toBeTruthy();
+    expect(turn?.endedAt).not.toBeNull();
+  });
+
+  it("marks a failed turn and buffers a student-safe error", async () => {
+    const scaffold = startedTurn();
+    await executeTurn(
+      runInput(
+        scaffold,
+        adapterOver(() => new Response("upstream detail", { status: 502 })),
+      ),
+    );
+
+    const turn = getTurn(db, scaffold.turn.id);
+    const buffered = readBufferedEvents(db, { turnId: scaffold.turn.id });
+
+    expect(turn?.status).toBe("failed");
+    expect(buffered.map((b) => b.event.type)).toEqual(["error", "done"]);
+    expect(JSON.stringify(buffered)).not.toContain("upstream detail");
+  });
+
+  it("records usage even when the gateway reported none, flagged estimated", async () => {
+    const scaffold = startedTurn();
+    await executeTurn(
+      runInput(
+        scaffold,
+        adapterOver(() =>
+          streamingResponse([
+            JSON.stringify({ choices: [{ delta: { content: "noget tekst" } }] }),
+            "[DONE]",
+          ]),
+        ),
+      ),
+    );
+
+    const rows = db.$client.query("SELECT * FROM usage_event").all() as {
+      estimated: number;
+      outputTokens: number;
+    }[];
+
+    expect(rows[0].estimated).toBe(1);
+    // Never zero for a response that produced text (§10).
+    expect(rows[0].outputTokens).toBeGreaterThan(0);
+  });
+});
+
+describe("streamTurnEvents", () => {
+  it("replays a finished turn from the buffer", async () => {
+    const scaffold = startedTurn();
+    await executeTurn(
+      runInput(
+        scaffold,
+        adapterOver(() => streamingResponse(OK_STREAM)),
+      ),
+    );
+
+    const seen = [];
+    for await (const buffered of streamTurnEvents(db, scaffold.turn.id)) seen.push(buffered);
+
+    expect(seen.map((b) => b.event.type)).toEqual(["text-delta", "text-delta", "usage", "done"]);
+  });
+
+  it("resumes after a cursor, replaying only the remainder", async () => {
+    const scaffold = startedTurn();
+    await executeTurn(
+      runInput(
+        scaffold,
+        adapterOver(() => streamingResponse(OK_STREAM)),
+      ),
+    );
+
+    const seen = [];
+    for await (const buffered of streamTurnEvents(db, scaffold.turn.id, { afterSeq: 1 })) {
+      seen.push(buffered);
+    }
+
+    expect(seen.map((b) => b.seq)).toEqual([2, 3]);
+  });
+
+  it("closes a turn interrupted by a restart with a cut-short notice", async () => {
+    const scaffold = startedTurn();
+    // A turn left streaming by a previous process, swept at boot (§10).
+    db.$client.query("UPDATE turn SET status = 'interrupted' WHERE id = ?").run(scaffold.turn.id);
+
+    const seen = [];
+    for await (const buffered of streamTurnEvents(db, scaffold.turn.id)) seen.push(buffered);
+
+    expect(seen.at(-1)?.event).toEqual({ type: "done", reason: "interrupted" });
+  });
+
+  it("tails a live turn and terminates with it", async () => {
+    const scaffold = startedTurn();
+    const running = executeTurn(
+      runInput(
+        scaffold,
+        adapterOver(() => streamingResponse(OK_STREAM)),
+      ),
+    );
+
+    const seen = [];
+    for await (const buffered of streamTurnEvents(db, scaffold.turn.id)) seen.push(buffered);
+    await running;
+
+    expect(seen.at(-1)?.event.type).toBe("done");
+    // No duplicates across the buffer-read and live-tail boundary.
+    expect(new Set(seen.map((b) => b.seq)).size).toBe(seen.length);
+  });
+});
+
+describe("one turn in flight per student", () => {
+  it("reports the in-flight turn while it is streaming", () => {
+    const scaffold = startedTurn();
+
+    expect(getActiveTurn(db, fixtures.student.id)?.id).toBe(scaffold.turn.id);
+    expect(() => assertNoTurnInFlight(db, fixtures.student.id)).toThrow(TurnInFlightError);
+  });
+
+  it("names the turn to abort in the refusal", () => {
+    const scaffold = startedTurn();
+
+    try {
+      assertNoTurnInFlight(db, fixtures.student.id);
+      throw new Error("expected a refusal");
+    } catch (error) {
+      expect((error as TurnInFlightError).activeTurnId).toBe(scaffold.turn.id);
+    }
+  });
+
+  it("applies across conversations, not per conversation", async () => {
+    startedTurn();
+    // A second conversation for the same student is still blocked (§10).
+    const second = createConversation(db, {
+      studentId: fixtures.student.id,
+      modelAliasId: fixtures.alias.id,
+    });
+    expect(second.id).toBeTruthy();
+
+    expect(() => assertNoTurnInFlight(db, fixtures.student.id)).toThrow(TurnInFlightError);
+  });
+
+  it("does not block a different student", () => {
+    startedTurn();
+    const other = seedTestFixtures(db, { label: "quiet-heron", digest: "other" });
+
+    expect(() => assertNoTurnInFlight(db, other.student.id)).not.toThrow();
+  });
+
+  it("releases once the turn reaches a terminal state", async () => {
+    const scaffold = startedTurn();
+    await executeTurn(
+      runInput(
+        scaffold,
+        adapterOver(() => streamingResponse(OK_STREAM)),
+      ),
+    );
+
+    expect(getActiveTurn(db, fixtures.student.id)).toBeUndefined();
+    expect(() => assertNoTurnInFlight(db, fixtures.student.id)).not.toThrow();
+  });
+});

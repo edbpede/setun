@@ -1,0 +1,163 @@
+import { describe, expect, it } from "bun:test";
+import { GatewayAdapter } from "../gateway/adapter";
+import type { GatewayEvent } from "../gateway/events";
+import { streamingResponse, stubFetch } from "../gateway/testing";
+import { assembleContext, runTurn } from "./loop";
+import { BASE_SYSTEM_PROMPT } from "./system-prompt";
+
+/**
+ * Agent-loop termination conditions and context assembly
+ * (plan 1.5, PRD §10, §22).
+ */
+
+function adapterOver(responder: Parameters<typeof stubFetch>[0]) {
+  const stub = stubFetch(responder);
+  return {
+    adapter: new GatewayAdapter({
+      baseUrl: "http://cpa:8317",
+      listenerKey: "k",
+      fetch: stub.fetch,
+    }),
+    stub,
+  };
+}
+
+const path = [
+  { role: "user" as const, parts: [{ type: "text" as const, text: "Hej" }] },
+  { role: "assistant" as const, parts: [{ type: "text" as const, text: "Hej med dig" }] },
+  { role: "user" as const, parts: [{ type: "text" as const, text: "Forklar loops" }] },
+];
+
+async function collect(events: AsyncGenerator<GatewayEvent>): Promise<GatewayEvent[]> {
+  const out: GatewayEvent[] = [];
+  for await (const event of events) out.push(event);
+  return out;
+}
+
+const OK_STREAM = [
+  JSON.stringify({ choices: [{ delta: { content: "Et loop" } }] }),
+  JSON.stringify({ choices: [{ delta: { content: " gentager" } }] }),
+  JSON.stringify({ choices: [], usage: { prompt_tokens: 12, completion_tokens: 4 } }),
+  "[DONE]",
+];
+
+describe("assembleContext", () => {
+  it("puts the layered system prompt first, then the path oldest first", () => {
+    const messages = assembleContext(path);
+
+    expect(messages[0]).toEqual({ role: "system", content: BASE_SYSTEM_PROMPT });
+    expect(messages.slice(1)).toEqual([
+      { role: "user", content: "Hej" },
+      { role: "assistant", content: "Hej med dig" },
+      { role: "user", content: "Forklar loops" },
+    ]);
+  });
+
+  it("carries the educator's layers into the system message", () => {
+    const messages = assembleContext(path, { classroomInstructions: "Svar på dansk." });
+
+    expect(messages[0].content).toContain("Svar på dansk.");
+  });
+
+  it("sends only the active path, not every message in the tree", () => {
+    // The caller supplies one branch; the loop never widens it (§10).
+    expect(assembleContext([path[0]])).toHaveLength(2);
+  });
+});
+
+describe("runTurn termination", () => {
+  it("terminates with exactly one done event on a normal stop", async () => {
+    const { adapter } = adapterOver(() => streamingResponse(OK_STREAM));
+
+    const events = await collect(runTurn({ adapter, dialect: "openai", model: "m", path }));
+
+    const dones = events.filter((e) => e.type === "done");
+    expect(dones).toHaveLength(1);
+    expect(dones[0]).toEqual({ type: "done", reason: "stop" });
+    expect(events.at(-1)).toEqual({ type: "done", reason: "stop" });
+  });
+
+  it("emits deltas then usage then done, in that order", async () => {
+    const { adapter } = adapterOver(() => streamingResponse(OK_STREAM));
+
+    const kinds = (await collect(runTurn({ adapter, dialect: "openai", model: "m", path }))).map(
+      (e) => e.type,
+    );
+
+    expect(kinds.filter((k, i, all) => k !== all[i - 1])).toEqual(["text-delta", "usage", "done"]);
+  });
+
+  it("terminates with reason aborted when the signal fires", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const { adapter } = adapterOver(() => streamingResponse(OK_STREAM));
+
+    const events = await collect(
+      runTurn({ adapter, dialect: "openai", model: "m", path, signal: controller.signal }),
+    );
+
+    expect(events.at(-1)).toEqual({ type: "done", reason: "aborted" });
+    // An abort is not an error; the student cancelled deliberately (§10).
+    expect(events.some((e) => e.type === "error")).toBe(false);
+  });
+
+  it("terminates with an error event and reason error when the gateway fails", async () => {
+    const { adapter } = adapterOver(() => new Response("upstream boom", { status: 502 }));
+
+    const events = await collect(runTurn({ adapter, dialect: "openai", model: "m", path }));
+
+    expect(events).toEqual([
+      { type: "error", message: "unavailable" },
+      { type: "done", reason: "error" },
+    ]);
+  });
+
+  it("never leaks upstream detail into the student-facing error event", async () => {
+    const upstream = "https://api.anthropic.com rejected key sk-ant-abc123: quota exceeded";
+    const { adapter } = adapterOver(() => new Response(upstream, { status: 500 }));
+
+    const events = await collect(runTurn({ adapter, dialect: "openai", model: "m", path }));
+    const serialised = JSON.stringify(events);
+
+    expect(serialised).not.toContain("anthropic.com");
+    expect(serialised).not.toContain("sk-ant");
+    expect(serialised).not.toContain("quota exceeded");
+  });
+
+  it("preserves partial text emitted before a mid-stream failure", async () => {
+    const { adapter } = adapterOver(() =>
+      streamingResponse([
+        JSON.stringify({ choices: [{ delta: { content: "halvvejs" } }] }),
+        "{malformed",
+      ]),
+    );
+
+    const events = await collect(runTurn({ adapter, dialect: "openai", model: "m", path }));
+
+    expect(events[0]).toEqual({ type: "text-delta", text: "halvvejs" });
+    expect(events.at(-1)).toEqual({ type: "done", reason: "error" });
+  });
+
+  it("terminates on an empty upstream stream rather than hanging", async () => {
+    const { adapter } = adapterOver(() => streamingResponse(["[DONE]"]));
+
+    const events = await collect(runTurn({ adapter, dialect: "openai", model: "m", path }));
+
+    expect(events.at(-1)).toEqual({ type: "done", reason: "stop" });
+  });
+
+  it("terminates identically in the anthropic dialect", async () => {
+    const { adapter } = adapterOver(() =>
+      streamingResponse([
+        {
+          event: "content_block_delta",
+          data: JSON.stringify({ type: "content_block_delta", delta: { text: "svar" } }),
+        },
+      ]),
+    );
+
+    const events = await collect(runTurn({ adapter, dialect: "anthropic", model: "m", path }));
+
+    expect(events.at(-1)).toEqual({ type: "done", reason: "stop" });
+  });
+});

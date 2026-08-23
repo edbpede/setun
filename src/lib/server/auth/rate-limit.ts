@@ -1,4 +1,4 @@
-import { and, desc, eq, gte } from "drizzle-orm";
+import { and, desc, eq, gte, lt } from "drizzle-orm";
 import type { AppDatabase } from "../db/client";
 import { loginAttempt } from "../db/schema";
 
@@ -109,7 +109,7 @@ export function recordAttempt(
 export function pruneAttemptsBefore(db: AppDatabase, cutoff: Date): number {
   const rows = db
     .delete(loginAttempt)
-    .where(gte(cutoff, loginAttempt.createdAt))
+    .where(lt(loginAttempt.createdAt, cutoff))
     .returning({ id: loginAttempt.id })
     .all();
   return rows.length;

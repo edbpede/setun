@@ -8,6 +8,8 @@ import {
   DIGEST_MAX_DELAY_MS,
   delayForFailures,
   IP_ATTEMPT_LIMIT,
+  pruneAttemptsBefore,
+  RATE_LIMIT_WINDOW_MS,
   recordAttempt,
 } from "./rate-limit";
 
@@ -125,5 +127,39 @@ describe("checkRateLimit — per IP", () => {
     expect(checkRateLimit(db, { ip: IP, digest: DIGEST, now: laterThanWindow }).blocked).toBe(
       false,
     );
+  });
+});
+
+describe("pruneAttemptsBefore", () => {
+  const countRows = () =>
+    (db.$client.query("SELECT COUNT(*) AS n FROM login_attempt").get() as { n: number }).n;
+
+  it("deletes only rows older than the cutoff", () => {
+    fail(3);
+    const before = countRows();
+
+    // A cutoff in the past is older than every row just written.
+    const removed = pruneAttemptsBefore(db, new Date(Date.now() - RATE_LIMIT_WINDOW_MS));
+
+    expect(removed).toBe(0);
+    expect(countRows()).toBe(before);
+  });
+
+  it("deletes rows that precede the cutoff", () => {
+    fail(3);
+    const before = countRows();
+    expect(before).toBeGreaterThan(0);
+
+    const removed = pruneAttemptsBefore(db, new Date(Date.now() + 60_000));
+
+    expect(removed).toBe(before);
+    expect(countRows()).toBe(0);
+  });
+
+  it("leaves the limiter's decisions intact for rows inside the window", () => {
+    fail(DIGEST_FAILURE_THRESHOLD);
+    pruneAttemptsBefore(db, new Date(Date.now() - RATE_LIMIT_WINDOW_MS));
+
+    expect(checkRateLimit(db, { ip: IP, digest: DIGEST }).delayMs).toBe(DIGEST_BASE_DELAY_MS);
   });
 });
