@@ -19,6 +19,14 @@ export const SANDBOX_ORIGIN = `http://localhost:${SANDBOX_PORT}`;
  */
 export const E2E_DATABASE_PATH = "./test-results/e2e/setun.sqlite";
 
+/**
+ * Attachments and generated images, kept beside the disposable database.
+ *
+ * Outside any web root, as they are in a real deployment — nothing serves this
+ * directory, and every read goes through an owner-scoped endpoint (§21).
+ */
+export const E2E_STORAGE_PATH = "./test-results/e2e/storage";
+
 /** Test-only pepper. Real deployments supply a secret via `.env` (§6.2, §7). */
 export const E2E_PEPPER = "e2e-pepper-not-a-real-secret";
 
@@ -39,6 +47,7 @@ const appEnv = {
   // what a browser sends here.
   ORIGIN: APP_ORIGIN,
   SETUN_DATABASE_PATH: E2E_DATABASE_PATH,
+  SETUN_STORAGE_PATH: E2E_STORAGE_PATH,
   SETUN_STUDENT_CODE_PEPPER: E2E_PEPPER,
   SETUN_CPA_LISTENER_KEY: "e2e-listener-key",
   SETUN_EDUCATOR_SEED_USERNAME: E2E_EDUCATOR_USERNAME,

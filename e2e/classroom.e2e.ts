@@ -24,7 +24,7 @@ import {
  * as access control" (§8) and a test that only clicked would not know the
  * difference.
  *
- * These tests reconfigure the single shared classroom, so they run in file order
+ * These tests reconfigure one classroom of their own, so they run in file order
  * within one worker rather than concurrently.
  */
 
@@ -32,10 +32,20 @@ test.describe.configure({ mode: "serial" });
 
 const run = promisify(execFile);
 
+/**
+ * This suite's own classroom.
+ *
+ * These tests lock, reschedule and empty the allowlist of the room they use, so
+ * it has to be a room no other suite is chatting in — files run in parallel, and
+ * the failure only appears at whatever worker count CI happens to choose (§22).
+ */
+const CLASSROOM = "E2E classroom";
+
 const env = {
   ...process.env,
   SETUN_DATABASE_PATH: E2E_DATABASE_PATH,
   SETUN_STUDENT_CODE_PEPPER: E2E_PEPPER,
+  SETUN_E2E_CLASSROOM: CLASSROOM,
 };
 
 async function provisionStudent(): Promise<{ label: string; code: string }> {
@@ -301,8 +311,9 @@ test("a connected tab sees a lock arrive over the push channel (§6, §8, §22)"
   const educatorPage = await educatorContext.newPage();
   await signInAsEducator(educatorPage);
 
-  const classroomLink = educatorPage.locator('a[href^="/educator/classrooms/"]').first();
-  await classroomLink.click();
+  // By name, not by position: the panel lists every classroom, and other suites
+  // have their own.
+  await educatorPage.getByRole("link", { name: CLASSROOM, exact: true }).click();
   await educatorPage.getByRole("button", { name: m.educator_lock_classroom() }).click();
   await expect(
     educatorPage.getByText(m.educator_state_locked(), { exact: true }),

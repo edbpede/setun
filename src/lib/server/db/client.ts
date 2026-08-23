@@ -22,13 +22,38 @@ export type AppDatabase = BunSQLiteDatabase<typeof schema> & { $client: Database
 export function createDatabase(path: string): AppDatabase {
   const sqlite = new Database(path, { strict: true, create: true });
 
-  // WAL keeps the streaming writer (turn events) from blocking readers; the
-  // busy timeout covers the overlap of a boot migration and an open handle.
-  sqlite.exec("PRAGMA journal_mode = WAL;");
+  // Set before anything that may contend: a connection without it fails
+  // immediately rather than waiting for the lock it wants.
   sqlite.exec("PRAGMA busy_timeout = 5000;");
+
+  enableWriteAheadLogging(sqlite);
+
   // Off by default in SQLite, and the schema leans on `references(...)` cascades
   // to delete a student's messages, turns and attachments with them (§16).
   sqlite.exec("PRAGMA foreign_keys = ON;");
 
   return drizzle(sqlite, { schema }) as AppDatabase;
+}
+
+/**
+ * Put the database in WAL mode, tolerating a race to do so.
+ *
+ * WAL keeps the streaming writer (turn events) from blocking readers. It is a
+ * persistent property of the file rather than of a connection, so it only has
+ * to be set once — and switching into it takes an exclusive lock that the busy
+ * timeout does *not* cover: SQLite returns SQLITE_BUSY from a `journal_mode`
+ * change immediately rather than invoking the busy handler.
+ *
+ * So: skip when it is already set, and treat a lost race as success, because
+ * losing one means another connection is setting the very thing this wanted.
+ */
+function enableWriteAheadLogging(sqlite: Database): void {
+  const current = sqlite.query("PRAGMA journal_mode").get() as { journal_mode?: string } | null;
+  if (current?.journal_mode?.toLowerCase() === "wal") return;
+
+  try {
+    sqlite.exec("PRAGMA journal_mode = WAL;");
+  } catch {
+    // Another connection holds the lock precisely because it is doing this.
+  }
 }
