@@ -1,0 +1,15 @@
+[test]
+preload = ["./src/test/setup.ts"]
+coverage = false
+
+# `bun test` owns pure server logic and rune modules (*.test.ts).
+# Vitest owns component behaviour (*.svelte.spec.ts) and anything needing Vite
+# resolution (*.spec.ts); Playwright owns end-to-end flows (*.e2e.ts).
+# Without this, a bare `bun test` would try to execute the other runners' files.
+pathIgnorePatterns = [
+  "**/*.spec.ts",
+  "**/*.e2e.ts",
+  "build/**",
+  ".svelte-kit/**",
+  "sandbox/**",
+]
