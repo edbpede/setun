@@ -76,6 +76,10 @@ async function consume(url: string, init: RequestInit): Promise<void> {
       return;
     }
 
+    // Extract the real turn ID so abort can target it (replaces the "pending" placeholder).
+    const headerTurnId = response.headers.get("x-setun-turn-id");
+    if (headerTurnId) conversation.turn.turnId = headerTurnId;
+
     for await (const { seq, event } of readEventStream(response)) {
       conversation.turn.apply(event, seq);
     }
