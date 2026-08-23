@@ -1,6 +1,6 @@
 # Setun — Product Requirements Document
 
-**Version:** 0.2
+**Version:** 0.3
 **Status:** Ready for implementation planning — all open decisions resolved
 **Licence:** AGPL-3.0
 **Target:** Classroom pilot, 5–20 students and one educator
@@ -22,7 +22,7 @@ The pilot's measure of success is mundane: an educator opens the classroom, stud
 ## 2. Goals
 
 1. Students use capable AI models without surrendering personal information.
-2. The educator controls access, availability, models, tools, and budgets — from a UI, without touching a database or a terminal.
+2. The educator controls access, availability, models, tools, and budgets — from a UI, without touching a database or a terminal. **Granularity principle:** wherever a capability is toggled, it is configured per classroom with per-student overrides where meaningful (skills, attachments, system-prompt instructions all follow this pattern).
 3. Students can build, run, inspect, and break code artifacts safely.
 4. The application is genuinely pleasant on the classroom's actual hardware.
 5. Tool use (MCP) and reusable instructions (skills) are first-class, because they are the interesting teaching material.
@@ -30,7 +30,7 @@ The pilot's measure of success is mundane: an educator opens the classroom, stud
 
 ## 3. Non-goals
 
-Not an LMS, gradebook, or timetable system. No school-wide identity integration, multi-tenancy, or billing. No conversation-surveillance interface for educators. No agent marketplace, no plugin ecosystem, no RAG or document-management product. No provider-specific logic anywhere above the gateway adapter.
+Not an LMS, gradebook, or timetable system. No school-wide identity integration, multi-tenancy, or billing. No conversation-surveillance interface for educators. No agent marketplace, no plugin ecosystem, no RAG or document-management product. No provider-specific logic anywhere above the gateway adapter. No content-moderation layer of Setun's own — provider-side safety is the deliberate stance, recorded in §16.
 
 ---
 
@@ -50,6 +50,7 @@ Not an LMS, gradebook, or timetable system. No school-wide identity integration,
 **Design baseline:** the tweakcn **clean-slate** theme, ported into the `preset-shadcn` CSS-variable theme (the theme is CSS variables; the React-oriented `shadcn` CLI is not used)
 **Internationalisation:** Paraglide JS — compile-time, typed messages; English is the default locale, Danish ships complete at pilot; all user-facing text flows through messages, never string literals in components
 **Editor:** CodeMirror 6
+**Markdown rendering:** `marked`, output sanitised with `DOMPurify` — model output is untrusted HTML source; sanitisation is mandatory, not optional
 **Database:** SQLite via `bun:sqlite`, schema and queries through Drizzle ORM, full-text search via FTS5
 **Gateway:** CLIProxyAPI, pinned version, unmodified
 **Artifact compilation:** `esbuild-wasm`, lazily loaded, executed inside the sandbox origin
@@ -57,6 +58,7 @@ Not an LMS, gradebook, or timetable system. No school-wide identity integration,
 **Syntax highlighting:** Shiki, fine-grained core, JS regex engine, small language set
 **Reverse proxy:** Caddy, kept a plain proxy — no custom builds or plugins
 **Lint / format / type-check:** Biome for lint and format; `svelte-check` as the authority on template and type correctness, run in CI
+**CI:** GitHub Actions — `svelte-check`, Biome, `bun test`, Vitest, and Playwright as separate gates
 **Testing:** `bun test` for pure server logic and rune modules, Vitest Browser Mode with `vitest-browser-svelte` for component rendering, Playwright for end-to-end
 **Containerisation:** Docker Compose — three services: application, CPA, Caddy
 
@@ -84,6 +86,8 @@ Streaming uses server-sent events end to end: sending a message is a POST return
 
 A small in-process job scheduler (started with the server, portable across Node and Bun) runs retention enforcement, nightly backups, and session cleanup.
 
+The sandbox origin is prebuilt static files served directly by Caddy — the application never serves the sandbox hostname. Drizzle migrations are applied at server boot, before the listener starts; there is no separate migration step for the operator.
+
 ### 6.1 Repository structure
 
 Modularity comes from single-purpose modules, grouped by domain, behind the compiler-enforced server boundary:
@@ -99,6 +103,7 @@ src/
       classroom/      # availability, schedule resolution, enforcement, allowlists
       auth/           # student codes, educator auth, sessions, rate limiting
       db/             # Drizzle schema, migrations, query modules per aggregate
+      storage/        # local file storage: generated images, attachments
       jobs/           # scheduler, retention, backup
     components/       # ui/ (shadcn-svelte copies), plus app components by area
     state/            # client rune modules (.svelte.ts)
@@ -135,7 +140,9 @@ Educator authentication is separate and conventional: a single account seeded fr
 
 ## 8. Classrooms and availability
 
-A classroom is the unit of configuration: membership, model allowlist, tool allowlist and permission mode, enabled skills and skill-authoring policy, budgets and allowances, session policy, retention, feature toggles, and schedule.
+A classroom is the unit of configuration: membership, model allowlist, tool allowlist and permission mode, enabled skills and skill-authoring policy, attachment policy, classroom instructions (§10), budgets and allowances, session policy, retention and creations policy, interface language, feature toggles, and schedule.
+
+**Interface language** is a classroom setting (Danish for the pilot; English available), and each student may override it for themselves on the dashboard. The educator panel follows the educator's own preference.
 
 Every classroom has an explicit **open** or **locked** state that overrides all scheduling. On top of that sits a recurring weekly schedule expressed in the classroom's IANA timezone (default `Europe/Copenhagen`), correct across daylight-saving transitions, plus one-off windows for homework or a substituted lesson.
 
@@ -151,7 +158,7 @@ When access is unavailable, students see a plain, friendly status screen with th
 
 CPA is treated as an internal, replaceable gateway, spoken to through a single adapter module. The adapter supports **two dialects behind one internal interface**: OpenAI-compatible (`/v1/chat/completions`, `/v1/models`, `/v1/images` — the default) and Anthropic-native Messages. Each model alias selects its dialect; nothing above the adapter knows which was used, because the adapter emits only the normalised event stream of §10. Image generation runs through the same adapter.
 
-Setun maintains its own **model alias table** — friendly names such as Fast, Balanced, Powerful, mapped to concrete CPA model identifiers. Aliases are **managed in the educator panel**: name, gateway model identifier, dialect, availability, and a **data-protection flag** recording whether the backing access carries a data processing agreement (API-key) or not (subscription OAuth). Students only ever see the friendly name. Classrooms allow a subset of aliases and the backend validates every request against that subset. One alias is designated the **utility alias**, used for internal work such as title generation.
+Setun maintains its own **model alias table** — friendly names such as Fast, Balanced, Powerful, mapped to concrete CPA model identifiers. Aliases are **managed in the educator panel**: name, gateway model identifier, dialect, availability, a **data-protection flag** recording whether the backing access carries a data processing agreement (API-key) or not (subscription OAuth), a **capability flag for image input** (gating attachments, §10), and **optional per-million-token prices** feeding the display-only cost estimate (§10). Students only ever see the friendly name. Classrooms allow a subset of aliases and the backend validates every request against that subset. One alias is designated the **utility alias**, used for internal work such as title generation.
 
 CPA runs with listener authentication enabled and its management API disabled or bound to localhost, since that API can rewrite provider configuration. Its self-updating admin panel is turned off and the image version pinned.
 
@@ -167,13 +174,21 @@ No classroom, student, or credential data is ever stored in CPA. If CPA is repla
 
 Because MCP and skills are in scope, the core is not a stream proxy but an **agent loop**: assemble context, call the model, stream deltas to the client, execute any requested tools (subject to the permission mode of §11), append results, repeat until the model stops or a budget is exhausted. Plain chat is the zero-tool case. This is built first; everything else participates in it.
 
-**Budgets are three layers**, all panel-configurable per classroom with sensible defaults:
+**The system prompt is layered:** Setun's fixed base prompt, then optional **classroom instructions**, then optional **per-student instructions** — both educator-authored in the panel, both inherited invisibly by the student's conversations. This is the educator's steering instrument ("answer in Danish", "always explain before showing code", extra scaffolding for one student). Students never author system prompts; student-driven behaviour change flows through skills (§12). The skill index (§12) is appended last.
+
+**Attachments.** Students may attach **images** (forwarded to the model, only on aliases carrying the image-input capability flag) and **plain text or code files** (inlined into the message as text). Attachment policy follows the granularity principle: a per-classroom toggle with per-student overrides, an educator-controlled allowed-type list, and size caps with sensible defaults. Uploads are validated server-side — content sniffing against the allowlist, size limits — stored locally alongside generated images, served only by Setun to their owner, and deleted with their conversation. Attaching an image on a non-capable alias is refused with a friendly message before any gateway call. PDFs and office documents are out of scope for the pilot.
+
+**Budgets are three layers**, all denominated in **tokens** — the unit the gateway actually reports — and all panel-configurable per classroom with sensible defaults:
 
 1. **Per-turn caps** — maximum tool-call steps, wall-clock time, and tokens per turn. These stop a runaway loop.
 2. **Per-student daily allowance** — a token allowance per student per day, so one student cannot drain the class. Students see their own allowance and consumption on the dashboard.
 3. **Per-classroom daily cap** — the cost ceiling for the whole class.
 
-Exhausting an allowance or cap refuses new turns with a friendly, non-technical message; it is never presented as an error.
+Budgets are checked when a turn starts; a turn already streaming completes within its per-turn caps even if an allowance empties mid-turn — the per-turn layer bounds the overshoot. Exhausting an allowance or cap refuses new turns with a friendly, non-technical message; it is never presented as an error.
+
+Alongside the enforced token figures, the panel and student dashboard show an **approximate cost (USD and DKK)** computed from the optional per-alias prices and a configurable exchange rate. Estimates are display only — enforcement never depends on a price being present or current.
+
+**One turn is in flight per conversation.** Sending a new message while a turn streams requires aborting it; the server enforces this, not just the composer.
 
 Messages are stored as a **tree**, not a list. Editing a prompt or regenerating a response creates a sibling; each conversation tracks its active leaf. This costs little now and avoids a migration later.
 
@@ -229,7 +244,7 @@ Artifacts are detected by the renderer from fenced code blocks with recognised l
 
 **Tier 0 — static.** HTML, CSS, and JavaScript render immediately in a sandboxed iframe with no build step. Most classroom work lands here, and it costs nothing to run.
 
-**Tier 1 — compiled.** TypeScript, JSX, and Svelte compile through `esbuild-wasm` in a worker inside the sandbox origin, against pinned self-hosted ESM runtimes. The compiler is fetched only when a student first opens a non-static artifact, and cached thereafter. Compilation is triggered by an explicit **Run** action or a heavily debounced idle, never per keystroke.
+**Tier 1 — compiled.** TypeScript, JSX, and Svelte compile through `esbuild-wasm` in a worker inside the sandbox origin, against pinned self-hosted ESM runtimes — **React and Svelte**, the two frameworks models most reliably emit; no other frameworks are hosted. The compiler is fetched only when a student first opens a non-static artifact, and cached thereafter. Compilation is triggered by an explicit **Run** action or a heavily debounced idle, never per keystroke.
 
 Students edit artifact source in CodeMirror; edits recompile locally with no model request. Every edit is versioned, which yields undo, a diff view — *what did the AI actually change?* is a good discussion prompt — and a creations gallery.
 
@@ -267,9 +282,11 @@ Students see only their own conversations. **Educators have no interface for rea
 
 Application logs at normal levels contain no prompt or response content. They carry internal identifiers, request identifiers, model aliases, latency, status, and token counts. Credentials are redacted everywhere, including in gateway headers and error paths.
 
-Students can delete their own conversations and creations. Conversation retention is server-enforced by the job scheduler and configurable per classroom, defaulting to thirty days. Classroom deletion clearly distinguishes disabling, removal from a class, and permanent deletion.
+Students can delete their own conversations and creations. Conversation retention is server-enforced by the job scheduler and configurable per classroom, defaulting to thirty days; expiring a conversation deletes its messages and attachments. **Creations — artifacts and generated images — are governed separately:** by default they persist until the student or educator deletes them (the gallery is the student's portfolio), and each classroom may instead set a creations retention period. Classroom deletion clearly distinguishes disabling, removal from a class, and permanent deletion.
 
-**Provider-side data protection is the educator's explicit, informed choice.** The architecture above governs what *Setun* collects; it does not govern what the model provider receives. Every model alias carries a data-protection flag (§9) stating whether its backing access operates under a data processing agreement. The panel displays this flag wherever aliases are allowlisted, and enabling a no-DPA alias for a classroom requires an explicit confirmation that states plainly what it means: in a school context involving minors, free-text prompts are personal data regardless of how pseudonymous the account is. The decision is made deliberately, per classroom, by the person accountable for it — never discovered later.
+**Content safety is provider-level, by explicit decision.** Setun ships no moderation or filtering layer of its own: prompts and responses pass through unread, relying on the model providers' safety training, and the no-surveillance design means no one at the school reads them either. The educator's instruments are the layered system prompt (§10), the model allowlist, and classroom availability — steering, not surveillance. This boundary is a documented choice, made by the accountable educator, not an oversight.
+
+**Provider-side data protection is the educator's explicit, informed choice.** The architecture above governs what *Setun* collects; it does not govern what the model provider receives. Every model alias carries a data-protection flag (§9) stating whether its backing access operates under a data processing agreement. The panel displays this flag wherever aliases are allowlisted, and enabling a no-DPA alias for a classroom requires an explicit confirmation that states plainly what it means: in a school context involving minors, free-text prompts — and attached images all the more — are personal data regardless of how pseudonymous the account is. The decision is made deliberately, per classroom, by the person accountable for it — never discovered later.
 
 ---
 
@@ -278,10 +295,10 @@ Students can delete their own conversations and creations. Conversation retentio
 A dense, single-operator tool. It provides:
 
 - Dashboard: classroom state, active students, gateway health, current window, usage against budgets and caps, and a one-click lock.
-- Classroom configuration: open and lock, weekly schedule, temporary windows, model allowlist (with data-protection flags and the no-DPA confirmation), tool permission mode, skill authoring policy, session policy, feature toggles, retention, budgets and allowances, force-logout.
-- Model aliases: create and edit aliases — friendly name, gateway identifier, dialect, availability, data-protection flag, utility-alias designation.
-- Roster: per-student status, usage and allowance, last activity, with disable, enable, rotate credential, remove, and delete actions.
-- Provisioning: batch creation of pseudonymous accounts and printable credential cards.
+- Classroom configuration: open and lock, weekly schedule, temporary windows, model allowlist (with data-protection flags and the no-DPA confirmation), tool permission mode, skill authoring policy, attachment policy, classroom instructions, session policy, interface language, feature toggles, retention and creations policy, budgets and allowances, force-logout.
+- Model aliases: create and edit aliases — friendly name, gateway identifier, dialect, availability, data-protection flag, image-input capability flag, optional prices, utility-alias designation.
+- Roster: per-student status, usage and allowance (with cost estimate), last activity, per-student instructions and attachment overrides, with disable, enable, rotate credential, remove, and delete actions.
+- Provisioning: batch creation of pseudonymous accounts — labels are generated word pairs from a localised wordlist, unique within a classroom, speakable in class — and printable credential cards.
 - MCP: configured servers (from the on-disk configuration), negotiated protocol version, reachability, per-tool enablement and sensitive flags.
 - Skills: the shared library with panel authoring, file upload, and skills.sh browsing and import; per-classroom and per-student enablement; review of student-authored skills, including the approval queue when pre-approval is on.
 
@@ -289,7 +306,7 @@ A dense, single-operator tool. It provides:
 
 ## 18. Student dashboard
 
-Deliberately thin: account status, classroom open or closed with the next window, daily allowance used, conversation list with search, creations gallery, and the student's own skills.
+Deliberately thin: account status, classroom open or closed with the next window, daily allowance used (with the approximate cost where prices are configured), an interface-language override, conversation list with search, creations gallery, and the student's own skills.
 
 Its purpose is partly transparency — everything the system knows about a student is visible to that student, and none of it is their real name.
 
@@ -299,21 +316,22 @@ Its purpose is partly transparency — everything the system knows about a stude
 
 Tables, described in prose to keep implementation free:
 
-- **Classroom** — name, state, timezone, schedule, temporary windows, retention, budgets and caps, session policy, tool permission mode, skill authoring policy, feature flags.
-- **Student** — classroom reference, pseudonymous label, optional display name, status, credential digest and hint, timestamps.
+- **Classroom** — name, state, timezone, schedule, temporary windows, retention and creations policy, budgets and caps, session policy, tool permission mode, skill authoring policy, attachment policy, classroom instructions, interface language, feature flags.
+- **Student** — classroom reference, pseudonymous label (generated word pair), optional display name, per-student instructions, interface-language override, status, credential digest and hint, timestamps.
 - **Session** — owner (student or educator), expiry, invalidation marker.
 - **Educator** — conventional account record, password hash.
 - **Conversation** — owner, title, model alias, active leaf, timestamps.
 - **Message** — conversation, parent, role, content parts, tool calls and results, permission decisions, usage, timestamps. Message content feeds an FTS5 index scoped by owner.
-- **Artifact** and **ArtifactVersion** — conversation and message references, type, source, ordered revisions.
-- **GeneratedImage** — owner, prompt reference, local storage path.
+- **Artifact** and **ArtifactVersion** — conversation and message references (nullable, so creations outlive expired conversations), type, source, ordered revisions.
+- **GeneratedImage** — owner, prompt reference (nullable, as above), local storage path.
+- **Attachment** — owner, message reference, kind (image or text), original filename, size, local storage path; deleted with its conversation.
 - **McpServer** and **McpTool** — configuration reference, negotiated protocol version, per-tool enablement, sensitive flag. Endpoints and credential references live in the on-disk configuration, not here.
 - **Skill** — origin (panel-authored, uploaded, imported, student), owner, body, resources, enablement state, approval state, reserved executable marker.
-- **ModelAlias** — friendly name, gateway model identifier, dialect, availability, data-protection flag, utility designation.
+- **ModelAlias** — friendly name, gateway model identifier, dialect, availability, data-protection flag, image-input capability flag, optional per-million-token prices, utility designation.
 - **UsageEvent** — student, model alias, tokens, tool calls, timestamp; the source of allowance and cap accounting.
 - **LoginAttempt** — rate-limiting state per IP and credential digest.
 
-Allowlists are join tables between Classroom and ModelAlias, McpTool, and Skill respectively; the Skill allowlist additionally supports per-student rows.
+Allowlists are join tables between Classroom and ModelAlias, McpTool, and Skill respectively; the Skill allowlist additionally supports per-student rows, and per-student attachment overrides follow the same pattern.
 
 ---
 
@@ -345,6 +363,8 @@ The gateway has listener authentication, no public endpoint, and no exposed mana
 
 Uploaded and imported skill content is treated as untrusted text: it is never executed, arrives disabled, and activates only by explicit educator action.
 
+Attachment uploads are validated server-side — content sniffed against the educator's type allowlist, size-capped — stored outside any web root, served only to their owner with restrictive content-type headers, and never served to or from the sandbox origin.
+
 Artifacts execute on an isolated origin under a restrictive policy, with escape attempts covered by automated tests and no external network access. No CDN is required for normal operation.
 
 Backups — a nightly snapshot job: SQLite online backup via `VACUUM INTO` plus the images and skills directories, last N days retained on the volume — have been restored successfully at least once.
@@ -353,13 +373,13 @@ Backups — a nightly snapshot job: SQLite online backup via `VACUUM INTO` plus 
 
 ## 22. Testing
 
-`bun test` covers pure server logic: credential generation, hashing and rotation; schedule and timezone resolution including daylight-saving boundaries; allowlist, permission-mode, budget, and allowance resolution; MCP protocol version negotiation and legacy normalisation; agent-loop termination conditions; rate-limiter behaviour.
+`bun test` covers pure server logic: credential generation, hashing and rotation; pseudonym generation and uniqueness; schedule and timezone resolution including daylight-saving boundaries; allowlist, permission-mode, budget, and allowance resolution; system-prompt layering; attachment validation; MCP protocol version negotiation and legacy normalisation; agent-loop termination conditions; rate-limiter behaviour.
 
 Integration coverage for the full path from student request through Setun to the gateway, including streaming, resume after disconnect, aborts, tool execution round trips with each permission mode, elicitation round trips, both gateway dialects, and error propagation.
 
 Component coverage with Vitest Browser Mode for the pieces with real interaction logic — composer, permission prompt, artifact panel, panel forms.
 
-Security coverage for authentication failures and brute force, revoked credentials, disabled accounts, sessions after rotation and force-logout, out-of-hours API access, cross-student access including search, disabled models, tools, and skills, and the full artifact escape suite.
+Security coverage for authentication failures and brute force, revoked credentials, disabled accounts, sessions after rotation and force-logout, out-of-hours API access, cross-student access including search, disabled models, tools, and skills, cross-student attachment access, attachment type and size enforcement, and the full artifact escape suite.
 
 End-to-end coverage with Playwright for three flows: a student logging in, chatting, building and editing an artifact, and logging out; an educator creating a classroom, provisioning students, opening, locking, and rotating a credential; and a scheduling flow verifying that requests are refused when closed, succeed when opened, and are refused again after locking — all asserted at the API level, not only in the UI.
 
@@ -371,9 +391,9 @@ End-to-end coverage with Playwright for three flows: a student logging in, chatt
 
 **M1 — Core loop.** Project skeleton with the §6.1 structure, UnoCSS + shadcn-svelte + clean-slate theme validation, Paraglide wiring, database and schema, student authentication, sessions and rate limiting, gateway adapter with both dialects, agent loop with the zero-tool case, SSE streaming with buffering and resume, message tree, persistence. A student can log in and chat.
 
-**M2 — Classroom.** Classroom model, membership, open and lock, weekly schedules, temporary windows, classroom-state push channel, model alias management and allowlists, three-layer budgets and allowances, session policies and force-logout, server-side enforcement across every path, student closed screen.
+**M2 — Classroom.** Classroom model, membership, open and lock, weekly schedules, temporary windows, classroom-state push channel, model alias management and allowlists, three-layer budgets and allowances with the cost-estimate display, classroom and per-student instructions, interface-language settings, session policies and force-logout, server-side enforcement across every path, student closed screen.
 
-**M3 — Tools.** MCP client with `2026-07-28` support and legacy adapters, on-disk server configuration and tool allowlisting, permission modes and sensitive flags, tool execution inside the agent loop, elicitation handling, skills registry with authoring policies, uploads, and skills.sh import, image generation.
+**M3 — Tools.** MCP client with `2026-07-28` support and legacy adapters, on-disk server configuration and tool allowlisting, permission modes and sensitive flags, tool execution inside the agent loop, elicitation handling, skills registry with authoring policies, uploads, and skills.sh import, image generation, student attachments with policy enforcement.
 
 **M4 — Build.** Artifact detection, sandbox origin and policy, Tier 0 rendering, CodeMirror editing, versioning and diff, Tier 1 compilation, creations gallery, escape test suite.
 
@@ -385,7 +405,7 @@ Pilot-ready at the end of M5.
 
 ## 24. Deferred
 
-Assignments and lesson presets. Artifact export as a downloadable project. Expiring lesson-scoped accounts. QR credential login. An educational model-information panel. Side-by-side model comparison — cheap once the agent loop exists, and strong teaching material. Prompt and context inspection. Executable skills with a code sandbox. Per-server automatic elicitation answers. MCP long-running task extensions. Artifact outbound network as a classroom permission. Additional locales beyond Danish and English. OIDC for educators.
+Assignments and lesson presets. Artifact export as a downloadable project. PDF and office-document attachments. Currency-accurate billing (the pilot shows estimates only). Expiring lesson-scoped accounts. QR credential login. An educational model-information panel. Side-by-side model comparison — cheap once the agent loop exists, and strong teaching material. Prompt and context inspection. Executable skills with a code sandbox. Per-server automatic elicitation answers. MCP long-running task extensions. Artifact outbound network as a classroom permission. Additional locales beyond Danish and English. OIDC for educators.
 
 ---
 
