@@ -26,6 +26,27 @@ export interface AttachmentPart {
   readonly mediaType: string;
 }
 
+/**
+ * The student's own edit of an artifact, travelling to the model (§13).
+ *
+ * "When an artifact has been edited since the model last emitted it, the next
+ * message in that conversation carries the current source, clearly marked as the
+ * student's edited version — so \"I broke it, help me fix it\" works without
+ * pasting code by hand."
+ *
+ * A part of its own rather than prose the client prepends: the marking has to
+ * survive a reload, and the transcript has to show a compact reference rather
+ * than a wall of code the pupil never typed.
+ */
+export interface ArtifactEditPart {
+  readonly type: "artifact-edit";
+  readonly artifactId: string;
+  readonly versionId: string;
+  readonly language: string;
+  readonly title: string | null;
+  readonly source: string;
+}
+
 /** An image produced by the generation path, served only by Setun (§15). */
 export interface GeneratedImagePart {
   readonly type: "generated-image";
@@ -65,6 +86,7 @@ export interface ToolResultPart {
 export type MessagePart =
   | TextPart
   | AttachmentPart
+  | ArtifactEditPart
   | GeneratedImagePart
   | ToolCallPart
   | ToolResultPart;

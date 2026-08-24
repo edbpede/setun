@@ -30,6 +30,14 @@ export default defineConfig({
       "valibot",
       "drizzle-orm/sqlite-core",
       "date-fns-tz",
+      // CodeMirror is loaded on demand when a pupil opens an artifact's source
+      // (§20), so it is discovered mid-run exactly like the icons above.
+      "@codemirror/view",
+      "@codemirror/state",
+      "@codemirror/commands",
+      "@codemirror/lang-html",
+      "@codemirror/lang-javascript",
+      "@codemirror/merge",
     ],
   },
   test: {

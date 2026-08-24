@@ -1,5 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import * as v from "valibot";
+import { markArtifactEditsDelivered, pendingArtifactEditParts } from "$lib/server/agent/artifacts";
 import { budgetsOf } from "$lib/server/agent/budgets";
 import { assertNoTurnInFlight, TurnInFlightError } from "$lib/server/agent/concurrency";
 import { executeTurn } from "$lib/server/agent/runner";
@@ -89,6 +90,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   // Uploads the student made against this conversation and has not yet sent.
   // Text and code files were inlined at upload time; images travel as parts (§10).
   const pending = listPendingAttachments(db, { studentId: student.id, conversationId });
+  // Artifacts the student edited since the model last wrote them ride along,
+  // marked as theirs, so a pupil can ask about their own broken code without
+  // pasting it back in (§13).
+  const edits = pendingArtifactEditParts(db, { conversationId, studentId: student.id });
   const parts: MessagePart[] = [
     { type: "text", text },
     ...pending.map((file) => ({
@@ -98,6 +103,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       filename: file.filename,
       mediaType: file.mediaType,
     })),
+    ...edits,
   ];
 
   const prompt = editOfMessageId
@@ -121,6 +127,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     messageId: prompt.id,
     studentId: student.id,
   });
+
+  markArtifactEditsDelivered(db, edits);
 
   setActiveLeaf(db, { conversationId, studentId: student.id, messageId: prompt.id });
 

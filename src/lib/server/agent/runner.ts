@@ -8,6 +8,7 @@ import { recordUsageEvent } from "../db/queries/usage";
 import type { Message, MessagePart, ModelAlias, PermissionMode } from "../db/schema";
 import type { GatewayAdapter } from "../gateway/adapter";
 import type { GatewayEvent } from "../gateway/events";
+import { recordTurnArtifacts } from "./artifacts";
 import type { BudgetSettings } from "./budgets";
 import { turnInteractions } from "./interactions";
 import { liveTurns } from "./live-turns";
@@ -242,6 +243,18 @@ function persistOutcome(
           parts: input.parts,
         })
       : null;
+
+  // Recorded before usage and the active leaf: a creation outlives the
+  // conversation that produced it, so it becomes a row of its own the moment the
+  // model writes it rather than only when something later reads the message (§13, §16).
+  if (assistantMessage) {
+    recordTurnArtifacts(db, {
+      studentId: input.studentId,
+      conversationId: input.conversationId,
+      messageId: assistantMessage.id,
+      parts: input.parts,
+    });
+  }
 
   if (assistantMessage && spent > 0) {
     recordMessageUsage(db, {
