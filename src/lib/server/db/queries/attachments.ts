@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, count, eq, inArray, isNull } from "drizzle-orm";
 import type { AppDatabase } from "../client";
 import { type Attachment, type AttachmentKind, attachment } from "../schema";
 
@@ -9,7 +9,27 @@ import { type Attachment, type AttachmentKind, attachment } from "../schema";
  * an identifier without a student id would be the way around that (§21).
  */
 
-export function recordAttachment(
+/** The pending uploads of one student in one conversation — the draft's chips. */
+function pendingOf(input: { studentId: string; conversationId: string }) {
+  return and(
+    eq(attachment.studentId, input.studentId),
+    eq(attachment.conversationId, input.conversationId),
+    isNull(attachment.messageId),
+  );
+}
+
+/**
+ * Insert one pending attachment, but only while the draft is under its cap.
+ *
+ * The count and the insert are one transaction because they are one decision:
+ * counting in the route and inserting afterwards leaves a window in which two
+ * uploads that each saw "room for one more" both take it, and a draft that was
+ * capped at four arrives at the model carrying five (§10).
+ *
+ * Returns null when the cap is already met, which is the same refusal the
+ * up-front validation gives — the caller reports `too-many` either way.
+ */
+export function recordAttachmentWithinLimit(
   db: AppDatabase,
   input: {
     studentId: string;
@@ -19,9 +39,19 @@ export function recordAttachment(
     filename: string;
     byteSize: number;
     storagePath: string;
+    maxPerMessage: number;
   },
-): Attachment {
-  return db.insert(attachment).values(input).returning().get();
+): Attachment | null {
+  const { maxPerMessage, ...values } = input;
+
+  return db.transaction((tx) => {
+    const pending =
+      tx.select({ value: count() }).from(attachment).where(pendingOf(values)).get()?.value ?? 0;
+
+    if (pending >= maxPerMessage) return null;
+
+    return tx.insert(attachment).values(values).returning().get();
+  });
 }
 
 /** One attachment, for its owner. Absent rather than forbidden for anyone else (§21). */
@@ -44,17 +74,7 @@ export function listPendingAttachments(
   db: AppDatabase,
   input: { studentId: string; conversationId: string },
 ): Attachment[] {
-  return db
-    .select()
-    .from(attachment)
-    .where(
-      and(
-        eq(attachment.studentId, input.studentId),
-        eq(attachment.conversationId, input.conversationId),
-        isNull(attachment.messageId),
-      ),
-    )
-    .all();
+  return db.select().from(attachment).where(pendingOf(input)).all();
 }
 
 /** Claim uploads for the message that was just written. */

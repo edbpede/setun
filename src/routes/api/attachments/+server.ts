@@ -2,10 +2,14 @@ import { error, json } from "@sveltejs/kit";
 import { requireStudentApi } from "$lib/server/auth/guards";
 import { getDb, getFileStore } from "$lib/server/boot";
 import { resolveAttachmentPolicy } from "$lib/server/classroom/settings";
-import { listPendingAttachments, recordAttachment } from "$lib/server/db/queries/attachments";
+import {
+  listPendingAttachments,
+  recordAttachmentWithinLimit,
+} from "$lib/server/db/queries/attachments";
 import { getClassroom } from "$lib/server/db/queries/classrooms";
 import { getOwnedConversation } from "$lib/server/db/queries/conversations";
 import { getAliasById } from "$lib/server/db/queries/model-aliases";
+import type { Attachment } from "$lib/server/db/schema";
 import { inlineTextAttachment, validateAttachment } from "$lib/server/storage/attachments";
 import { extensionFor } from "$lib/server/storage/files";
 import type { RequestHandler } from "./$types";
@@ -38,10 +42,12 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   const alias = getAliasById(db, conversation.modelAliasId);
   if (!classroom || !alias) error(409, "Unavailable");
 
+  const policy = resolveAttachmentPolicy(classroom, student, alias);
+
   const bytes = new Uint8Array(await file.arrayBuffer());
   const validation = validateAttachment({
     bytes,
-    policy: resolveAttachmentPolicy(classroom, student, alias),
+    policy,
     existingCount: listPendingAttachments(db, { studentId: student.id, conversationId }).length,
   });
 
@@ -65,15 +71,31 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     extension: validation.kind === "text" ? "txt" : extensionFor(validation.mediaType),
   });
 
-  const record = recordAttachment(db, {
-    studentId: student.id,
-    conversationId,
-    kind: validation.kind,
-    mediaType: validation.mediaType,
-    filename,
-    byteSize: stored.byteSize,
-    storagePath: stored.storagePath,
-  });
+  // The count above was read before the bytes were written, so it cannot be the
+  // one the cap is enforced on: the insert re-counts under the same lock, and
+  // anything this write leaves behind is removed rather than orphaned. A file
+  // with no row can never be served or deleted through the API (§15, §21).
+  let record: Attachment | null;
+  try {
+    record = recordAttachmentWithinLimit(db, {
+      studentId: student.id,
+      conversationId,
+      kind: validation.kind,
+      mediaType: validation.mediaType,
+      filename,
+      byteSize: stored.byteSize,
+      storagePath: stored.storagePath,
+      maxPerMessage: policy.maxPerMessage,
+    });
+  } catch (cause) {
+    await getFileStore().remove(stored.storagePath);
+    throw cause;
+  }
+
+  if (!record) {
+    await getFileStore().remove(stored.storagePath);
+    return json({ error: "too-many" }, { status: 422 });
+  }
 
   return json(
     {
