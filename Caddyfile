@@ -23,4 +23,28 @@
 	encode zstd gzip
 	root * /srv/sandbox
 	file_server
+
+	header {
+		# The runner page is embedded in an iframe sandboxed WITHOUT
+		# `allow-same-origin` (§14), so its document has an opaque origin and every
+		# module script, import map entry and WebAssembly fetch it makes — including
+		# the ones addressed to this very host — is a cross-origin request sent with
+		# `Origin: null`. Everything served here is public, static and carries no
+		# credential, so `*` is the correct answer and not a concession.
+		Access-Control-Allow-Origin "*"
+		X-Content-Type-Options "nosniff"
+
+		# The isolation that matters (§14). `default-src 'none'` denies outbound
+		# network access by default; the sandbox host appears only where this
+		# origin must load its own pinned runtimes, compiler and utility CSS.
+		# `connect-src` reaches no further, so an artifact cannot call an
+		# authenticated API or fetch anything external. The artifact's own document
+		# adds `connect-src 'none'` on top, and additional policies intersect.
+		Content-Security-Policy "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: {$SETUN_SANDBOX_HOSTNAME}; style-src 'unsafe-inline' {$SETUN_SANDBOX_HOSTNAME}; img-src data: blob: {$SETUN_SANDBOX_HOSTNAME}; font-src data: {$SETUN_SANDBOX_HOSTNAME}; media-src data: blob:; connect-src blob: data: {$SETUN_SANDBOX_HOSTNAME}; worker-src blob:; frame-src 'self' blob: data:; form-action 'none'; base-uri 'none'; frame-ancestors {$SETUN_APP_HOSTNAME}"
+
+		# Nothing here is per-user, so nothing here needs a referrer or a server
+		# banner. Artifacts are named by opaque identifiers all the same (§21).
+		Referrer-Policy "no-referrer"
+		-Server
+	}
 }

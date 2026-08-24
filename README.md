@@ -23,11 +23,18 @@ Requires [Bun](https://bun.com) 1.4 or newer.
 ```sh
 bun install          # also compiles Paraglide messages and syncs SvelteKit types
 prek install         # git hooks — required before your first commit
-bun --bun run dev
+bun --bun run dev    # the application, on :5173
+bun run dev:sandbox  # the artifact origin, on :5174 — a second terminal
 ```
 
 `prek install` is not optional: the hooks enforce Conventional Commits, block direct commits
 to `main`, and run the secret scanner. Install [prek](https://prek.j178.dev) separately.
+
+**Two origins, always.** Artifacts execute on a separate hostname from the application, and
+that separation *is* the isolation (PRD §14) — so development runs two servers, and `bun run
+build` produces two outputs: `build/` for the application and `build-sandbox/` for the static
+artifact host Caddy serves. Running only the first leaves the Build panel with nothing to
+render.
 
 ## Gates
 
