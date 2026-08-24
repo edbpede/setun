@@ -15,6 +15,23 @@ export default defineConfig({
       emitTsDeclarations: true,
     }),
   ],
+  /*
+   * Dependencies discovered only when a particular component first renders —
+   * icon deep imports, and the validation stack a form spec pulls in. Left to
+   * itself Vite optimises them mid-run and reloads the page under the test,
+   * which the browser-mode runner reports as flaky.
+   */
+  optimizeDeps: {
+    include: [
+      "@lucide/svelte/icons/image",
+      "@lucide/svelte/icons/paperclip",
+      "@lucide/svelte/icons/x",
+      "sveltekit-superforms/adapters",
+      "valibot",
+      "drizzle-orm/sqlite-core",
+      "date-fns-tz",
+    ],
+  },
   test: {
     expect: { requireAssertions: true },
     // The server project is reserved for suites needing Vite resolution; pure

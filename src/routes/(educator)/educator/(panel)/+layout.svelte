@@ -65,6 +65,20 @@ const current = $derived(page.url.pathname);
       >
         {m.educator_aliases_title()}
       </a>
+      <a
+        href="/educator/tools"
+        class="rounded-md px-2 py-1.5 text-sm text-foreground hover:bg-secondary"
+        class:bg-secondary={current === "/educator/tools"}
+      >
+        {m.educator_tools_title()}
+      </a>
+      <a
+        href="/educator/skills"
+        class="rounded-md px-2 py-1.5 text-sm text-foreground hover:bg-secondary"
+        class:bg-secondary={current === "/educator/skills"}
+      >
+        {m.educator_skills_title()}
+      </a>
     </nav>
 
     <form method="POST" action="/educator?/logout" use:enhance class="mt-auto pt-2">

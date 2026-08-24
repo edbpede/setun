@@ -1,16 +1,36 @@
 /**
- * Composer state (PRD §10, §20).
+ * Composer state (PRD §10, §15, §20).
  *
  * Drafts survive tab discard on the target hardware, so the draft is mirrored to
  * session storage rather than held only in memory (§20).
+ *
+ * Attachments are held here only as the server's own record of them: the upload
+ * happens as the pupil picks the file, so what the composer carries is a list of
+ * identifiers the send endpoint will claim, never bytes (§10).
  */
 
 const DRAFT_KEY_PREFIX = "setun:draft:";
+
+/** One uploaded file, as the upload endpoint described it back (§10). */
+export interface ComposerAttachment {
+  readonly id: string;
+  readonly filename: string;
+  readonly kind: "image" | "text";
+  readonly mediaType: string;
+  readonly byteSize: number;
+}
+
+/** What pressing send does: write a message, or generate a picture (§15). */
+export type ComposerMode = "text" | "image";
 
 export class ComposerState {
   draft = $state("");
   /** Set while editing an existing prompt; the send becomes a sibling (§10). */
   editingMessageId = $state<string | null>(null);
+  /** Uploaded and waiting for the message that will carry them (§10). */
+  attachments = $state<ComposerAttachment[]>([]);
+  /** The composer's explicit image mode, the second trigger path of §15. */
+  mode = $state<ComposerMode>("text");
   #conversationId: string | null = null;
 
   get canSend(): boolean {
@@ -26,6 +46,25 @@ export class ComposerState {
     this.#conversationId = conversationId;
     this.draft = this.#readDraft();
     this.editingMessageId = null;
+    this.attachments = [];
+    this.mode = "text";
+  }
+
+  addAttachment(attachment: ComposerAttachment): void {
+    this.attachments = [...this.attachments, attachment];
+  }
+
+  removeAttachment(attachmentId: string): void {
+    this.attachments = this.attachments.filter((file) => file.id !== attachmentId);
+  }
+
+  /** Adopt what the server says is still pending — the truth after a reload. */
+  setAttachments(attachments: readonly ComposerAttachment[]): void {
+    this.attachments = [...attachments];
+  }
+
+  toggleMode(): void {
+    this.mode = this.mode === "image" ? "text" : "image";
   }
 
   setDraft(value: string): void {
@@ -50,6 +89,8 @@ export class ComposerState {
 
     this.editingMessageId = null;
     this.setDraft("");
+    // The identifiers travel with the send; the server claims the rows.
+    this.attachments = [];
 
     return { text, editOfMessageId };
   }

@@ -5,7 +5,11 @@ import BudgetForm from "$lib/components/educator/BudgetForm.svelte";
 import PolicyForm from "$lib/components/educator/PolicyForm.svelte";
 import RosterInstructions from "$lib/components/educator/RosterInstructions.svelte";
 import ScheduleEditor from "$lib/components/educator/ScheduleEditor.svelte";
+import SkillGrants from "$lib/components/educator/SkillGrants.svelte";
+import StudentSkillOversight from "$lib/components/educator/StudentSkillOversight.svelte";
 import TemporaryWindowEditor from "$lib/components/educator/TemporaryWindowEditor.svelte";
+import ToolAllowlist from "$lib/components/educator/ToolAllowlist.svelte";
+import ToolPolicyForm from "$lib/components/educator/ToolPolicyForm.svelte";
 import * as m from "$lib/paraglide/messages";
 import type { PageProps } from "./$types";
 
@@ -45,6 +49,14 @@ const forceLoggedOut = $derived(
   <BudgetForm data={data.budgetsForm} />
 
   <PolicyForm data={data.policyForm} {forceLoggedOut} />
+
+  <ToolPolicyForm data={data.toolPolicyForm} />
+
+  <ToolAllowlist servers={data.toolServers} />
+
+  <SkillGrants skills={data.skills} students={data.students} />
+
+  <StudentSkillOversight skills={data.studentSkills} />
 
   <RosterInstructions students={data.students} />
 </div>

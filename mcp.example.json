@@ -1,0 +1,28 @@
+{
+  "$comment": [
+    "The MCP server configuration (PRD §11) — the third operator file, beside",
+    "docker-compose.yml and .env. Copy to mcp.json, edit, and mount it read-only",
+    "at the path SETUN_MCP_CONFIG_PATH names.",
+    "",
+    "An endpoint is a security decision, so it lives here in reviewable config and",
+    "not in the database or the panel. Credentials are referenced by the NAME of an",
+    "environment variable and never written here.",
+    "",
+    "Streamable HTTP only. A stdio server runs as its own pinned container on the",
+    "internal network and is addressed over HTTP; educator-supplied stdio",
+    "configuration would amount to remote code execution on the host.",
+    "",
+    "The panel switches configured servers on, chooses which of their tools each",
+    "class may use, and marks the ones that should ask before they run. Nothing in",
+    "the application can add an entry to this file."
+  ],
+  "servers": {
+    "example": {
+      "label": "Example server",
+      "url": "http://mcp-example:8080/mcp",
+      "credentialEnv": "SETUN_MCP_EXAMPLE_TOKEN",
+      "headers": {},
+      "parameterHeaderAllowlist": []
+    }
+  }
+}

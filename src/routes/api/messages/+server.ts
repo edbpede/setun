@@ -6,14 +6,16 @@ import { executeTurn } from "$lib/server/agent/runner";
 import { sseResponse, TURN_ID_HEADER } from "$lib/server/agent/sse-response";
 import { streamTurnEvents } from "$lib/server/agent/stream";
 import { generateConversationTitle } from "$lib/server/agent/title";
+import { prepareTurn } from "$lib/server/agent/turn-setup";
 import { requireStudentApi } from "$lib/server/auth/guards";
-import { getDb, getGatewayAdapter } from "$lib/server/boot";
+import { getDb, getFileStore, getGatewayAdapter, getMcpClient } from "$lib/server/boot";
 import { checkModelAccess } from "$lib/server/classroom/enforcement";
-import { resolveStudentSettings } from "$lib/server/classroom/settings";
+import { attachToMessage, listPendingAttachments } from "$lib/server/db/queries/attachments";
 import { getOwnedConversation, setActiveLeaf } from "$lib/server/db/queries/conversations";
 import { appendMessage, appendSibling, getActivePath } from "$lib/server/db/queries/messages";
 import { getAliasById } from "$lib/server/db/queries/model-aliases";
 import { createTurn } from "$lib/server/db/queries/turns";
+import type { MessagePart } from "$lib/server/db/schema";
 import type { RequestHandler } from "./$types";
 
 /**
@@ -84,21 +86,41 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     throw cause;
   }
 
+  // Uploads the student made against this conversation and has not yet sent.
+  // Text and code files were inlined at upload time; images travel as parts (§10).
+  const pending = listPendingAttachments(db, { studentId: student.id, conversationId });
+  const parts: MessagePart[] = [
+    { type: "text", text },
+    ...pending.map((file) => ({
+      type: "attachment" as const,
+      attachmentId: file.id,
+      kind: file.kind,
+      filename: file.filename,
+      mediaType: file.mediaType,
+    })),
+  ];
+
   const prompt = editOfMessageId
     ? appendSibling(db, {
         siblingOfId: editOfMessageId,
         conversationId,
         role: "user",
-        parts: [{ type: "text", text }],
+        parts,
       })
     : appendMessage(db, {
         conversationId,
         parentId: conversation.activeLeafId ?? null,
         role: "user",
-        parts: [{ type: "text", text }],
+        parts,
       });
 
   if (!prompt) error(404, "Not found");
+
+  attachToMessage(db, {
+    attachmentIds: pending.map((file) => file.id),
+    messageId: prompt.id,
+    studentId: student.id,
+  });
 
   setActiveLeaf(db, { conversationId, studentId: student.id, messageId: prompt.id });
 
@@ -108,9 +130,21 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     parentMessageId: prompt.id,
   });
 
-  // The educator's steering instrument, inherited invisibly by every
-  // conversation in the classroom (§10).
-  const settings = resolveStudentSettings(access.classroom, student);
+  const path = getActivePath(db, prompt.id);
+
+  // The educator's steering instrument, the classroom's tools and the student's
+  // skills, resolved together so the prompt and the tool set cannot disagree
+  // about what is available (§10, §11, §12).
+  const prepared = await prepareTurn({
+    db,
+    adapter: getGatewayAdapter(),
+    files: getFileStore(),
+    mcp: getMcpClient(),
+    classroom: access.classroom,
+    student,
+    conversationId,
+    path,
+  });
 
   // Detached on purpose: a closed tab must not cancel the turn, because the
   // student can resume it (§10).
@@ -123,12 +157,13 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     classroomId: student.classroomId,
     alias,
     parentMessageId: prompt.id,
-    path: getActivePath(db, prompt.id),
-    promptLayers: {
-      classroomInstructions: settings.classroomInstructions,
-      studentInstructions: settings.studentInstructions,
-    },
+    path,
+    attachmentImages: prepared.attachmentImages,
+    promptLayers: prepared.promptLayers,
     budgets: budgetsOf(access.classroom),
+    tools: prepared.tools,
+    toolContext: prepared.toolContext,
+    permissionMode: access.classroom.permissionMode,
   });
 
   // Titles are generated after the first exchange, asynchronously, and never

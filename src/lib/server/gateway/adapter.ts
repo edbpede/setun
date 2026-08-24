@@ -1,6 +1,12 @@
 import { AnthropicDialect } from "./anthropic/dialect";
 import { GatewayClient, type GatewayClientOptions } from "./client";
-import type { ChatRequest, GatewayDialectAdapter, GatewayModel } from "./dialect";
+import type {
+  ChatRequest,
+  GatewayDialectAdapter,
+  GatewayModel,
+  GeneratedImageBytes,
+  ImageRequest,
+} from "./dialect";
 import { GatewayError } from "./errors";
 import type { GatewayEvent } from "./events";
 import { OpenAiDialect } from "./openai/dialect";
@@ -39,6 +45,18 @@ export class GatewayAdapter {
 
   listModels(dialect: DialectName, signal?: AbortSignal): Promise<GatewayModel[]> {
     return this.#dialectFor(dialect).listModels(signal);
+  }
+
+  /**
+   * Generate one image, returning its bytes (§15).
+   *
+   * "Image generation runs through the gateway adapter and is subject to the
+   * same classroom enablement, allowlist, permission, and budget rules as text."
+   * The enablement lives above; what lives here is that a provider URL stops at
+   * this boundary and only bytes travel on.
+   */
+  generateImage(dialect: DialectName, request: ImageRequest): Promise<GeneratedImageBytes> {
+    return this.#dialectFor(dialect).generateImage(request);
   }
 
   #dialectFor(dialect: DialectName): GatewayDialectAdapter {

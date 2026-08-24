@@ -14,12 +14,23 @@ import { E2E_DATABASE_PATH, E2E_PEPPER } from "../playwright.config";
 const run = promisify(execFile);
 
 /** Mint a student through the real provisioning path; codes are never recoverable after (§7). */
+/**
+ * This suite's own classroom.
+ *
+ * Files run in parallel, and the classroom suite reconfigures the room it uses —
+ * locking it, emptying its schedule, taking its models away. Sharing one room
+ * between the two makes this file fail whenever the workers interleave, which is
+ * what CI's two workers do (§22).
+ */
+const CLASSROOM = "E2E chat";
+
 async function provisionStudent(): Promise<{ label: string; code: string }> {
   const { stdout } = await run("bun", ["run", "e2e/support/seed-student.ts"], {
     env: {
       ...process.env,
       SETUN_DATABASE_PATH: E2E_DATABASE_PATH,
       SETUN_STUDENT_CODE_PEPPER: E2E_PEPPER,
+      SETUN_E2E_CLASSROOM: CLASSROOM,
     },
   });
 

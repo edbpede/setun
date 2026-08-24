@@ -3,12 +3,71 @@ import { conversation } from "./conversation";
 import { createdAt, primaryId } from "./helpers";
 
 /**
- * One content part of a message.
+ * What the student decided about a tool call (§11, §19).
  *
- * Only text exists at M1. Image and file parts arrive with attachments (Phase
- * 3.11) and image generation (Phase 3.10); the union is the extension point.
+ * `auto` is the mode deciding without asking; the other three are what happened
+ * when it did ask — including the case where nobody was there to answer.
  */
-export type MessagePart = { type: "text"; text: string };
+export const TOOL_DECISIONS = ["auto", "approved", "declined", "unanswered"] as const;
+export type ToolDecision = (typeof TOOL_DECISIONS)[number];
+
+/** Prose the model wrote or the student typed. */
+export interface TextPart {
+  readonly type: "text";
+  readonly text: string;
+}
+
+/** A file the student attached; the bytes live outside any web root (§10, §21). */
+export interface AttachmentPart {
+  readonly type: "attachment";
+  readonly attachmentId: string;
+  readonly kind: "image" | "text";
+  readonly filename: string;
+  readonly mediaType: string;
+}
+
+/** An image produced by the generation path, served only by Setun (§15). */
+export interface GeneratedImagePart {
+  readonly type: "generated-image";
+  readonly imageId: string;
+  readonly prompt: string;
+}
+
+/**
+ * A tool the model asked for, with what the permission mode decided (§11, §19).
+ *
+ * The decision is stored on the call rather than in a parallel list, so a
+ * transcript cannot drift into attributing one student's refusal to another
+ * call.
+ */
+export interface ToolCallPart {
+  readonly type: "tool-call";
+  readonly toolCallId: string;
+  readonly toolName: string;
+  /** The server the tool came from, for the attribution the student saw (§11). */
+  readonly serverLabel: string | null;
+  readonly arguments: unknown;
+  readonly decision: ToolDecision;
+}
+
+/** What the tool answered. Untrusted input, never a privileged instruction (§11, §21). */
+export interface ToolResultPart {
+  readonly type: "tool-result";
+  readonly toolCallId: string;
+  readonly result: unknown;
+  readonly isError: boolean;
+}
+
+/**
+ * One content part of a message (§19: "content parts, tool calls and results,
+ * permission decisions").
+ */
+export type MessagePart =
+  | TextPart
+  | AttachmentPart
+  | GeneratedImagePart
+  | ToolCallPart
+  | ToolResultPart;
 
 export const MESSAGE_ROLES = ["user", "assistant"] as const;
 export type MessageRole = (typeof MESSAGE_ROLES)[number];

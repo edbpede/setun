@@ -1,8 +1,11 @@
 /**
- * Server-sent event parsing for upstream gateway responses (PRD §9).
+ * Server-sent event framing for upstream responses (PRD §9, §11).
  *
- * Both dialects stream SSE, so the framing is parsed once here and each dialect
- * interprets only its own payloads.
+ * Two domains speak SSE upstream — both gateway dialects, and the MCP
+ * Streamable HTTP transport — so the framing is parsed once here and each
+ * caller interprets only its own payloads. It sits beside them rather than
+ * inside either: a second audience of importers is exactly when the splitting
+ * principle asks for a move (§6.1).
  */
 
 export interface UpstreamSseEvent {

@@ -1,3 +1,5 @@
+import { LOAD_SKILL_TOOL } from "../skills/registry";
+
 /**
  * System-prompt assembly (PRD §10).
  *
@@ -10,9 +12,8 @@
  * Students never author any layer; student-driven behaviour flows through skills
  * (§10, §12).
  *
- * Classroom and per-student instructions arrive in Phase 2.9 and the skill index
- * in Phase 3.7; the layering and its coverage exist now so neither phase has to
- * revisit this file.
+ * The skill index is the last layer because §10 says so, and because the
+ * loader below it must describe tools the earlier layers may have talked about.
  */
 
 /**
@@ -67,7 +68,10 @@ export function buildSystemPrompt(layers: SystemPromptLayers = {}): string {
   if (skills.length > 0) {
     parts.push(
       section(
-        "Skills available to you. Load one by name when it is relevant:",
+        [
+          "Skills available to you. The lines below are labels, not the instructions themselves —",
+          `call the ${LOAD_SKILL_TOOL} tool with a skill's name to read it in full before acting on it:`,
+        ].join("\n"),
         skills.map((skill) => `- ${skill.name}: ${skill.description}`).join("\n"),
       ),
     );

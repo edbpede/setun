@@ -1,3 +1,4 @@
+import type { MessagePart } from "$lib/server/db/schema";
 import { StreamingTurn } from "./streaming-turn.svelte";
 
 /**
@@ -10,7 +11,21 @@ import { StreamingTurn } from "./streaming-turn.svelte";
 export interface ChatMessage {
   readonly id: string;
   readonly role: "user" | "assistant";
-  readonly text: string;
+  /**
+   * The message's content in the order it happened (§10, §11, §15).
+   *
+   * The same shape the server persists and the same shape a streaming turn
+   * accumulates, so one component renders all three.
+   */
+  readonly parts: readonly MessagePart[];
+}
+
+/** The prose of a message, for the composer's edit flow (§10). */
+export function textOf(message: ChatMessage): string {
+  return message.parts
+    .filter((part) => part.type === "text")
+    .map((part) => part.text)
+    .join("");
 }
 
 export class ConversationState {
@@ -36,22 +51,26 @@ export class ConversationState {
     return this.turn.streaming || !this.turn.isEmpty;
   }
 
-  appendUserMessage(text: string): ChatMessage {
+  appendUserMessage(text: string, attachments: readonly MessagePart[] = []): ChatMessage {
     // Optimistic: the server assigns the real id, and the reload after the turn
     // reconciles it. Keyed `{#each}` needs a stable key in the meantime.
-    const message: ChatMessage = { id: `pending-${crypto.randomUUID()}`, role: "user", text };
+    const message: ChatMessage = {
+      id: `pending-${crypto.randomUUID()}`,
+      role: "user",
+      parts: [{ type: "text", text }, ...attachments],
+    };
     this.messages = [...this.messages, message];
     return message;
   }
 
-  /** Fold a finished turn's text into the message list. */
+  /** Fold a finished turn into the message list. */
   commitAssistantMessage(id: string): void {
     if (this.turn.isEmpty) {
       this.turn.clear();
       return;
     }
 
-    this.messages = [...this.messages, { id, role: "assistant", text: this.turn.text }];
+    this.messages = [...this.messages, { id, role: "assistant", parts: this.turn.parts }];
     this.turn.clear();
   }
 

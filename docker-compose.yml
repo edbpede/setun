@@ -32,8 +32,9 @@ services:
       SETUN_DATABASE_PATH: /data/db/setun.sqlite
       SETUN_STORAGE_PATH: /data/storage
       SETUN_BACKUP_PATH: /data/backups
-      # The on-disk MCP server configuration (§11). The file itself, and its
-      # schema, arrive with the MCP client in Phase 3.2; mount it below then.
+      # The on-disk MCP server configuration (§11) — the third operator file.
+      # Copy mcp.example.json to mcp.json and mount it below. Leave the variable
+      # unset to run without MCP at all; a classroom with no tools is valid.
       SETUN_MCP_CONFIG_PATH: /config/mcp.json
       # Credentials referenced by name from the MCP configuration file (§11).
       # Add one line per credential the file names; never store them in the database.
@@ -43,7 +44,9 @@ services:
       - db:/data/db
       - storage:/data/storage
       - backups:/data/backups
-      # - ./mcp.json:/config/mcp.json:ro   # enabled in Phase 3.2
+      # Read-only: the application never writes to it, and the endpoints it
+      # names are a reviewed decision rather than a runtime one (§11).
+      - ./mcp.json:/config/mcp.json:ro
     networks: [internal, edge]
     depends_on: [cpa]
 

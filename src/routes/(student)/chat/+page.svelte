@@ -5,6 +5,8 @@ import { readEventStream } from "$lib/chat/sse-client";
 import SetunMark from "$lib/components/brand/SetunMark.svelte";
 import ChatMessage from "$lib/components/chat/ChatMessage.svelte";
 import Composer from "$lib/components/chat/Composer.svelte";
+import ElicitationForm from "$lib/components/chat/ElicitationForm.svelte";
+import PermissionPrompt from "$lib/components/chat/PermissionPrompt.svelte";
 import StreamingMessage from "$lib/components/chat/StreamingMessage.svelte";
 import AllowanceMeter from "$lib/components/classroom/AllowanceMeter.svelte";
 import ClassroomClosed from "$lib/components/classroom/ClassroomClosed.svelte";
@@ -13,7 +15,7 @@ import { getLocale } from "$lib/paraglide/runtime";
 import { ClassroomState } from "$lib/state/classroom.svelte";
 import { ComposerState } from "$lib/state/composer.svelte";
 import { ConversationState } from "$lib/state/conversation.svelte";
-import { refusalMessage } from "$lib/state/refusals";
+import { attachmentRefusalMessage, imageRefusalMessage, refusalMessage } from "$lib/state/refusals";
 import type { PageProps } from "./$types";
 
 /**
@@ -31,6 +33,8 @@ const classroom = new ClassroomState();
 
 let scroller = $state<HTMLDivElement | null>(null);
 let refusal = $state<string | null>(null);
+/** True while the composer's image mode is waiting on a picture (§15). */
+let generating = $state(false);
 
 /**
  * The status the page renders.
@@ -56,6 +60,8 @@ $effect(() => {
   conversation.title = data.conversation?.title ?? null;
   conversation.replaceMessages(data.messages);
   composer.attach(data.conversation?.id ?? null);
+  // Uploads that survived a reload; the server is the record of what is pending.
+  composer.setAttachments(data.pendingAttachments);
 });
 
 // A turn was still streaming when this tab loaded: replay the buffer and tail
@@ -141,7 +147,16 @@ async function send(): Promise<void> {
   if (!text) return;
 
   if (editOfMessageId) conversation.truncateFrom(editOfMessageId);
-  conversation.appendUserMessage(text);
+  conversation.appendUserMessage(
+    text,
+    composer.attachments.map((file) => ({
+      type: "attachment" as const,
+      attachmentId: file.id,
+      kind: file.kind,
+      filename: file.filename,
+      mediaType: file.mediaType,
+    })),
+  );
   conversation.turn.begin("pending");
 
   await consume("/api/messages", {
@@ -153,6 +168,89 @@ async function send(): Promise<void> {
       ...(editOfMessageId ? { editOfMessageId } : {}),
     }),
   });
+}
+
+/**
+ * Answer a question the running turn asked (§11).
+ *
+ * The turn is running detached from the request that started it, so the answer
+ * goes to its own endpoint rather than back up the stream that asked.
+ */
+async function respond(body: Record<string, unknown>): Promise<void> {
+  const turnId = conversation.turn.turnId;
+  if (!turnId || turnId === "pending") return;
+
+  await fetch(`/api/turns/${turnId}/respond`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }).catch(() => {
+    // The turn will time the question out on its own and continue without the
+    // tool, so a failed answer is not something to interrupt a pupil with (§11).
+  });
+}
+
+/** Upload one file as the pupil picks it, so the send carries only identifiers (§10). */
+async function attach(file: File): Promise<void> {
+  const conversationId = conversation.id;
+  if (!conversationId) return;
+
+  refusal = null;
+  const body = new FormData();
+  body.set("file", file);
+  body.set("conversationId", conversationId);
+
+  const response = await fetch("/api/attachments", { method: "POST", body }).catch(() => null);
+
+  if (!response?.ok) {
+    const payload = await response?.json().catch(() => null);
+    refusal = attachmentRefusalMessage(payload?.error);
+    return;
+  }
+
+  composer.addAttachment(await response.json());
+}
+
+async function detach(attachmentId: string): Promise<void> {
+  await fetch(`/api/attachments/${attachmentId}`, { method: "DELETE" }).catch(() => null);
+  composer.removeAttachment(attachmentId);
+}
+
+/**
+ * The composer's explicit image mode (§15).
+ *
+ * The second trigger path: it converges on the same server-side execution the
+ * agent loop's tool reaches, so there is nothing to do here but ask and reload.
+ */
+async function generateImage(): Promise<void> {
+  const conversationId = conversation.id;
+  if (!conversationId) return;
+
+  refusal = null;
+  const { text } = composer.take();
+  if (!text) return;
+
+  generating = true;
+  try {
+    const response = await fetch("/api/images", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ conversationId, prompt: text }),
+    }).catch(() => null);
+
+    if (!response?.ok) {
+      const payload = await response?.json().catch(() => null);
+      refusal =
+        response?.status === 403
+          ? refusalMessage(payload?.error)
+          : imageRefusalMessage(payload?.error);
+      return;
+    }
+
+    await invalidateAll();
+  } finally {
+    generating = false;
+  }
 }
 
 async function abort(): Promise<void> {
@@ -213,6 +311,13 @@ async function abort(): Promise<void> {
         </select>
       </form>
 
+      <a
+        href="/skills"
+        class="shrink-0 text-xs text-muted-foreground hover:text-foreground"
+      >
+        {m.student_skills_link()}
+      </a>
+
       <form method="POST" action="?/logout" use:enhance>
         <button type="submit" class="px-1 text-xs text-muted-foreground hover:text-foreground">
           {m.chat_sign_out()}
@@ -248,6 +353,45 @@ async function abort(): Promise<void> {
 
       <StreamingMessage turn={conversation.turn} />
 
+      <!--
+        The turn's only interactive parts. Rendered inline in the conversation
+        rather than as a dialog: on a 640-pixel screen a modal covers the answer
+        the pupil is deciding about (§11, §20).
+      -->
+      {#if conversation.turn.permission}
+        {#key conversation.turn.permission.toolCallId}
+          <PermissionPrompt
+            permission={conversation.turn.permission}
+            onrespond={(approved) =>
+              respond({
+                requestId: conversation.turn.permission?.toolCallId,
+                kind: "permission",
+                approved,
+              })}
+          />
+        {/key}
+      {/if}
+
+      {#if conversation.turn.elicitation}
+        {#key conversation.turn.elicitation.toolCallId}
+          <ElicitationForm
+            elicitation={conversation.turn.elicitation}
+            onrespond={(answer) =>
+              respond({
+                requestId: conversation.turn.elicitation?.toolCallId,
+                kind: "elicitation",
+                ...answer,
+              })}
+          />
+        {/key}
+      {/if}
+
+      {#if generating}
+        <p class="text-center text-xs text-muted-foreground" role="status">
+          {m.chat_image_generating()}
+        </p>
+      {/if}
+
       {#if refusal}
         <p class="text-center text-xs text-muted-foreground" role="status">{refusal}</p>
       {/if}
@@ -257,9 +401,13 @@ async function abort(): Promise<void> {
   {#if conversation.id}
     <Composer
       {composer}
-      streaming={conversation.turn.streaming}
-      onsend={send}
+      streaming={conversation.turn.streaming || generating}
+      attachmentsEnabled={data.attachmentsEnabled}
+      imageModeAvailable={data.imageModeAvailable}
+      onsend={() => (composer.mode === "image" ? generateImage() : send())}
       onabort={abort}
+      onattach={attach}
+      ondetach={detach}
     />
   {:else}
     <form method="POST" action="?/create" use:enhance class="border-t border-border p-3">

@@ -159,10 +159,79 @@ export const ClassroomPolicySchema = v.object({
   interfaceLanguage: v.picklist(INTERFACE_LANGUAGES),
   sessionPolicy: v.picklist(SESSION_POLICIES),
   sessionSlidingDays: whole(1, 365),
+  conversationRetentionDays: whole(1, 3_650),
+});
+
+/**
+ * Tools, skills, attachments and image generation (§10, §11, §12, §15).
+ *
+ * A schema of its own rather than more fields on the policy form: this is the
+ * settings block an educator changes when they decide what a class may *do*,
+ * and it is edited from a different part of the page than instructions and
+ * session length. Appendix A supplies every default; each stays editable.
+ */
+export const ToolPolicySchema = v.object({
   permissionMode: v.picklist(PERMISSION_MODES),
   skillAuthoringPolicy: v.picklist(SKILL_AUTHORING_POLICIES),
-  conversationRetentionDays: whole(1, 3_650),
   attachmentsEnabled: flag,
+  /** Appendix A: images <= 5 MB, text/code <= 256 KB, at most 5 per message. */
+  attachmentImageMaxBytes: whole(1_024, 64 * 1024 * 1024),
+  attachmentTextMaxBytes: whole(256, 8 * 1024 * 1024),
+  attachmentMaxPerMessage: whole(1, 20),
+  /** Appendix A: 10k tokens per generated image (§15). */
+  imageTokenEquivalent: whole(1, 1_000_000),
+});
+
+/** Parsed by hand from one row of the tool allowlist (§11). */
+export const AllowToolSchema = v.object({ mcpToolId: v.pipe(v.string(), v.uuid()) });
+
+/** Parsed by hand from one row of the skill grants (§12). */
+export const GrantSkillSchema = v.object({
+  skillId: v.pipe(v.string(), v.uuid()),
+  /** Empty offers the skill to the whole class; a value narrows it to one pupil. */
+  studentId: v.pipe(
+    v.optional(v.string(), ""),
+    v.transform((value) => (value ? value : null)),
+    v.union([v.null(), v.pipe(v.string(), v.uuid())]),
+  ),
+});
+
+// --- Skills (§12) ---
+
+/** One skill as an educator or a pupil writes it in a form. */
+export const SkillSchema = v.object({
+  name: v.pipe(
+    label(60),
+    v.regex(
+      /^[\p{L}\p{N}][\p{L}\p{N} _-]*$/u,
+      "a skill name may contain letters, digits, spaces, hyphens and underscores",
+    ),
+  ),
+  /** The one line injected into the system prompt (§12). */
+  description: label(200),
+  body: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(64_000)),
+});
+
+export const SkillIdSchema = v.object({ skillId: v.pipe(v.string(), v.uuid()) });
+
+/** Parsed by hand: a skill toggled, approved or rejected from a row's own form. */
+export const SkillStateSchema = v.object({
+  skillId: v.pipe(v.string(), v.uuid()),
+  enabled: v.optional(v.picklist(["true", "false"])),
+  approvalState: v.optional(v.picklist(["approved", "pending", "rejected"])),
+});
+
+// --- MCP servers and tools (§11) ---
+
+export const McpServerStateSchema = v.object({
+  serverId: v.pipe(v.string(), v.uuid()),
+  enabled: v.picklist(["true", "false"]),
+});
+
+export const McpToolStateSchema = v.object({
+  toolId: v.pipe(v.string(), v.uuid()),
+  enabled: v.optional(v.picklist(["true", "false"])),
+  sensitive: v.optional(v.picklist(["true", "false"])),
 });
 
 /** Parsed by hand from one row of the roster. */

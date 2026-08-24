@@ -1,11 +1,14 @@
 import { fail, redirect } from "@sveltejs/kit";
 import * as v from "valibot";
+import { generationAliases } from "$lib/server/agent/image-generation";
 import { requireStudentPage } from "$lib/server/auth/guards";
 import { destroySession, SESSION_COOKIE_NAME } from "$lib/server/auth/sessions";
 import { getDb } from "$lib/server/boot";
 import { classroomAvailability } from "$lib/server/classroom/enforcement";
 import { resolveClassroomStatus } from "$lib/server/classroom/status";
+import { listPendingAttachments } from "$lib/server/db/queries/attachments";
 import { listClassroomAliases } from "$lib/server/db/queries/classroom-aliases";
+import { getClassroom } from "$lib/server/db/queries/classrooms";
 import {
   createConversation,
   getOwnedConversation,
@@ -46,20 +49,21 @@ export const load: PageServerLoad = ({ locals, url }) => {
     ? getOwnedConversation(db, { conversationId: requestedId, studentId: student.id })
     : conversations[0];
 
+  // The parts travel whole: tool calls, generated images and attachments are as
+  // much of the transcript as the prose is, and the same component renders a
+  // reloaded message and a streaming one (§10, §11, §15).
   const messages = active?.activeLeafId
     ? getActivePath(db, active.activeLeafId).map((message) => ({
         id: message.id,
         role: message.role,
-        text: message.parts
-          .filter((part) => part.type === "text")
-          .map((part) => part.text)
-          .join(""),
+        parts: message.parts,
       }))
     : [];
 
   // A turn still streaming when this tab reloaded: the client resumes it from
   // the buffer rather than losing the answer (§10).
   const activeTurn = findActiveTurn(db, student.id);
+  const classroom = getClassroom(db, student.classroomId);
 
   return {
     student: {
@@ -77,6 +81,22 @@ export const load: PageServerLoad = ({ locals, url }) => {
     // Only what this classroom is allowed to use — students never see an alias
     // their educator has not allowlisted (§8, §9).
     hasModel: listClassroomAliases(db, student.classroomId).length > 0,
+    // Presentation only: the upload endpoint refuses on its own policy read, and
+    // hiding a control is never access control (§8, §10, §21).
+    attachmentsEnabled: student.attachmentsEnabled ?? classroom?.attachmentsEnabled ?? false,
+    imageModeAvailable: generationAliases(db, student.classroomId).length > 0,
+    // Uploads the pupil made before this reload; the composer shows them again.
+    pendingAttachments: active
+      ? listPendingAttachments(db, { studentId: student.id, conversationId: active.id }).map(
+          (file) => ({
+            id: file.id,
+            filename: file.filename,
+            kind: file.kind,
+            mediaType: file.mediaType,
+            byteSize: file.byteSize,
+          }),
+        )
+      : [],
     status: resolveClassroomStatus(db, student),
   };
 };

@@ -1,23 +1,36 @@
+import { parseSseStream } from "../../sse";
 import { GatewayClient } from "../client";
-import type { ChatRequest, GatewayDialectAdapter, GatewayModel } from "../dialect";
+import type {
+  ChatRequest,
+  GatewayContentPart,
+  GatewayDialectAdapter,
+  GatewayMessage,
+  GatewayModel,
+  GatewayToolDefinition,
+  GeneratedImageBytes,
+  ImageRequest,
+} from "../dialect";
 import { GatewayError } from "../errors";
 import type { GatewayEvent } from "../events";
-import { parseSseStream } from "../sse";
+import { promptTextOf } from "../messages";
 import { resolveUsage } from "../usage";
 
 /**
  * The Anthropic-native Messages dialect (PRD §9).
  *
- * Two shape differences from the OpenAI dialect matter and are absorbed here:
- * the system prompt is a top-level field rather than a message with a role, and
+ * Four shape differences from the OpenAI dialect matter and are absorbed here:
+ * the system prompt is a top-level field rather than a message with a role;
  * usage arrives split across `message_start` (input) and `message_delta`
- * (output) rather than in one trailing chunk.
+ * (output) rather than in one trailing chunk; tool calls stream as a content
+ * block whose input arrives as JSON fragments; and a tool's answer travels back
+ * as a user message rather than as a role of its own.
  */
 
 interface MessageStreamEvent {
   type?: string;
-  delta?: { text?: string; stop_reason?: string | null };
-  content_block?: { type?: string; text?: string };
+  index?: number;
+  delta?: { type?: string; text?: string; partial_json?: string; stop_reason?: string | null };
+  content_block?: { type?: string; text?: string; id?: string; name?: string };
   message?: { usage?: { input_tokens?: number; output_tokens?: number } };
   usage?: { input_tokens?: number; output_tokens?: number };
   error?: { message?: string };
@@ -38,7 +51,7 @@ export class AnthropicDialect implements GatewayDialectAdapter {
     // System messages are a top-level parameter in this dialect, not a role.
     const system = request.messages
       .filter((m) => m.role === "system")
-      .map((m) => m.content)
+      .map((m) => (typeof m.content === "string" ? m.content : ""))
       .join("\n\n");
     const conversation = request.messages.filter((m) => m.role !== "system");
 
@@ -49,10 +62,8 @@ export class AnthropicDialect implements GatewayDialectAdapter {
         max_tokens: request.maxOutputTokens ?? DEFAULT_MAX_TOKENS,
         stream: true,
         ...(system ? { system } : {}),
-        messages: conversation.map((m) => ({
-          role: m.role,
-          content: [{ type: "text", text: m.content }],
-        })),
+        ...(request.tools?.length ? { tools: request.tools.map(encodeTool) } : {}),
+        messages: encodeConversation(conversation),
       },
       { signal: request.signal, accept: "text/event-stream" },
     );
@@ -60,6 +71,8 @@ export class AnthropicDialect implements GatewayDialectAdapter {
     let completion = "";
     let inputTokens: number | undefined;
     let outputTokens: number | undefined;
+    /** Tool blocks stream their input as JSON fragments, keyed by block index. */
+    const toolBlocks = new Map<number, { id: string; name: string; arguments: string }>();
 
     for await (const event of parseSseStream(GatewayClient.requireBody(response))) {
       let payload: MessageStreamEvent;
@@ -70,6 +83,7 @@ export class AnthropicDialect implements GatewayDialectAdapter {
       }
 
       const type = payload.type ?? event.event;
+      const index = payload.index ?? 0;
 
       switch (type) {
         case "message_start": {
@@ -78,6 +92,17 @@ export class AnthropicDialect implements GatewayDialectAdapter {
           break;
         }
         case "content_block_delta": {
+          if (payload.delta?.partial_json !== undefined) {
+            const existing = toolBlocks.get(index);
+            if (existing) {
+              toolBlocks.set(index, {
+                ...existing,
+                arguments: existing.arguments + payload.delta.partial_json,
+              });
+            }
+            break;
+          }
+
           const text = payload.delta?.text;
           if (text) {
             completion += text;
@@ -86,7 +111,16 @@ export class AnthropicDialect implements GatewayDialectAdapter {
           break;
         }
         case "content_block_start": {
-          // A block can open with text already in it.
+          if (payload.content_block?.type === "tool_use") {
+            toolBlocks.set(index, {
+              id: payload.content_block.id ?? crypto.randomUUID(),
+              name: payload.content_block.name ?? "",
+              arguments: "",
+            });
+            break;
+          }
+
+          // A text block can open with text already in it.
           const text = payload.content_block?.text;
           if (text) {
             completion += text;
@@ -106,9 +140,20 @@ export class AnthropicDialect implements GatewayDialectAdapter {
       }
     }
 
+    for (const block of toolBlocks.values()) {
+      if (!block.name) continue;
+      yield {
+        type: "tool-call-started",
+        toolCallId: block.id,
+        toolName: block.name,
+        // An empty input block legitimately means "no arguments".
+        arguments: block.arguments || "{}",
+      };
+    }
+
     yield resolveUsage({
       reported: { inputTokens, outputTokens },
-      promptText: request.messages.map((m) => m.content).join("\n"),
+      promptText: promptTextOf(request.messages),
       completionText: completion,
     });
   }
@@ -120,5 +165,113 @@ export class AnthropicDialect implements GatewayDialectAdapter {
     return (payload.data ?? [])
       .filter((entry): entry is { id: string } => typeof entry.id === "string")
       .map((entry) => ({ id: entry.id }));
+  }
+
+  /**
+   * This dialect has no generation endpoint (§9).
+   *
+   * Reached only if an alias is flagged image-generation-capable *and* set to
+   * this dialect, which is an educator misconfiguration rather than a student
+   * action — so it is refused as such, and the student sees the same friendly
+   * unavailability message as any other gateway refusal (§9, §15).
+   */
+  generateImage(_request: ImageRequest): Promise<GeneratedImageBytes> {
+    return Promise.reject(
+      new GatewayError("rejected", "the Anthropic dialect exposes no image generation endpoint"),
+    );
+  }
+}
+
+function encodeTool(tool: GatewayToolDefinition) {
+  return { name: tool.name, description: tool.description, input_schema: tool.inputSchema };
+}
+
+/**
+ * Encode the conversation.
+ *
+ * A tool's answer is a user message carrying a `tool_result` block in this
+ * dialect, so consecutive tool messages are folded into one user message —
+ * which is also what the API requires when a turn called several tools at once.
+ */
+function encodeConversation(messages: readonly GatewayMessage[]) {
+  const encoded: { role: "user" | "assistant"; content: unknown[] }[] = [];
+
+  for (const message of messages) {
+    if (message.role === "tool") {
+      const block = {
+        type: "tool_result",
+        tool_use_id: message.toolCallId,
+        content: typeof message.content === "string" ? message.content : "",
+      };
+
+      const previous = encoded.at(-1);
+      if (previous?.role === "user" && isToolResultBlock(previous.content.at(-1))) {
+        previous.content.push(block);
+      } else {
+        encoded.push({ role: "user", content: [block] });
+      }
+      continue;
+    }
+
+    if (message.role === "assistant" && message.toolCalls?.length) {
+      const text = typeof message.content === "string" ? message.content : "";
+      encoded.push({
+        role: "assistant",
+        content: [
+          ...(text ? [{ type: "text", text }] : []),
+          ...message.toolCalls.map((call) => ({
+            type: "tool_use",
+            id: call.id,
+            name: call.name,
+            input: parseArguments(call.arguments),
+          })),
+        ],
+      });
+      continue;
+    }
+
+    encoded.push({
+      role: message.role === "assistant" ? "assistant" : "user",
+      content: encodeContent(message.content),
+    });
+  }
+
+  return encoded;
+}
+
+function isToolResultBlock(block: unknown): boolean {
+  return (
+    typeof block === "object" &&
+    block !== null &&
+    (block as { type?: string }).type === "tool_result"
+  );
+}
+
+function encodeContent(content: string | readonly GatewayContentPart[]): unknown[] {
+  if (typeof content === "string") return [{ type: "text", text: content }];
+
+  return content.map((part) =>
+    part.type === "text"
+      ? { type: "text", text: part.text }
+      : // Inline bytes, never a URL the provider would fetch on our behalf (§21).
+        {
+          type: "image",
+          source: { type: "base64", media_type: part.mediaType, data: part.data },
+        },
+  );
+}
+
+/**
+ * Re-parse the arguments the model emitted.
+ *
+ * This dialect wants an object where the other wants the text, and a model that
+ * emitted malformed JSON gets an empty object rather than a failed turn — the
+ * tool will tell it what was wrong, which is the more useful lesson.
+ */
+function parseArguments(raw: string): unknown {
+  try {
+    return JSON.parse(raw || "{}");
+  } catch {
+    return {};
   }
 }

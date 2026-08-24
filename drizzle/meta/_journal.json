@@ -15,6 +15,13 @@
       "when": 1787505836132,
       "tag": "0001_phase_2_classroom",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1787514361626,
+      "tag": "0002_phase_3_tools",
+      "breakpoints": true
     }
   ]
 }

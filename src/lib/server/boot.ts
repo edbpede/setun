@@ -2,11 +2,15 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { seedEducator } from "./auth/educator";
 import { seedDevelopmentData } from "./auth/seed";
-import { getConfig } from "./config";
+import { credentialEnvironment, getConfig } from "./config";
 import { type AppDatabase, createDatabase } from "./db/client";
 import { applyMigrations } from "./db/migrate";
 import { markStreamingTurnsInterrupted } from "./db/queries/turns";
 import { GatewayAdapter } from "./gateway/adapter";
+import { McpClient } from "./mcp/client";
+import { loadMcpConfig } from "./mcp/config";
+import { registerConfiguredServers } from "./mcp/registry";
+import { FileStore } from "./storage/files";
 
 /**
  * The composition root (PRD §6, §6.2).
@@ -23,6 +27,9 @@ import { GatewayAdapter } from "./gateway/adapter";
 interface Services {
   readonly db: AppDatabase;
   readonly adapter: GatewayAdapter;
+  readonly files: FileStore;
+  /** Null when the deployment configures no MCP servers, which is a valid pilot (§11). */
+  readonly mcp: McpClient | null;
 }
 
 let services: Services | null = null;
@@ -74,12 +81,29 @@ function boot(): Services {
     );
   });
 
+  // The third operator file (§6.2). Validated here so a malformed entry or a
+  // missing credential fails boot rather than a lesson (§11).
+  const mcpConfig = loadMcpConfig({
+    path: config.mcpConfigPath ?? null,
+    env: credentialEnvironment(),
+  });
+
+  if (mcpConfig.servers.length > 0) {
+    registerConfiguredServers(db, mcpConfig.servers);
+    console.info(`registered ${mcpConfig.servers.length} MCP server(s) from ${mcpConfig.path}`);
+  }
+
   return {
     db,
     adapter: new GatewayAdapter({
       baseUrl: config.cpaBaseUrl,
       listenerKey: config.cpaListenerKey,
     }),
+    files: new FileStore(config.storagePath),
+    mcp:
+      mcpConfig.servers.length > 0
+        ? new McpClient(mcpConfig.servers, { env: credentialEnvironment() })
+        : null,
   };
 }
 
@@ -94,4 +118,14 @@ export function getDb(): AppDatabase {
 
 export function getGatewayAdapter(): GatewayAdapter {
   return getServices().adapter;
+}
+
+/** The local file store for attachments and generated images (§15, §21). */
+export function getFileStore(): FileStore {
+  return getServices().files;
+}
+
+/** The MCP client, or null when no servers are configured (§11). */
+export function getMcpClient(): McpClient | null {
+  return getServices().mcp;
 }

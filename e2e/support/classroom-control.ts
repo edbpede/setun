@@ -1,4 +1,3 @@
-import { createDatabase } from "../../src/lib/server/db/client";
 import { allowAlias, disallowAlias } from "../../src/lib/server/db/queries/classroom-aliases";
 import {
   listClassrooms,
@@ -6,6 +5,7 @@ import {
   updateClassroomSettings,
 } from "../../src/lib/server/db/queries/classrooms";
 import { listAvailableAliases } from "../../src/lib/server/db/queries/model-aliases";
+import { openE2eDatabase } from "./database";
 
 /**
  * Drive one classroom's configuration from outside the application.
@@ -18,21 +18,26 @@ import { listAvailableAliases } from "../../src/lib/server/db/queries/model-alia
  *
  * Runs as a separate process; WAL mode makes the concurrent write safe.
  *
+ * The classroom is named by `SETUN_E2E_CLASSROOM`, the same variable the seed
+ * helper reads, so a suite reconfigures only its own room and never the one a
+ * suite running in parallel is chatting in.
+ *
  * Usage: `bun run e2e/support/classroom-control.ts <command> [argument]`
  */
 
 const databasePath = process.env.SETUN_DATABASE_PATH;
+const classroomName = process.env.SETUN_E2E_CLASSROOM ?? "E2E";
 
 if (!databasePath) {
   console.error("SETUN_DATABASE_PATH is required");
   process.exit(1);
 }
 
-const db = createDatabase(databasePath);
-const classroom = listClassrooms(db)[0];
+const db = await openE2eDatabase(databasePath);
+const classroom = listClassrooms(db).find((candidate) => candidate.name === classroomName);
 
 if (!classroom) {
-  console.error("no classroom to control — seed one first");
+  console.error(`no classroom named '${classroomName}' to control — seed one first`);
   process.exit(1);
 }
 
@@ -83,6 +88,52 @@ switch (command) {
       classroomId: classroom.id,
       // One token: any turn at all has already spent more than the day allows.
       settings: { perStudentDailyTokens: 1 },
+    });
+    break;
+
+  /** Leave room for a short text file and nothing more — the size-cap case (§10). */
+  case "tiny-attachment-caps":
+    updateClassroomSettings(db, {
+      classroomId: classroom.id,
+      settings: { attachmentTextMaxBytes: 8, attachmentImageMaxBytes: 8 },
+    });
+    break;
+
+  case "restore-attachment-caps":
+    updateClassroomSettings(db, {
+      classroomId: classroom.id,
+      settings: { attachmentTextMaxBytes: 256 * 1024, attachmentImageMaxBytes: 5 * 1024 * 1024 },
+    });
+    break;
+
+  /** Only images on the allowlist: a text file then has a type that is not allowed. */
+  case "images-only-attachments":
+    updateClassroomSettings(db, {
+      classroomId: classroom.id,
+      settings: { attachmentTypes: ["image/png"] },
+    });
+    break;
+
+  case "restore-attachment-types":
+    updateClassroomSettings(db, {
+      classroomId: classroom.id,
+      settings: {
+        attachmentTypes: ["image/png", "image/jpeg", "image/webp", "text/plain"],
+      },
+    });
+    break;
+
+  case "disable-attachments":
+    updateClassroomSettings(db, {
+      classroomId: classroom.id,
+      settings: { attachmentsEnabled: false },
+    });
+    break;
+
+  case "enable-attachments":
+    updateClassroomSettings(db, {
+      classroomId: classroom.id,
+      settings: { attachmentsEnabled: true },
     });
     break;
 
