@@ -56,6 +56,24 @@ export function listStudentImages(db: AppDatabase, studentId: string): Generated
     .all();
 }
 
+/**
+ * The student deleting their own creation (§16).
+ *
+ * Owner-scoped in the statement, and it returns the stored path so the caller
+ * can remove the bytes too — a row without its file is a leak of disk, and a
+ * file without its row is unreachable but still on the volume (§21).
+ */
+export function deleteOwnedImage(
+  db: AppDatabase,
+  input: { imageId: string; studentId: string },
+): string | undefined {
+  return db
+    .delete(generatedImage)
+    .where(and(eq(generatedImage.id, input.imageId), eq(generatedImage.studentId, input.studentId)))
+    .returning({ storagePath: generatedImage.storagePath })
+    .get()?.storagePath;
+}
+
 export function attachImageToMessage(
   db: AppDatabase,
   input: { imageId: string; messageId: string },
