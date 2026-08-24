@@ -336,41 +336,41 @@ hooks = [
 
 ### 4.1 Sandbox origin (§6, §14)
 
-- [ ] `sandbox/` — runner page, compiler worker, pinned runtimes; own build step producing static files; mounted into the Caddy container (the app never serves the sandbox hostname, §6); Vite serves it on a second localhost port in dev
-- [ ] Iframe sandboxed to allow scripts but **not** same-origin; strict CSP denying outbound network by default (§14); communication with the host page via explicit message passing only
-- [ ] Self-hosted `@unocss/runtime` served from the sandbox origin (§13) — no CDN contact in normal operation
+- [x] `sandbox/` — runner page, compiler worker, pinned runtimes; own build step producing static files; mounted into the Caddy container (the app never serves the sandbox hostname, §6); Vite serves it on a second localhost port in dev
+- [x] Iframe sandboxed to allow scripts but **not** same-origin; strict CSP denying outbound network by default (§14); communication with the host page via explicit message passing only
+- [x] Self-hosted `@unocss/runtime` served from the sandbox origin (§13) — no CDN contact in normal operation
 
 ### 4.2 Artifact detection and versioning (§13, §19)
 
-- [ ] Renderer detection from fenced blocks: `html`/`svg` → Tier 0, `jsx`/`tsx`/`svelte` → Tier 1; everything else (including bare `js`/`ts`/`css`) stays a highlighted code block
-- [ ] `artifact` + `artifact-version` schema (nullable conversation/message refs so creations outlive expired conversations, §19); continuity heuristic: same language as the conversation's most recent artifact → new version, different language → new artifact; every version retained (§13)
-- [ ] `bun test`: detection matrix, continuity heuristic
+- [x] Renderer detection from fenced blocks: `html`/`svg` → Tier 0, `jsx`/`tsx`/`svelte` → Tier 1; everything else (including bare `js`/`ts`/`css`) stays a highlighted code block
+- [x] `artifact` + `artifact-version` schema (nullable conversation/message refs so creations outlive expired conversations, §19); continuity heuristic: same language as the conversation's most recent artifact → new version, different language → new artifact; every version retained (§13)
+- [x] `bun test`: detection matrix, continuity heuristic
 
 ### 4.3 Tier 0 rendering (§13)
 
-- [ ] `src/lib/components/artifacts/` — artifact panel: sandboxed iframe host, message-passing bridge, tabbed/overlaid default with split-view by choice and fullscreen as primary preview mode (§20); prominent **Build** entry point (§13)
-- [ ] Vitest Browser Mode: artifact panel interaction logic (§22)
+- [x] `src/lib/components/artifacts/` — artifact panel: sandboxed iframe host, message-passing bridge, tabbed/overlaid default with split-view by choice and fullscreen as primary preview mode (§20); prominent **Build** entry point (§13)
+- [x] Vitest Browser Mode: artifact panel interaction logic (§22)
 
 ### 4.4 Editing, versioning, diff (§13)
 
-- [ ] CodeMirror 6 editor; edits create versions locally with no model request; undo and diff view from the version history
-- [ ] Edited-since-model-emitted tracking: the next message in the conversation carries the current source, clearly marked as the student's edited version (§13)
-- [ ] Integration test: edit → version → edit flows back on next message
+- [x] CodeMirror 6 editor; edits create versions locally with no model request; undo and diff view from the version history
+- [x] Edited-since-model-emitted tracking: the next message in the conversation carries the current source, clearly marked as the student's edited version (§13)
+- [x] Integration test: edit → version → edit flows back on next message
 
 ### 4.5 Tier 1 compilation (§13, §20)
 
-- [ ] `sandbox/` compiler worker: `esbuild-wasm` fetched lazily on first non-static artifact, cached thereafter; compilation on explicit **Run** or heavily debounced idle — never per keystroke (§13); the worker competes with the UI on two cores, so lazy and explicit (§20)
-- [ ] Pinned self-hosted ESM runtimes: React and Svelte only (§13)
-- [ ] Playwright: `tsx` and `svelte` artifacts compile and render
+- [x] `sandbox/` compiler worker: `esbuild-wasm` fetched lazily on first non-static artifact, cached thereafter; compilation on explicit **Run** or heavily debounced idle — never per keystroke (§13); the worker competes with the UI on two cores, so lazy and explicit (§20)
+- [x] Pinned self-hosted ESM runtimes: React and Svelte only (§13)
+- [x] Playwright: `tsx` and `svelte` artifacts compile and render
 
 ### 4.6 Creations gallery (§13, §16)
 
-- [ ] `src/routes/(student)/` creations route: artifacts and generated images; student delete (§16)
-- [ ] Playwright: gallery shows a created artifact and image
+- [x] `src/routes/(student)/` creations route: artifacts and generated images; student delete (§16)
+- [x] Playwright: gallery shows a created artifact and image
 
 ### 4.7 Escape test suite (§14, §22)
 
-- [ ] Playwright suite asserting each attempt **fails**: parent DOM access, cookie and storage access, authenticated API calls, external fetches, frame escape, navigation, popup abuse — runs in CI as part of the Playwright gate
+- [x] Playwright suite asserting each attempt **fails**: parent DOM access, cookie and storage access, authenticated API calls, external fetches, frame escape, navigation, popup abuse — runs in CI as part of the Playwright gate
 
 ---
 

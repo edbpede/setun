@@ -22,6 +22,25 @@ function sseChunk(payload: unknown): string {
 /** A prompt containing this asks the stub to answer slowly. */
 export const SLOW_MARKER = "LANGSOM-SVAR";
 
+/**
+ * A prompt containing this asks the stub to answer with an HTML artifact (§13).
+ *
+ * The artifact flow needs a model that emits a recognised fenced block, and the
+ * marker travels in the prompt because that is the only part of the request a
+ * test controls.
+ */
+export const ARTIFACT_MARKER = "ARTEFAKT-HTML";
+
+/** What the stub writes when asked for one. Detection is on the fence tag alone (§13). */
+export const ARTIFACT_REPLY = [
+  "Her er siden:",
+  "```html",
+  "<!doctype html><html><head><title>Klikkeren</title></head>",
+  "<body><button id=\"knap\">Klik her</button></body></html>",
+  "```",
+  "Prøv den.",
+].join("\n");
+
 const SLOW_WORD_DELAY_MS = 400;
 
 export async function startStubGateway(
@@ -55,6 +74,7 @@ export async function startStubGateway(
      */
     const slow = payload.includes(SLOW_MARKER);
     const perWordDelay = slow ? SLOW_WORD_DELAY_MS : options.delayMs;
+    const body = payload.includes(ARTIFACT_MARKER) ? ARTIFACT_REPLY : reply;
 
     response.writeHead(200, {
       "content-type": "text/event-stream",
@@ -62,7 +82,7 @@ export async function startStubGateway(
     });
 
     // One word per chunk, so the test observes genuine incremental streaming.
-    for (const word of reply.split(" ")) {
+    for (const word of body.split(" ")) {
       response.write(sseChunk({ choices: [{ delta: { content: `${word} ` } }] }));
       if (perWordDelay) await new Promise((r) => setTimeout(r, perWordDelay));
     }

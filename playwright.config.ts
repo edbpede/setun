@@ -2,9 +2,10 @@ import { defineConfig } from "@playwright/test";
 
 /**
  * Setun runs on two origins (PRD §6): the application, and the artifact sandbox.
- * Both are reserved here so no other process claims them and so the split exists
- * locally from the start; the sandbox origin gets its static server in Phase 4.1,
- * when `sandbox/` is built.
+ * Both are served here, by two independent servers: the application by the
+ * adapter-node build, and the sandbox by the prebuilt static files Caddy serves
+ * in a real deployment. Sharing one server would mean one origin, and origin
+ * separation is the entire artifact isolation mechanism (§14).
  */
 const APP_PORT = Number(process.env.SETUN_E2E_APP_PORT ?? 4173);
 export const SANDBOX_PORT = Number(process.env.SETUN_E2E_SANDBOX_PORT ?? 4174);
@@ -67,6 +68,15 @@ export default defineConfig({
       port: APP_PORT,
       reuseExistingServer: !process.env.CI,
       env: appEnv,
+    },
+    {
+      // The artifact host, built and served exactly as Caddy serves it — the
+      // same content security policy included, because that policy is what the
+      // escape suite is testing (§14, §22).
+      command: "bun run build:sandbox && bun --bun vite preview --config sandbox/vite.config.ts",
+      port: SANDBOX_PORT,
+      reuseExistingServer: !process.env.CI,
+      env: { SETUN_SANDBOX_PORT: String(SANDBOX_PORT) },
     },
     {
       command: "bun run e2e/support/stub-gateway-server.ts",
