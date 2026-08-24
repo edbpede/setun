@@ -5,7 +5,12 @@ import {
   listClassrooms,
   setClassroomState,
 } from "../../src/lib/server/db/queries/classrooms";
-import { createAlias, listAvailableAliases } from "../../src/lib/server/db/queries/model-aliases";
+import {
+  createAlias,
+  getAliasByName,
+  listAvailableAliases,
+} from "../../src/lib/server/db/queries/model-aliases";
+import type { ModelAlias } from "../../src/lib/server/db/schema";
 import { openE2eDatabase } from "./database";
 
 /**
@@ -41,9 +46,31 @@ const classroom =
   listClassrooms(db).find((candidate) => candidate.name === classroomName) ??
   createClassroom(db, { name: classroomName });
 
-if (listAvailableAliases(db).length === 0) {
-  createAlias(db, { name: "E2E", gatewayModelId: "stub-model", dialect: "openai" });
+/**
+ * The alias every suite chats through, made by whichever helper reaches the
+ * empty table first.
+ *
+ * Each suite seeds its own classroom, but they share this one row, and
+ * Playwright starts their helpers side by side — so "if none exist, create one"
+ * is two decisions with a gap between them: both processes read an empty table,
+ * both insert the same unique name, and the second is refused. Losing that race
+ * means the row now exists, which is all this wanted, so the winner's row is
+ * read rather than the suite failing on it (§9).
+ */
+function ensureAlias(name: string): ModelAlias {
+  const existing = getAliasByName(db, name);
+  if (existing) return existing;
+
+  try {
+    return createAlias(db, { name, gatewayModelId: "stub-model", dialect: "openai" });
+  } catch (cause) {
+    const winner = getAliasByName(db, name);
+    if (!winner) throw cause;
+    return winner;
+  }
 }
+
+ensureAlias("E2E");
 
 // Allowlist every alias for the classroom and open it: a classroom with no
 // allowlist and no schedule refuses everything, which is correct behaviour and
