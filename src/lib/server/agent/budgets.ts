@@ -207,6 +207,18 @@ export class TurnBudget {
   }
 
   /**
+   * How much of the wall-clock cap is left, at `now`, never below zero.
+   *
+   * What anything that waits inside a turn must be bounded by. A wait given the
+   * whole cap restarts it: four such waits in one turn keep a five-minute turn
+   * alive for twenty, and the cap stops meaning what it says (§10, §11).
+   */
+  remainingWallClockMs(now: number = Date.now()): number {
+    const elapsed = now - this.#startedAt;
+    return Math.max(0, this.#budgets.perTurnWallClockSeconds * 1000 - elapsed);
+  }
+
+  /**
    * Whether a cap has been reached, at `now`.
    *
    * Returns the cap that stopped it so the notice can say which, or null while

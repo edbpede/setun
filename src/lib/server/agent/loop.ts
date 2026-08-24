@@ -220,6 +220,8 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<GatewayEvent
         calls: step.toolCalls,
         messages,
         signal: upstream.signal,
+        budget,
+        now,
       });
 
       if (outcome) {
@@ -360,6 +362,8 @@ async function* executeCalls(args: {
   calls: readonly GatewayToolCall[];
   messages: GatewayMessage[];
   signal: AbortSignal;
+  budget: TurnBudget;
+  now: () => number;
 }): AsyncGenerator<GatewayEvent, TurnEndReason | null> {
   const tooling = args.input.tooling;
 
@@ -378,7 +382,14 @@ async function* executeCalls(args: {
       continue;
     }
 
-    const decision = yield* decide({ tooling, tool, call, signal: args.signal });
+    const decision = yield* decide({
+      tooling,
+      tool,
+      call,
+      signal: args.signal,
+      budget: args.budget,
+      now: args.now,
+    });
 
     if (decision !== "approved") {
       const refusal = decision === "declined" ? DECLINED_RESULT : UNANSWERED_RESULT;
@@ -419,6 +430,8 @@ async function* executeCalls(args: {
         call,
         elicitation: execution.elicitation,
         signal: args.signal,
+        budget: args.budget,
+        now: args.now,
       });
 
       if (!answer) {
@@ -465,6 +478,8 @@ async function* decide(args: {
   tool: NonNullable<ReturnType<ToolSet["find"]>>;
   call: GatewayToolCall;
   signal: AbortSignal;
+  budget: TurnBudget;
+  now: () => number;
 }): AsyncGenerator<GatewayEvent, PermissionDecision> {
   const { tooling, tool, call } = args;
 
@@ -497,6 +512,8 @@ async function* elicit(args: {
   call: GatewayToolCall;
   elicitation: NonNullable<Awaited<ReturnType<typeof executeTool>>["elicitation"]>;
   signal: AbortSignal;
+  budget: TurnBudget;
+  now: () => number;
 }): AsyncGenerator<GatewayEvent, Record<string, unknown> | null> {
   const { tooling, tool, call } = args;
 
@@ -523,12 +540,17 @@ async function* elicit(args: {
 /**
  * How long a question may wait.
  *
- * Bounded by the turn's own wall-clock cap: a question that outlived the turn it
- * belongs to would be answered into nothing, and the pupil would be looking at a
- * form that no longer does anything (§10, §11).
+ * What is left of the turn's wall-clock cap, not the whole of it. A question
+ * that outlived the turn it belongs to would be answered into nothing, and the
+ * pupil would be looking at a form that no longer does anything; giving each
+ * wait the full cap restarts it, so one permission and three elicitation rounds
+ * keep a five-minute turn alive for twenty (§10, §11).
+ *
+ * Reaching zero is not a special case: the wait resolves unanswered, the call
+ * returns a refusal, and the loop stops at its next clean boundary.
  */
-function waitTimeout(args: { tooling: TurnTooling }): number {
-  return (args.tooling.context.classroom.perTurnWallClockSeconds ?? 300) * 1000;
+function waitTimeout(args: { budget: TurnBudget; now: () => number }): number {
+  return args.budget.remainingWallClockMs(args.now());
 }
 
 function parseArguments(raw: string): Record<string, unknown> {

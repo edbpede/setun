@@ -129,6 +129,45 @@ describe("TurnBudget — per-turn caps", () => {
   });
 });
 
+/**
+ * What every wait inside a turn is bounded by (§10, §11).
+ *
+ * The figure has to be what is *left*, not the cap: a wait handed the whole cap
+ * restarts it, and one permission question followed by three elicitation rounds
+ * would keep a five-minute turn alive for twenty.
+ */
+describe("TurnBudget — the wall clock a wait may use", () => {
+  const budgets: BudgetSettings = {
+    perTurnStepCap: 20,
+    perTurnWallClockSeconds: 300,
+    perTurnTokenCap: 100_000,
+    perStudentDailyTokens: 250_000,
+    perClassroomDailyTokens: 2_500_000,
+  };
+
+  it("offers the whole cap to a turn that has just started", () => {
+    expect(new TurnBudget(budgets, 1_000).remainingWallClockMs(1_000)).toBe(300_000);
+  });
+
+  it("draws successive waits down one cap rather than giving each the whole of it", () => {
+    const tracker = new TurnBudget(budgets, 1_000);
+
+    // Four waits, each taking a minute. The fourth is bounded by the minute the
+    // turn has left, not by the five it started with.
+    expect(tracker.remainingWallClockMs(1_000 + 60_000)).toBe(240_000);
+    expect(tracker.remainingWallClockMs(1_000 + 120_000)).toBe(180_000);
+    expect(tracker.remainingWallClockMs(1_000 + 180_000)).toBe(120_000);
+    expect(tracker.remainingWallClockMs(1_000 + 240_000)).toBe(60_000);
+  });
+
+  it("offers nothing once the cap is spent, rather than a negative wait", () => {
+    const tracker = new TurnBudget(budgets, 1_000);
+
+    expect(tracker.remainingWallClockMs(1_000 + 300_000)).toBe(0);
+    expect(tracker.remainingWallClockMs(1_000 + 900_000)).toBe(0);
+  });
+});
+
 describe("budgetDayRange — day boundary in the classroom timezone (§10)", () => {
   it("runs from local midnight to local midnight", () => {
     // 2026-01-05 09:00 Copenhagen (CET, UTC+1) is 08:00 UTC.
