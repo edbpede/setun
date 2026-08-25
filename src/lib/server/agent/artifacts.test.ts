@@ -291,6 +291,50 @@ describe("an edited prompt re-carrying what it replaces", () => {
     expect(retry.map((part) => part.source)).toEqual(["<p>endnu en rettelse</p>"]);
   });
 
+  it("carries the artifact as it stands now, not the snapshot that was sent", () => {
+    const { recorded, prompt } = sentWithEdit();
+
+    // A second revision, sent and stamped on the branch this retry abandons.
+    appendArtifactVersion(db, {
+      artifactId: recorded.artifactId,
+      source: "<p>anden rettelse</p>",
+      authoredBy: "student",
+    });
+    markArtifactEditsDelivered(
+      db,
+      outgoingArtifactEditParts(db, { conversationId, studentId: fixtures.student.id }),
+    );
+
+    const retry = outgoingArtifactEditParts(db, {
+      conversationId,
+      studentId: fixtures.student.id,
+      editOfMessageId: prompt.id,
+    });
+
+    // The block says it is the current source, so it has to be the current one.
+    expect(retry.map((part) => part.source)).toEqual(["<p>anden rettelse</p>"]);
+  });
+
+  it("carries nothing once the model has written the newer revision", () => {
+    const { recorded, prompt } = sentWithEdit();
+
+    appendArtifactVersion(db, {
+      artifactId: recorded.artifactId,
+      source: "<p>modellens svar</p>",
+      authoredBy: "model",
+    });
+
+    // Not the student's to present as their own edit; their next edit of it
+    // travels as an ordinary pending one.
+    expect(
+      outgoingArtifactEditParts(db, {
+        conversationId,
+        studentId: fixtures.student.id,
+        editOfMessageId: prompt.id,
+      }),
+    ).toEqual([]);
+  });
+
   it("carries nothing from a message belonging to another conversation", () => {
     const { prompt } = sentWithEdit();
     const other = createConversation(db, {

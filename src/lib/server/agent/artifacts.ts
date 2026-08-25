@@ -4,9 +4,11 @@ import { artifactTitle } from "../../artifacts/document";
 import type { ArtifactLanguage } from "../../artifacts/types";
 import type { AppDatabase } from "../db/client";
 import {
+  type ArtifactWithLatest,
   appendArtifactVersion,
   createArtifact,
   latestConversationArtifact,
+  listConversationArtifacts,
   markVersionsDelivered,
   setArtifactTitle,
   undeliveredStudentEdits,
@@ -103,14 +105,21 @@ export function pendingArtifactEditParts(
   db: AppDatabase,
   input: { conversationId: string; studentId: string },
 ): Extract<MessagePart, { type: "artifact-edit" }>[] {
-  return undeliveredStudentEdits(db, input).map(({ artifact, latest }) => ({
-    type: "artifact-edit" as const,
+  return undeliveredStudentEdits(db, input).map(toEditPart);
+}
+
+function toEditPart({
+  artifact,
+  latest,
+}: ArtifactWithLatest): Extract<MessagePart, { type: "artifact-edit" }> {
+  return {
+    type: "artifact-edit",
     artifactId: artifact.id,
     versionId: latest.id,
     language: artifact.language,
     title: artifact.title,
     source: latest.source,
-  }));
+  };
 }
 
 /**
@@ -120,8 +129,13 @@ export function pendingArtifactEditParts(
  * replaces from the model's path — so an edit that travelled with the original
  * reaches the model on no branch at all unless the replacement carries it
  * again. The stamp records that a revision was delivered, not which branch it
- * was delivered on, which is why a retry cannot rely on it. A newer undelivered
- * revision of the same artifact supersedes what the original held.
+ * was delivered on, which is why a retry cannot rely on it.
+ *
+ * What is re-carried is the artifact as it stands now, never the snapshot the
+ * replaced message held: the block tells the model it is looking at the current
+ * source, and a revision made after that message would make that untrue. So the
+ * replaced message names *which* artifacts to carry, and the artifact itself
+ * supplies the source.
  */
 export function outgoingArtifactEditParts(
   db: AppDatabase,
@@ -135,13 +149,19 @@ export function outgoingArtifactEditParts(
   const original = getMessage(db, input.editOfMessageId);
   if (!original || original.conversationId !== input.conversationId) return pending;
 
-  const superseded = new Set(pending.map((part) => part.artifactId));
-  const carried = original.parts.filter(
-    (part): part is Extract<MessagePart, { type: "artifact-edit" }> =>
-      part.type === "artifact-edit" && !superseded.has(part.artifactId),
+  const named = new Set(
+    original.parts.flatMap((part) => (part.type === "artifact-edit" ? [part.artifactId] : [])),
+  );
+  for (const part of pending) named.delete(part.artifactId);
+  if (named.size === 0) return pending;
+
+  const carried = listConversationArtifacts(db, input).filter(
+    // A revision the model wrote since is not the student's to re-present as
+    // theirs; their next edit of it travels as an ordinary pending one.
+    ({ artifact, latest }) => named.has(artifact.id) && latest.authoredBy === "student",
   );
 
-  return [...pending, ...carried];
+  return [...pending, ...carried.map(toEditPart)];
 }
 
 /** Marks those edits as carried, so the following message does not repeat them (§13). */
