@@ -163,8 +163,17 @@ Nightly, after 03:00 in the classroom timezone, the job writes to the `backups` 
   file copy of a WAL-mode database is not safe; this is.
 - `storage-YYYY-MM-DD/` — a copy of the storage tree: attachments and generated images.
 
+Both halves are written under a `.partial` name and renamed into place, so a name without that
+suffix is a finished snapshot. A night counts as taken only when both halves are there: a run
+that dies after the database half is written takes the storage half on the next hourly tick.
+Never restore from a `.partial` name — it is a snapshot that was still being written.
+
+The storage volume and the backups volume must be separate trees; the job refuses to run if one
+contains the other, rather than copying a directory into itself every night.
+
 The last **14 days** are retained (Appendix A); older snapshots are pruned by the day in their
-name. Files the job did not write are never touched, so the volume is safe to keep notes in.
+name, `.partial` leftovers included. Files the job did not write are never touched, so the
+volume is safe to keep notes in.
 
 Skill bodies and their bundled resources are database columns, so they travel in the snapshot.
 CPA's provider tokens are not Setun's data and are not included; see §4 above.
@@ -205,7 +214,8 @@ full-text search index and the stored image bytes were all present and correct.
 The invariants that rehearsal establishes are asserted continuously in
 `src/lib/server/jobs/backup.test.ts`: the snapshot is a database another connection can open,
 the storage tree travels with it, one snapshot is taken a night however often the job ticks,
-and the fourteen-day window is applied by name rather than by file timestamp.
+a night left half-written is finished on the next tick, and the fourteen-day window is applied
+by name rather than by file timestamp.
 
 Re-run the rehearsal after any change to the storage layout or the volume mapping. §21 requires
 that backups "have been restored successfully at least once" — for *this* installation.

@@ -1,5 +1,5 @@
-import { cp, mkdir, readdir, rm, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { cp, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { format, parseISO, subDays } from "date-fns";
 import { formatInTimeZone } from "date-fns-tz";
 import type { AppDatabase } from "../db/client";
@@ -45,6 +45,16 @@ const SNAPSHOT_PREFIX = "setun-";
 const SNAPSHOT_SUFFIX = ".sqlite";
 const STORAGE_PREFIX = "storage-";
 
+/**
+ * The suffix a half-written snapshot wears until it is whole.
+ *
+ * Both halves are written under this name and renamed into place, so the final
+ * name means "complete" rather than "started". Without that, a run killed
+ * mid-`VACUUM INTO` or mid-copy leaves a truncated file whose mere presence
+ * tells the next tick the night is done.
+ */
+const PENDING_SUFFIX = ".partial";
+
 /** `setun-2026-08-25.sqlite` — sortable, one per night, and obviously what it is. */
 export function snapshotName(day: string): string {
   return `${SNAPSHOT_PREFIX}${day}${SNAPSHOT_SUFFIX}`;
@@ -54,9 +64,14 @@ export function storageSnapshotName(day: string): string {
   return `${STORAGE_PREFIX}${day}`;
 }
 
-/** The day a snapshot belongs to, or null for a name this job did not write. */
+/**
+ * The day a snapshot belongs to, or null for a name this job did not write.
+ *
+ * A pending name reads as its day too, so an abandoned half-written snapshot
+ * ages out through the same prune rather than sitting on the volume forever.
+ */
 export function snapshotDay(name: string): string | null {
-  const match = /^(?:setun-|storage-)(\d{4}-\d{2}-\d{2})(?:\.sqlite)?$/.exec(name);
+  const match = /^(?:setun-|storage-)(\d{4}-\d{2}-\d{2})(?:\.sqlite)?(?:\.partial)?$/.exec(name);
   return match ? match[1] : null;
 }
 
@@ -77,6 +92,7 @@ export interface BackupOptions {
 
 export interface BackupOutcome {
   readonly day: string;
+  /** True when this run completed tonight's snapshot — either half of it. */
   readonly created: boolean;
   readonly pruned: string[];
 }
@@ -84,8 +100,10 @@ export interface BackupOutcome {
 /**
  * Take tonight's snapshot if it is due and not already taken, then prune.
  *
- * Idempotent by construction: the day's file either exists or it does not, so
- * the job may run every hour and a restart never doubles a night.
+ * Idempotent by construction: the day's snapshots either exist or they do not,
+ * so the job may run every hour and a restart never doubles a night. "Exist"
+ * means both halves, and means them complete — an hourly retry is only worth
+ * having if a night half-written is a night still due.
  */
 export async function runBackup(
   options: BackupOptions,
@@ -94,31 +112,75 @@ export async function runBackup(
   const { db, storagePath, backupPath, timezone } = options;
   const retainDays = options.retainDays ?? BACKUP_RETAINED_DAYS;
 
+  assertDisjoint(storagePath, backupPath);
+
   await mkdir(backupPath, { recursive: true });
 
   const day = formatInTimeZone(now, timezone, "yyyy-MM-dd");
   const hour = Number(formatInTimeZone(now, timezone, "H"));
 
   const existing = await readdir(backupPath);
-  const due = hour >= BACKUP_HOUR && !existing.includes(snapshotName(day));
+  const hasDatabase = existing.includes(snapshotName(day));
+  // Nothing outside the database on a fresh volume, and then nothing to copy.
+  const wantsStorage = await exists(storagePath);
+  const hasStorage = !wantsStorage || existing.includes(storageSnapshotName(day));
+
+  // A night is due until *both* halves are on the volume. Reading the database
+  // file alone would let a run that died after `VACUUM INTO` mark the night
+  // complete, and the storage half the restore procedure copies back
+  // (`docs/setun-operations.md` §6) would never arrive.
+  const due = hour >= BACKUP_HOUR && !(hasDatabase && hasStorage);
 
   if (due) {
-    const target = join(backupPath, snapshotName(day));
-    // A leftover from a run that died mid-vacuum: SQLite refuses to write into
-    // an existing file, and a half-written snapshot is worth less than none.
-    await rm(target, { force: true });
-    // Bound as a literal because SQLite does not accept a parameter here; the
-    // path is deployment configuration, never request input.
-    db.$client.exec(`VACUUM INTO '${target.replaceAll("'", "''")}'`);
+    if (!hasDatabase) {
+      const target = join(backupPath, snapshotName(day));
+      const pending = `${target}${PENDING_SUFFIX}`;
+      // A leftover from a run that died mid-vacuum: SQLite refuses to write into
+      // an existing file, and a half-written snapshot is worth less than none.
+      await rm(pending, { force: true });
+      // Bound as a literal because SQLite does not accept a parameter here; the
+      // path is deployment configuration, never request input.
+      db.$client.exec(`VACUUM INTO '${pending.replaceAll("'", "''")}'`);
+      // The rename is what publishes it: until now the file could still be a
+      // torn one, and after it the name is a promise the next tick can trust.
+      await rename(pending, target);
+    }
 
-    if (await exists(storagePath)) {
+    if (wantsStorage) {
       const storageTarget = join(backupPath, storageSnapshotName(day));
+      const pending = `${storageTarget}${PENDING_SUFFIX}`;
+      await rm(pending, { recursive: true, force: true });
+      await cp(storagePath, pending, { recursive: true });
       await rm(storageTarget, { recursive: true, force: true });
-      await cp(storagePath, storageTarget, { recursive: true });
+      await rename(pending, storageTarget);
     }
   }
 
   return { day, created: due, pruned: await prune(backupPath, day, retainDays) };
+}
+
+/**
+ * Refuse a configuration where one tree contains the other.
+ *
+ * `cp` already declines to copy a directory into itself, so the misconfiguration
+ * cannot run away — but it fails every night, from inside the copy, with an
+ * `EINVAL` naming two paths, and only after the database snapshot has been
+ * written. An operator reads this instead, before anything is copied.
+ */
+function assertDisjoint(storagePath: string, backupPath: string): void {
+  const storage = resolve(storagePath);
+  const backup = resolve(backupPath);
+
+  if (storage === backup || contains(storage, backup) || contains(backup, storage)) {
+    throw new Error(
+      "backup misconfigured: the storage path and the backup path must be separate trees",
+    );
+  }
+}
+
+function contains(parent: string, child: string): boolean {
+  const step = relative(parent, child);
+  return step !== "" && !step.startsWith("..") && !isAbsolute(step);
 }
 
 /**

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDatabase } from "../db/client";
@@ -90,6 +90,39 @@ describe("runBackup", () => {
 
     expect(second.created).toBe(false);
     expect(readdirSync(backupPath).filter((name) => name.endsWith(".sqlite"))).toHaveLength(1);
+  });
+
+  it("finishes a night whose storage half never landed", async () => {
+    const { db, storagePath, backupPath } = workspace();
+    const options = { db, storagePath, backupPath, timezone: TIMEZONE };
+
+    await runBackup(options, new Date("2026-08-25T03:30:00+02:00"));
+    // What a run that died — or whose copy failed — after `VACUUM INTO` leaves
+    // behind: the database half of the night, and nothing else.
+    rmSync(join(backupPath, storageSnapshotName("2026-08-25")), { recursive: true, force: true });
+
+    const second = await runBackup(options, new Date("2026-08-25T04:30:00+02:00"));
+
+    expect(second.created).toBe(true);
+    expect(readdirSync(join(backupPath, storageSnapshotName("2026-08-25"), "images"))).toEqual([
+      "one.png",
+    ]);
+    // Still one night, and nothing left half-written.
+    expect(readdirSync(backupPath).filter((name) => name.endsWith(".sqlite"))).toHaveLength(1);
+    expect(readdirSync(backupPath).filter((name) => name.endsWith(".partial"))).toEqual([]);
+  });
+
+  it("refuses a backup path that lives inside the storage tree", async () => {
+    const { db, storagePath } = workspace();
+
+    // `cp` would refuse this too, but only from inside the copy and only after
+    // the database snapshot had been written.
+    await expect(
+      runBackup(
+        { db, storagePath, backupPath: join(storagePath, "backups"), timezone: TIMEZONE },
+        new Date("2026-08-25T03:30:00+02:00"),
+      ),
+    ).rejects.toThrow(/separate trees/);
   });
 
   it("retains the last fourteen days and prunes older snapshots", async () => {
