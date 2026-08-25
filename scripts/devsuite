@@ -496,11 +496,23 @@ class InstanceLock:
             if error.errno in (errno.EACCES, errno.EAGAIN):
                 return False
             raise
-        handle.truncate(0)
-        handle.write(str(os.getpid()))
-        handle.flush()
         self._handle = handle
+        self.stamp()
         return True
+
+    def stamp(self) -> None:
+        """
+        Record the pid that owns the lock.
+
+        A detached supervisor calls this again after the fork: the child holds
+        the lock through the open file description it inherited, so the file
+        would otherwise keep naming a parent that has since returned.
+        """
+        if self._handle is None:
+            return
+        self._handle.truncate(0)
+        self._handle.write(str(os.getpid()))
+        self._handle.flush()
 
     def release(self) -> None:
         if self._handle is not None:
@@ -1044,6 +1056,7 @@ class Supervisor:
         level: str,
         with_cpa: bool,
         environment: dict[str, str],
+        lock: InstanceLock,
     ) -> None:
         self.instance = instance
         self.ports = ports
@@ -1056,7 +1069,9 @@ class Supervisor:
         self.files: dict[str, LogFile] = {}
         self.stopping = threading.Event()
         self.failure: str | None = None
-        self.lock = InstanceLock(instance.lock_path)
+        # Acquired by `command_start` before any instance state was written, and
+        # held here until shutdown releases it.
+        self.lock = lock
 
     # ── output ───────────────────────────────────────────────────────────────
 
@@ -1451,8 +1466,22 @@ def command_start(options: argparse.Namespace) -> int:
     services = ["app", "sandbox"] + (["cpa"] if options.with_cpa else [])
     check_ports(ports, services)
 
+    # Nothing is written until the lock is held. Two concurrent starts on one
+    # fresh instance would otherwise both mint secrets and both write
+    # instance.json, leaving the persisted values different from the ones the
+    # running stack was handed — and a later `resume` would then change the
+    # student-code pepper and invalidate every access code already issued.
+    lock = InstanceLock(instance.lock_path)
+    if not lock.acquire():
+        note(f"instance '{instance.name}' is already running")
+        return 1
+
     instance.materialise()
 
+    # Re-read under the lock: a start that finished between the read above and
+    # this line has already stored this instance's secrets, and minting a
+    # second set would persist credentials nothing is running with.
+    config = instance.read_config()
     resolved, minted = resolve_secrets(instance, config)
     config.update(
         {
@@ -1479,12 +1508,9 @@ def command_start(options: argparse.Namespace) -> int:
     environment = child_environment(instance, ports, level, resolved)
 
     if options.detach:
-        return _start_detached(instance, ports, level, options.with_cpa, environment)
+        return _start_detached(instance, ports, level, options.with_cpa, environment, lock)
 
-    supervisor = Supervisor(instance, ports, level, options.with_cpa, environment)
-    if not supervisor.lock.acquire():
-        note(f"instance '{instance.name}' is already running")
-        return 1
+    supervisor = Supervisor(instance, ports, level, options.with_cpa, environment, lock)
 
     banner(
         instance,
@@ -1527,6 +1553,7 @@ def _start_detached(
     level: str,
     with_cpa: bool,
     environment: dict[str, str],
+    lock: InstanceLock,
 ) -> int:
     """
     Fork a supervisor into its own session and return once it reports healthy.
@@ -1534,6 +1561,11 @@ def _start_detached(
     The pipe is the handshake: the parent blocks on one byte rather than
     polling, so `start --detach` returns having actually established that the
     stack is up — or fails with the log to read.
+
+    The lock crosses the fork: parent and child share one open file
+    description, so it stays held for the supervisor once the parent exits.
+    The parent must therefore never release it — unlocking a shared
+    description would unlock it for the child too.
     """
     global OUT
 
@@ -1561,6 +1593,7 @@ def _start_detached(
     # the parent's stdout — everything it says goes to a file from here.
     os.close(read_end)
     os.setsid()
+    lock.stamp()
     handle = (instance.logs / "supervisor.out").open("a", buffering=1, encoding="utf-8")
     os.dup2(handle.fileno(), sys.stdout.fileno())
     os.dup2(handle.fileno(), sys.stderr.fileno())
@@ -1569,21 +1602,18 @@ def _start_detached(
 
     status = 1
     try:
-        supervisor = Supervisor(instance, ports, level, with_cpa, environment)
-        if not supervisor.lock.acquire():
-            _notify(write_end, False)
+        supervisor = Supervisor(instance, ports, level, with_cpa, environment, lock)
+        try:
+            supervisor.start_stack()
+            healthy = supervisor.await_health()
+        except Exception as error:  # noqa: BLE001 — the parent needs a verdict
+            supervisor.emit("suite", f"error: {error}")
+            healthy = False
+        _notify(write_end, healthy)
+        if healthy:
+            status = supervisor.run()
         else:
-            try:
-                supervisor.start_stack()
-                healthy = supervisor.await_health()
-            except Exception as error:  # noqa: BLE001 — the parent needs a verdict
-                supervisor.emit("suite", f"error: {error}")
-                healthy = False
-            _notify(write_end, healthy)
-            if healthy:
-                status = supervisor.run()
-            else:
-                supervisor.shutdown(force=True)
+            supervisor.shutdown(force=True)
     except BaseException:  # noqa: BLE001 — nothing above may leave the parent blocked
         traceback.print_exc()
         _notify(write_end, False)
