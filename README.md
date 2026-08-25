@@ -30,11 +30,87 @@ bun run dev:sandbox  # the artifact origin, on :5174 — a second terminal
 `prek install` is not optional: the hooks enforce Conventional Commits, block direct commits
 to `main`, and run the secret scanner. Install [prek](https://prek.j178.dev) separately.
 
+`./scripts/devsuite start` runs both servers, the database and the log view from a single
+terminal — see [Development suite](#development-suite).
+
 **Two origins, always.** Artifacts execute on a separate hostname from the application, and
 that separation *is* the isolation (PRD §14) — so development runs two servers, and `bun run
 build` produces two outputs: `build/` for the application and `build-sandbox/` for the static
 artifact host Caddy serves. Running only the first leaves the Build panel with nothing to
 render.
+
+## Development suite
+
+`scripts/devsuite` runs the whole local stack from one place — both Vite servers, a per-instance
+SQLite database, and optionally the CLIProxyAPI container — and streams every service into one
+aligned, colour-coded log view.
+
+```sh
+./scripts/devsuite start        # bring the stack up and attach to the log view
+./scripts/devsuite status       # what is running, on which ports, healthy or not
+./scripts/devsuite logs app     # follow one service
+./scripts/devsuite stop         # graceful shutdown, data preserved
+./scripts/devsuite --help       # every command and flag
+```
+
+`start` runs in the foreground and **Ctrl-C stops the stack**. Add `--detach` to leave it running
+and come back with `logs`, where **Ctrl-C only detaches**. Starting an instance that is already
+running attaches to its log view rather than spawning a second one.
+
+Caddy is not part of it: locally Vite serves both origins on their own ports, and the Caddyfile
+needs real hostnames and certificates. CPA is opt-in with `--with-cpa` — it needs Docker and an
+operator's filled-in `cpa/config.yaml`, and it runs from `scripts/devsuite.compose.yml` because
+the deployment's CPA is deliberately unreachable from the host (PRD §6, §9).
+
+### Two modes
+
+**`--persistent NAME`** — a named instance whose data survives `stop`. The default, as `dev`.
+`resume NAME` brings one back, `list` shows them all, `destroy NAME` removes one for good.
+
+**`--ephemeral`** — a throwaway instance on a fresh database, destroyed on the way out: on
+`stop`, on Ctrl-C, and on a crash.
+
+```sh
+./scripts/devsuite start  --persistent demo
+./scripts/devsuite stop   --persistent demo
+./scripts/devsuite resume demo             # the same data
+./scripts/devsuite start  --ephemeral      # fresh database, nothing left behind
+```
+
+The four values `.env.example` gives no default for — the code pepper, the two educator seed
+credentials and the CPA listener key — are read from the environment or `.env` when they are
+there. When they are not, the suite mints development values *per instance* and keeps them in
+that instance's own `instance.json`; it never writes to `.env`. A generated educator signs in as
+`educator` / `educator`.
+
+### Log levels
+
+`--log-level silent|error|warn|info|debug|trace`, default `info`. `-v` is `debug`, `-vv` is
+`trace`.
+
+| Service | How the level reaches it |
+| --- | --- |
+| `app`, `sandbox` | Vite's own `--logLevel` for `silent`, `error`, `warn` and `info`. `debug` and `trace` pin Vite at `info` and raise `SETUN_LOG_LEVEL`, which gates the application's own logging and turns on **Drizzle query logging** — statements *with their bound parameters*, which is why it takes an explicit `--log-level debug`. `trace` also sets `DEBUG=vite:*`. |
+| `cpa` | **Not reachable.** CPA reads `debug:` from `cpa/config.yaml`, an operator file the suite will not rewrite. Its lines are filtered at the log view instead. |
+| the log view | Whatever a service still prints below the chosen level is dropped on the way to the terminal. |
+
+The per-service files under `.devsuite/instances/<name>/logs/` are never filtered — the view has
+a floor, the file is the record. The view degrades to plain, greppable lines when stdout is not a
+terminal or `NO_COLOR` is set.
+
+### Where state lives
+
+Everything is inside the repository, under `.devsuite/`, and gitignored:
+
+```
+.devsuite/instances/<name>/
+  instance.json   mode, ports, and any generated development values
+  data/           db/setun.sqlite, storage/, backups/ — this instance's whole state
+  logs/           one plain, timestamped file per service
+  run/            state.json, and the lock that makes `start` idempotent
+```
+
+Nothing is written to `$HOME` or `/tmp`.
 
 ## Gates
 
