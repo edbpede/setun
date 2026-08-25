@@ -313,7 +313,10 @@ test("a connected tab sees a lock arrive over the push channel (§6, §8, §22)"
 
   // By name, not by position: the panel lists every classroom, and other suites
   // have their own.
-  await educatorPage.getByRole("link", { name: CLASSROOM, exact: true }).click();
+  await educatorPage
+    .getByRole("navigation")
+    .getByRole("link", { name: CLASSROOM, exact: true })
+    .click();
   await educatorPage.getByRole("button", { name: m.educator_lock_classroom() }).click();
   await expect(
     educatorPage.getByText(m.educator_state_locked(), { exact: true }),

@@ -3,17 +3,18 @@ import { untrack } from "svelte";
 import { enhance } from "$app/forms";
 import { invalidateAll } from "$app/navigation";
 import { readEventStream } from "$lib/chat/sse-client";
+import { fitVisualViewport, readScrollPosition, writeScrollPosition } from "$lib/chat/viewport";
 import ArtifactPanel from "$lib/components/artifacts/ArtifactPanel.svelte";
 import SetunMark from "$lib/components/brand/SetunMark.svelte";
 import ChatMessage from "$lib/components/chat/ChatMessage.svelte";
 import Composer from "$lib/components/chat/Composer.svelte";
+import ConversationDrawer from "$lib/components/chat/ConversationDrawer.svelte";
 import ElicitationForm from "$lib/components/chat/ElicitationForm.svelte";
 import PermissionPrompt from "$lib/components/chat/PermissionPrompt.svelte";
 import StreamingMessage from "$lib/components/chat/StreamingMessage.svelte";
 import AllowanceMeter from "$lib/components/classroom/AllowanceMeter.svelte";
 import ClassroomClosed from "$lib/components/classroom/ClassroomClosed.svelte";
 import * as m from "$lib/paraglide/messages";
-import { getLocale } from "$lib/paraglide/runtime";
 import { ArtifactWorkspace } from "$lib/state/artifacts.svelte";
 import { ClassroomState } from "$lib/state/classroom.svelte";
 import { ComposerState } from "$lib/state/composer.svelte";
@@ -30,6 +31,9 @@ import type { PageProps } from "./$types";
  */
 let { data }: PageProps = $props();
 
+/** Messages rendered before the window has to be widened by hand (§20). */
+const MESSAGE_WINDOW = 30;
+
 const conversation = new ConversationState();
 const composer = new ComposerState();
 const classroom = new ClassroomState();
@@ -37,6 +41,17 @@ const artifacts = new ArtifactWorkspace();
 
 let scroller = $state<HTMLDivElement | null>(null);
 let refusal = $state<string | null>(null);
+/** The conversation list, which is an overlay rather than a permanent column (§20). */
+let drawerOpen = $state(false);
+/**
+ * How many messages of the active path are rendered (§20).
+ *
+ * "Long conversations are windowed." A lesson-long thread is hundreds of
+ * messages, each with its own markdown render and highlight pass, and a device
+ * with one spare core cannot afford to lay all of them out to show the last
+ * five. Earlier messages are one click away and cost nothing until asked for.
+ */
+let windowSize = $state(MESSAGE_WINDOW);
 /** True while the composer's image mode is waiting on a picture (§15). */
 let generating = $state(false);
 
@@ -66,7 +81,17 @@ $effect(() => {
   composer.attach(data.conversation?.id ?? null);
   // Uploads that survived a reload; the server is the record of what is pending.
   composer.setAttachments(data.pendingAttachments);
+  // A different conversation starts at the newest end again (§20).
+  windowSize = MESSAGE_WINDOW;
+  drawerOpen = false;
 });
+
+/** The newest slice of the active path — the rest is behind "show earlier" (§20). */
+const visibleMessages = $derived(
+  conversation.messages.length > windowSize
+    ? conversation.messages.slice(-windowSize)
+    : conversation.messages,
+);
 
 // Every turn ends with an `invalidateAll`, so an artifact the model just wrote
 // arrives here without a second request. A draft the pupil is typing survives
@@ -101,6 +126,30 @@ $effect(() => {
   conversation.messages.length;
 
   scroller?.scrollTo({ top: scroller.scrollHeight });
+});
+
+/**
+ * Scroll position across a tab discard (§20).
+ *
+ * A 4 GB Chromebook discards background tabs routinely. The composer draft
+ * already survives one and the in-flight turn resumes from the server; this is
+ * the third piece — coming back to where you were reading rather than to the
+ * top of the lesson.
+ *
+ * Restored once per conversation, and only when there is something stored:
+ * otherwise the autoscroll above is right and this would fight it.
+ */
+$effect(() => {
+  const element = scroller;
+  const conversationId = data.conversation?.id ?? null;
+  if (!element || !conversationId) return;
+
+  const stored = untrack(() => readScrollPosition(conversationId));
+  if (stored > 0) element.scrollTo({ top: stored });
+
+  const remember = () => writeScrollPosition(conversationId, element.scrollTop);
+  element.addEventListener("scroll", remember, { passive: true });
+  return () => element.removeEventListener("scroll", remember);
 });
 
 /** Active fetch controller — cancelled when the student presses Stop. */
@@ -283,14 +332,34 @@ async function abort(): Promise<void> {
 
 <svelte:head><title>{m.chat_title()} · {m.app_name()}</title></svelte:head>
 
-<div class="flex h-svh flex-col bg-background">
+<ConversationDrawer
+  conversations={data.conversations}
+  activeId={data.conversation?.id ?? null}
+  open={drawerOpen}
+  onclose={() => (drawerOpen = false)}
+/>
+
+<!--
+  Sized to the visual viewport rather than to `100svh`, so the on-screen keyboard
+  in tablet mode pushes the composer up instead of covering it (§20).
+-->
+<div class="flex h-svh flex-col bg-background" {@attach fitVisualViewport}>
   <!--
     No persistent application header: usable height on the target device is
     roughly 640 pixels, so the chrome is one compact strip (PRD §20).
   -->
   <header class="flex items-center justify-between gap-3 border-b border-border px-3 py-2">
     <div class="flex items-center gap-2 min-w-0">
-      <SetunMark size={20} class="shrink-0 text-primary" />
+      <!-- Opens the conversation list. Touch-sized, because the device is a touchscreen (§20). -->
+      <button
+        type="button"
+        onclick={() => (drawerOpen = true)}
+        aria-expanded={drawerOpen}
+        class="flex size-9 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground"
+      >
+        <span class="sr-only">{m.chat_conversations()}</span>
+        <SetunMark size={20} class="text-primary" />
+      </button>
       <span class="truncate text-sm font-medium text-foreground">
         {conversation.title ?? m.chat_untitled_conversation()}
       </span>
@@ -309,25 +378,6 @@ async function abort(): Promise<void> {
         </button>
       </form>
       <!--
-        The pupil's own language, overriding the classroom setting for them
-        alone (§8, §18). It moves to the dashboard when that arrives; it lives
-        here now so the setting is reachable at all.
-      -->
-      <form method="POST" action="?/language" use:enhance class="hidden sm:block">
-        <label class="sr-only" for="interface-language">{m.student_language_label()}</label>
-        <select
-          id="interface-language"
-          name="language"
-          value={getLocale()}
-          onchange={(event) => event.currentTarget.form?.requestSubmit()}
-          class="h-7 rounded-md border border-input bg-background px-1.5 text-xs text-foreground"
-        >
-          <option value="da">{m.educator_language_da()}</option>
-          <option value="en">{m.educator_language_en()}</option>
-        </select>
-      </form>
-
-      <!--
         The Build entry point. Prominent and always present rather than an
         obscure toggle, and it opens whether or not anything has been built —
         the empty panel is where a pupil learns that building is a thing (§13).
@@ -340,6 +390,13 @@ async function abort(): Promise<void> {
       >
         {m.artifact_build()}{artifacts.items.length > 0 ? ` (${artifacts.items.length})` : ""}
       </button>
+
+      <a
+        href="/dashboard"
+        class="shrink-0 text-xs text-muted-foreground hover:text-foreground"
+      >
+        {m.student_dashboard_link()}
+      </a>
 
       <a
         href="/creations"
@@ -381,7 +438,19 @@ async function abort(): Promise<void> {
         </div>
       {/if}
 
-      {#each conversation.messages as message (message.id)}
+      {#if conversation.messages.length > visibleMessages.length}
+        <button
+          type="button"
+          onclick={() => (windowSize += MESSAGE_WINDOW)}
+          class="mx-auto min-h-11 rounded-md border border-input px-3 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"
+        >
+          {m.chat_show_earlier({
+            count: conversation.messages.length - visibleMessages.length,
+          })}
+        </button>
+      {/if}
+
+      {#each visibleMessages as message (message.id)}
         <ChatMessage
           {message}
           onedit={(target) => composer.beginEdit(target.id, target.text)}

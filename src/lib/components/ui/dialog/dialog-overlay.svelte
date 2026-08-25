@@ -9,9 +9,14 @@ let {
 }: DialogPrimitive.OverlayProps = $props();
 </script>
 
+<!--
+	No backdrop blur: it is the compositing effect §20 names by name, and on a
+	dual-core Celeron it costs a full-screen filter pass every frame the dialog
+	animates. A heavier scrim reads the same and is free.
+-->
 <DialogPrimitive.Overlay
 	bind:ref
 	data-slot="dialog-overlay"
-	class={cn("bg-black/10 duration-100 supports-backdrop-filter:backdrop-blur-xs data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0 fixed inset-0 isolate z-50", className)}
+	class={cn("bg-black/40 duration-100 data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0 fixed inset-0 isolate z-50", className)}
 	{...restProps}
 />

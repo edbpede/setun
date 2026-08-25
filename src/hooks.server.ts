@@ -1,4 +1,4 @@
-import type { Handle } from "@sveltejs/kit";
+import type { Handle, HandleServerError } from "@sveltejs/kit";
 import { sequence } from "@sveltejs/kit/hooks";
 import { cookieName, getTextDirection } from "$lib/paraglide/runtime";
 import { paraglideMiddleware } from "$lib/paraglide/server";
@@ -10,6 +10,7 @@ import {
 } from "$lib/server/auth/sessions";
 import { getDb } from "$lib/server/boot";
 import { studentInterfaceLanguage } from "$lib/server/classroom/settings";
+import { describeCause } from "$lib/server/logging";
 
 /**
  * Resolve the session cookie into request-scoped state (PRD §7).
@@ -110,3 +111,32 @@ function withLocaleCookie(request: Request, locale: string): Request {
 }
 
 export const handle: Handle = sequence(handleSession, handleLocale);
+
+/**
+ * What an unexpected failure tells the browser, and what it tells the log
+ * (PRD §16, §21).
+ *
+ * "Production errors expose no stack traces or infrastructure detail" (§21), and
+ * `App.Error` is `{ message: string }` for exactly that reason: the shape has no
+ * field a detail could travel in even by accident.
+ *
+ * The operator side gets the route, the request id SvelteKit generated, and one
+ * redacted line describing the failure — never a stack, and never a body, which
+ * on this application would be somebody's prompt (§16).
+ */
+export const handleError: HandleServerError = ({ error, event, status, message }) => {
+  // Expected HTTP outcomes — a 404 from `error()`, a guard's refusal — are not
+  // faults and do not deserve an operator line each.
+  if (status !== 500) return { message };
+
+  console.error("request failed", {
+    route: event.route.id,
+    method: event.request.method,
+    cause: describeCause(error),
+  });
+
+  // Deliberately not `message`: SvelteKit's default for a 500 is already
+  // generic, and restating it here means a future change upstream cannot start
+  // leaking through this hook.
+  return { message: "Internal Error" };
+};

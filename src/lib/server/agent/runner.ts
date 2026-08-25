@@ -8,6 +8,7 @@ import { recordUsageEvent } from "../db/queries/usage";
 import type { Message, MessagePart, ModelAlias, PermissionMode } from "../db/schema";
 import type { GatewayAdapter } from "../gateway/adapter";
 import type { GatewayEvent } from "../gateway/events";
+import { describeCause } from "../logging";
 import { recordTurnArtifacts } from "./artifacts";
 import type { BudgetSettings } from "./budgets";
 import { turnInteractions } from "./interactions";
@@ -115,7 +116,7 @@ export async function executeTurn(input: ExecuteTurnInput): Promise<void> {
     buffer.append({ type: "error", message: "unavailable" });
     buffer.append({ type: "done", reason: "error" });
     finishTurn(db, { turnId, status: "failed" });
-    console.error("turn execution failed", { turnId, cause: describe(cause) });
+    console.error("turn execution failed", { turnId, cause: describeCause(cause) });
   } finally {
     liveTurns.end(turnId);
   }
@@ -301,9 +302,4 @@ function persistOutcome(
     status: input.status,
     assistantMessageId: assistantMessage?.id ?? null,
   });
-}
-
-/** Errors are logged without stack traces or infrastructure detail (§16, §21). */
-function describe(cause: unknown): string {
-  return cause instanceof Error ? `${cause.name}: ${cause.message}` : String(cause);
 }

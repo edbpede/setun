@@ -1,3 +1,5 @@
+import { describeCause } from "../logging";
+
 /**
  * The in-process job scheduler (PRD §6, §16, §21).
  *
@@ -33,7 +35,7 @@ export interface SchedulerOptions {
 
 /** Console by default: the name and the failure, never a payload (§16). */
 function defaultOnError(job: string, error: unknown): void {
-  console.error(`job ${job} failed`, { cause: String(error) });
+  console.error(`job ${job} failed`, { cause: describeCause(error) });
 }
 
 export class JobScheduler {
