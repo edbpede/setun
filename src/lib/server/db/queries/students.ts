@@ -1,4 +1,4 @@
-import { and, eq, inArray, max, ne } from "drizzle-orm";
+import { and, asc, eq, inArray, max, ne } from "drizzle-orm";
 import type { AppDatabase } from "../client";
 import {
   type InterfaceLanguage,
@@ -45,15 +45,21 @@ export function listClassroomStudents(
   classroomId: string,
   options: { includeRemoved?: boolean } = {},
 ): Student[] {
-  return db
-    .select()
-    .from(student)
-    .where(
-      options.includeRemoved
-        ? eq(student.classroomId, classroomId)
-        : and(eq(student.classroomId, classroomId), ne(student.status, "removed")),
-    )
-    .all();
+  return (
+    db
+      .select()
+      .from(student)
+      .where(
+        options.includeRemoved
+          ? eq(student.classroomId, classroomId)
+          : and(eq(student.classroomId, classroomId), ne(student.status, "removed")),
+      )
+      // Ordered explicitly: labels are unique within a classroom, so this is a
+      // stable order an educator can scan, and without it SQLite is free to
+      // return whichever order its chosen index happens to produce.
+      .orderBy(asc(student.label))
+      .all()
+  );
 }
 
 /**

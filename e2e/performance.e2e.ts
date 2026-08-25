@@ -5,6 +5,7 @@ import { expect, test } from "@playwright/test";
 import * as m from "../src/lib/paraglide/messages";
 import { E2E_DATABASE_PATH, E2E_PEPPER } from "../playwright.config";
 import { LONG_MARKER } from "./support/stub-gateway";
+import { clearLoginWindow } from "./support/login-window";
 
 /**
  * The Chromebook budget, measured (PRD §20, plan 5.6).
@@ -49,6 +50,13 @@ async function provisionStudent(): Promise<{ label: string; code: string }> {
 
   return JSON.parse(stdout.trim());
 }
+
+/**
+ * Appendix A caps one IP at 30 login attempts per 15 minutes, and every worker
+ * here is loopback. Cleared per test so the suites do not fail each other's
+ * sign-ins; the limiter itself is asserted in `bun test` (§7, §22).
+ */
+test.beforeEach(clearLoginWindow);
 
 test.use({ viewport: CHROMEBOOK });
 
@@ -184,13 +192,20 @@ test("streaming plain text does not drop frames under sixfold CPU throttling (§
   );
 
   // The first sample spans the call that installed the loop; drop it.
-  const measured = gaps.slice(1);
-  const worst = Math.max(...measured);
+  const measured = gaps.slice(1).sort((a, b) => a - b);
+  const at = (quantile: number) => measured[Math.floor(measured.length * quantile)];
 
   console.info(
-    `streaming frame gaps at ${CPU_THROTTLE}× throttling: ${measured.length} frames, worst ${worst.toFixed(0)} ms`,
+    `streaming frame gaps at ${CPU_THROTTLE}× throttling: ${measured.length} frames, ` +
+      `median ${at(0.5).toFixed(0)} ms, p95 ${at(0.95).toFixed(0)} ms, ` +
+      `worst ${measured.at(-1)?.toFixed(0)} ms`,
   );
 
+  // Percentiles rather than the single worst frame. The regression §20 names —
+  // re-parsing and re-highlighting the whole message on every delta — makes
+  // every frame slow, so it shows in the median; a lone outlier is another
+  // Playwright worker compiling something on the same two cores.
   expect(measured.length).toBeGreaterThan(10);
-  expect(worst).toBeLessThan(250);
+  expect(at(0.5)).toBeLessThan(50);
+  expect(at(0.95)).toBeLessThan(150);
 });

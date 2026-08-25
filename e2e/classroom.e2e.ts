@@ -10,6 +10,7 @@ import {
   E2E_EDUCATOR_USERNAME,
   E2E_PEPPER,
 } from "../playwright.config";
+import { clearLoginWindow } from "./support/login-window";
 
 /**
  * The classroom control plane, end to end (plan Phase 2, PRD §7, §8, §9, §22).
@@ -27,6 +28,13 @@ import {
  * These tests reconfigure one classroom of their own, so they run in file order
  * within one worker rather than concurrently.
  */
+
+/**
+ * Appendix A caps one IP at 30 login attempts per 15 minutes, and every worker
+ * here is loopback. Cleared per test so the suites do not fail each other's
+ * sign-ins; the limiter itself is asserted in `bun test` (§7, §22).
+ */
+test.beforeEach(clearLoginWindow);
 
 test.describe.configure({ mode: "serial" });
 
@@ -317,6 +325,9 @@ test("a connected tab sees a lock arrive over the push channel (§6, §8, §22)"
     .getByRole("navigation")
     .getByRole("link", { name: CLASSROOM, exact: true })
     .click();
+  // The dashboard carries a lock per classroom, so wait for the classroom's own
+  // page before reaching for its control.
+  await expect(educatorPage).toHaveURL(/\/educator\/classrooms\//);
   await educatorPage.getByRole("button", { name: m.educator_lock_classroom() }).click();
   await expect(
     educatorPage.getByText(m.educator_state_locked(), { exact: true }),
