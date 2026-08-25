@@ -19,8 +19,14 @@ services:
     environment:
       # Consumed by the app at boot; validated before the listener starts (Phase 1).
       SETUN_STUDENT_CODE_PEPPER: ${SETUN_STUDENT_CODE_PEPPER:?set in .env}
-      SETUN_EDUCATOR_SEED_USERNAME: ${SETUN_EDUCATOR_SEED_USERNAME:?set in .env}
-      SETUN_EDUCATOR_SEED_PASSWORD: ${SETUN_EDUCATOR_SEED_PASSWORD:?set in .env}
+      # Optional, and a pair. Left blank, the first boot prints a one-time setup
+      # token to this container's log and the /setup wizard collects the
+      # credential instead. Filled in, the account is seeded at every boot, which
+      # is the password-recovery path (§6.2, §7).
+      SETUN_EDUCATOR_SEED_USERNAME: ${SETUN_EDUCATOR_SEED_USERNAME:-}
+      SETUN_EDUCATOR_SEED_PASSWORD: ${SETUN_EDUCATOR_SEED_PASSWORD:-}
+      # Optional second sink for that token; the log is always written (§6.2).
+      SETUN_BOOTSTRAP_TOKEN_PATH: ${SETUN_BOOTSTRAP_TOKEN_PATH:-}
       SETUN_CPA_LISTENER_KEY: ${SETUN_CPA_LISTENER_KEY:?set in .env}
       SETUN_CPA_BASE_URL: http://cpa:8317
       SETUN_APP_ORIGIN: ${SETUN_APP_ORIGIN:?set in .env}
