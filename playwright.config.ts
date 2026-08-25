@@ -61,6 +61,23 @@ const appEnv = {
 
 export default defineConfig({
   testMatch: "**/*.e2e.ts",
+  /**
+   * One worker, because the suites are not independent of each other.
+   *
+   * Playwright runs test *files* in parallel by default, but every suite here
+   * shares one application server, one SQLite file, and the global state inside
+   * it: the per-IP login window (every worker is loopback, Appendix A caps one
+   * address at 30 attempts per 15 minutes) and the model aliases the seed helper
+   * creates. A suite's `beforeEach` can clear the login window for itself, but
+   * it cannot stop a suite running beside it from filling the window up again
+   * before the sign-in that needed it — which surfaces as a login that silently
+   * stays on /login, a duplicate alias insert, or a request answered 403.
+   *
+   * The classrooms are already separated per suite (`SETUN_E2E_CLASSROOM`).
+   * What is left is global by nature, so the suites are serialised rather than
+   * given a limiter that is weaker under test than in production.
+   */
+  workers: 1,
   use: { baseURL: APP_ORIGIN },
   webServer: [
     {
