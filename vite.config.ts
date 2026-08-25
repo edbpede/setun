@@ -26,6 +26,10 @@ export default defineConfig({
       "@lucide/svelte/icons/image",
       "@lucide/svelte/icons/paperclip",
       "@lucide/svelte/icons/x",
+      // The client entry too, not only the adapters: the first-run wizard's
+      // step components call `superForm`, so a spec that renders one discovers
+      // the root export mid-run and reloads the page under the test.
+      "sveltekit-superforms",
       "sveltekit-superforms/adapters",
       "valibot",
       "drizzle-orm/sqlite-core",

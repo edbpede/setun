@@ -3,6 +3,7 @@ import { type SuperValidated, superForm } from "sveltekit-superforms";
 import type * as v from "valibot";
 import * as m from "$lib/paraglide/messages";
 import type { SetupEducatorSchema } from "$lib/server/setup/schemas";
+import { setupFieldError } from "./labels";
 
 /**
  * Step 1 — the operator account (PRD §7).
@@ -27,6 +28,16 @@ interface Props {
 
 let { data, minLength }: Props = $props();
 
+/**
+ * The hint is described rather than labelled.
+ *
+ * A hint inside the `<label>` element becomes part of the field's accessible
+ * name — "Password At least 12 characters." — which is what a screen reader
+ * announces on focus and what a test looks the field up by. `aria-describedby`
+ * keeps it associated without making it the name.
+ */
+const hintId = $props.id();
+
 // Superforms captures the initial page data and keeps itself in sync internally.
 // svelte-ignore state_referenced_locally
 const { form, errors, enhance, submitting } = superForm(data, { id: "setup-educator" });
@@ -39,6 +50,10 @@ const field = "h-10 rounded-md border border-input bg-background px-3 text-sm te
   <p class="text-sm text-muted-foreground">{m.setup_educator_intro()}</p>
 
   <form method="POST" action="?/educator" use:enhance class="flex flex-col gap-3">
+    {#if setupFieldError($errors._errors)}
+      <p class="text-sm text-destructive" role="alert">{setupFieldError($errors._errors)}</p>
+    {/if}
+
     <label class="flex flex-col gap-1.5">
       <span class="text-sm font-medium text-foreground">{m.educator_username_label()}</span>
       <input
@@ -51,20 +66,23 @@ const field = "h-10 rounded-md border border-input bg-background px-3 text-sm te
       {#if $errors.username}<span class="text-xs text-destructive">{$errors.username}</span>{/if}
     </label>
 
-    <label class="flex flex-col gap-1.5">
-      <span class="text-sm font-medium text-foreground">{m.educator_password_label()}</span>
-      <input
-        name="password"
-        type="password"
-        autocomplete="new-password"
-        bind:value={$form.password}
-        class={field}
-      />
-      <span class="text-xs text-muted-foreground">
+    <div class="flex flex-col gap-1.5">
+      <label class="flex flex-col gap-1.5">
+        <span class="text-sm font-medium text-foreground">{m.educator_password_label()}</span>
+        <input
+          name="password"
+          type="password"
+          autocomplete="new-password"
+          aria-describedby={hintId}
+          bind:value={$form.password}
+          class={field}
+        />
+      </label>
+      <span id={hintId} class="text-xs text-muted-foreground">
         {m.setup_educator_password_hint({ min: minLength })}
       </span>
       {#if $errors.password}<span class="text-xs text-destructive">{$errors.password}</span>{/if}
-    </label>
+    </div>
 
     <label class="flex flex-col gap-1.5">
       <span class="text-sm font-medium text-foreground">{m.setup_confirm_password_label()}</span>

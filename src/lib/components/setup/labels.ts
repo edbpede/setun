@@ -47,6 +47,19 @@ export function setupErrorMessage(code: string | null | undefined): string | nul
   return ERROR_MESSAGES[code]?.() ?? null;
 }
 
+/**
+ * One field's error, as a sentence.
+ *
+ * Two kinds of string reach a Superforms error slot here: a code the route
+ * attached to refuse a step, and a schema's own message. The first is looked up;
+ * the second is already prose and travels unchanged.
+ */
+export function setupFieldError(errors: string[] | undefined): string | null {
+  const first = errors?.[0];
+  if (!first) return null;
+  return setupErrorMessage(first) ?? first;
+}
+
 /** A claim's lapse time, in the reader's own locale and to the minute. */
 export function formatClaimTime(iso: string): string {
   return new Intl.DateTimeFormat(getLocale(), { hour: "2-digit", minute: "2-digit" }).format(

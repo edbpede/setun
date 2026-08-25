@@ -3,6 +3,7 @@ import { type SuperValidated, superForm } from "sveltekit-superforms";
 import type * as v from "valibot";
 import * as m from "$lib/paraglide/messages";
 import type { SetupClassroomSchema } from "$lib/server/setup/schemas";
+import { setupFieldError } from "./labels";
 
 /**
  * Step 4 — the first classroom (PRD §8, §16).
@@ -44,6 +45,10 @@ const field = "h-10 rounded-md border border-input bg-background px-3 text-sm te
   <p class="text-sm text-muted-foreground">{m.setup_classroom_intro()}</p>
 
   <form method="POST" action="?/classroom" use:enhance class="flex flex-col gap-3">
+    {#if setupFieldError($errors._errors)}
+      <p class="text-sm text-destructive" role="alert">{setupFieldError($errors._errors)}</p>
+    {/if}
+
     <label class="flex flex-col gap-1.5">
       <span class="text-sm font-medium text-foreground">{m.educator_classroom_name_label()}</span>
       <input name="name" type="text" bind:value={$form.name} class={field} />
@@ -109,6 +114,11 @@ const field = "h-10 rounded-md border border-input bg-background px-3 text-sm te
             />
             {m.setup_classroom_no_dpa_confirm()}
           </label>
+          {#if setupFieldError($errors.confirmNoDpa)}
+            <p class="text-sm text-destructive" role="alert">
+              {setupFieldError($errors.confirmNoDpa)}
+            </p>
+          {/if}
         </div>
       {/if}
     {/if}

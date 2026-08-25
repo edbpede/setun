@@ -1,6 +1,6 @@
 import type { Cookies } from "@sveltejs/kit";
 import { error, fail as kitFail, redirect } from "@sveltejs/kit";
-import { fail, superValidate } from "sveltekit-superforms";
+import { fail, setError, superValidate } from "sveltekit-superforms";
 import { valibot } from "sveltekit-superforms/adapters";
 import * as v from "valibot";
 import type { CredentialCard } from "$lib/credentials";
@@ -143,6 +143,38 @@ function currentProgress(db: AppDatabase): SetupProgress {
 
 /** A lost or stolen claim, in the shape the wizard renders. */
 const CLAIM_LOST = { error: "claim_lost" } as const;
+
+/**
+ * Refuse a Superforms-driven step without leaving its form stranded.
+ *
+ * Superforms' `enhance` resolves a submission against the `SuperValidated` the
+ * action returns; hand it a plain `fail` instead and the client never learns the
+ * request finished — the button stays disabled and the message never appears. So
+ * a guard failure on one of these three steps comes back as an empty form
+ * carrying a form-level code, which the step renders through the same lookup the
+ * claim screen uses.
+ *
+ * Three functions rather than one parameterised by an adapter: the three forms
+ * have three unrelated shapes, and a shared helper would have to erase the types
+ * that make the rest of this file safe.
+ */
+async function refuseEducatorStep(status: number, code: string) {
+  const form = await superValidate(educatorAdapter, { id: EDUCATOR_FORM_ID });
+  setError(form, code);
+  return fail(status, { educatorForm: form });
+}
+
+async function refuseAliasStep(status: number, code: string) {
+  const form = await superValidate(aliasAdapter, { id: ALIAS_FORM_ID });
+  setError(form, code);
+  return fail(status, { aliasForm: form });
+}
+
+async function refuseClassroomStep(status: number, code: string) {
+  const form = await superValidate(classroomAdapter, { id: CLASSROOM_FORM_ID });
+  setError(form, code);
+  return fail(status, { classroomForm: form });
+}
 
 export const load: PageServerLoad = async ({ cookies, url }) => {
   const db = activeInstallation();
@@ -319,11 +351,11 @@ export const actions: Actions = {
   /** Step 1 — the operator account. Refused outright when one is env-seeded. */
   educator: async ({ request, cookies, url }) => {
     const claim = claimedInstallation(cookies, url);
-    if (!claim) return kitFail(403, CLAIM_LOST);
+    if (!claim) return refuseEducatorStep(403, "claim_lost");
 
     // Deployment configuration owns the account when it supplies one; the wizard
     // must not quietly become a second way to change it (§7).
-    if (claim.progress.educatorSeeded) return kitFail(409, { error: "educator_seeded" });
+    if (claim.progress.educatorSeeded) return refuseEducatorStep(409, "educator_seeded");
 
     const form = await superValidate(request, educatorAdapter, { id: EDUCATOR_FORM_ID });
     if (!form.valid) return fail(400, { educatorForm: form });
@@ -362,7 +394,7 @@ export const actions: Actions = {
   /** Step 3 — the first model alias, which is also the utility alias (§9, §10). */
   alias: async ({ request, cookies, url }) => {
     const claim = claimedInstallation(cookies, url);
-    if (!claim) return kitFail(403, CLAIM_LOST);
+    if (!claim) return refuseAliasStep(403, "claim_lost");
 
     const form = await superValidate(request, aliasAdapter, { id: ALIAS_FORM_ID });
     if (!form.valid) return fail(400, { aliasForm: form });
@@ -374,7 +406,7 @@ export const actions: Actions = {
   /** Step 4 — the first classroom, with the step-3 alias allowlisted for it (§8, §16). */
   classroom: async ({ request, cookies, url }) => {
     const claim = claimedInstallation(cookies, url);
-    if (!claim) return kitFail(403, CLAIM_LOST);
+    if (!claim) return refuseClassroomStep(403, "claim_lost");
 
     const form = await superValidate(request, classroomAdapter, { id: CLASSROOM_FORM_ID });
     if (!form.valid) return fail(400, { classroomForm: form });
@@ -389,7 +421,15 @@ export const actions: Actions = {
       values: form.data,
     });
 
-    if (!result.ok) return kitFail(400, { error: result.reason });
+    if (!result.ok) {
+      // The §16 acknowledgement is a field on this form, so its refusal lands on
+      // that field rather than as a banner somewhere above it.
+      if (result.reason === "no_dpa_unconfirmed") setError(form, "confirmNoDpa", result.reason);
+      else setError(form, result.reason);
+
+      return fail(400, { classroomForm: form });
+    }
+
     redirect(303, "/setup?step=students");
   },
 

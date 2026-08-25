@@ -7,7 +7,7 @@ import type { AppDatabase } from "../db/client";
 import { allowAlias } from "../db/queries/classroom-aliases";
 import { createClassroom, updateClassroomSettings } from "../db/queries/classrooms";
 import { getFirstEducator } from "../db/queries/educators";
-import { completeSetup } from "../db/queries/instance";
+import { completeSetup, ensureInstance } from "../db/queries/instance";
 import { createAlias, designateUtilityAlias, updateAlias } from "../db/queries/model-aliases";
 import type { Classroom, Educator, ModelAlias } from "../db/schema";
 import { log } from "../logging";
@@ -178,6 +178,10 @@ export function finishSetup(
   if (!educator) return { ok: false, reason: "incomplete" };
 
   const now = input.now ?? new Date();
+
+  // The claim will already have created the row, but this function's
+  // correctness should not depend on the order two other functions ran in.
+  ensureInstance(db);
   completeSetup(db, now);
   log.info(`setup: completed for operator '${educator.username}'`);
 

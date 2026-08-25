@@ -3,6 +3,7 @@ import { type SuperValidated, superForm } from "sveltekit-superforms";
 import type * as v from "valibot";
 import * as m from "$lib/paraglide/messages";
 import type { AliasSchema } from "$lib/server/classroom/schemas";
+import { setupFieldError } from "./labels";
 
 /**
  * Step 3 — the first model alias (PRD §9, §10, §16).
@@ -42,6 +43,10 @@ const check = "flex items-center gap-2 text-sm text-foreground";
   <p class="text-sm text-muted-foreground">{m.setup_alias_intro()}</p>
 
   <form method="POST" action="?/alias" use:enhance class="flex flex-col gap-3">
+    {#if setupFieldError($errors._errors)}
+      <p class="text-sm text-destructive" role="alert">{setupFieldError($errors._errors)}</p>
+    {/if}
+
     <label class="flex flex-col gap-1.5">
       <span class="text-sm font-medium text-foreground">{m.educator_alias_name_label()}</span>
       <input name="name" type="text" bind:value={$form.name} class={field} />
