@@ -22,11 +22,17 @@ const ConfigSchema = v.object({
   /** Pepper for the student-code HMAC. Changing it invalidates every code (§7). */
   studentCodePepper: nonEmpty("SETUN_STUDENT_CODE_PEPPER is required"),
   /**
-   * The operator account, seeded at first boot. Re-seeding these and restarting
-   * is the password-recovery path — there is no in-application reset (§7, §6.2).
+   * The operator account, seeded at boot when it is configured (§6.2, §7).
+   *
+   * Optional since v0.7 of the PRD. Absent, the first-run wizard collects the
+   * credential instead, and boot prints a bootstrap token so the person who can
+   * read the console is the person who creates the account. Present, boot seeds
+   * exactly as it always has — which is what keeps re-seeding and restarting the
+   * documented password-recovery path (§7). The wizard does not replace it, and
+   * there is still no in-application reset.
    */
-  educatorUsername: nonEmpty("SETUN_EDUCATOR_SEED_USERNAME is required"),
-  educatorPassword: nonEmpty("SETUN_EDUCATOR_SEED_PASSWORD is required"),
+  educatorUsername: v.optional(nonEmpty("SETUN_EDUCATOR_SEED_USERNAME must not be blank")),
+  educatorPassword: v.optional(nonEmpty("SETUN_EDUCATOR_SEED_PASSWORD must not be blank")),
   /** Shared with CPA; the only thing authenticating the gateway (§9). */
   cpaListenerKey: nonEmpty("SETUN_CPA_LISTENER_KEY is required"),
   cpaBaseUrl: v.pipe(nonEmpty("SETUN_CPA_BASE_URL is required"), v.url()),
@@ -55,7 +61,41 @@ const ConfigSchema = v.object({
    * requiring one would fail boot over a feature it does not use (§11).
    */
   mcpConfigPath: v.optional(v.string()),
+  /**
+   * A second sink for the first-run bootstrap token (§6.2).
+   *
+   * Unset by default, and never the only sink — the console banner is always
+   * written. It exists for two real cases: an operator running detached who has
+   * already scrolled past the banner, and the end-to-end suite, which cannot
+   * read a `webServer` child's stdout. The file is written `0600` and unlinked
+   * the moment setup completes; it must not point inside the storage or backup
+   * volume, where a snapshot would copy it.
+   */
+  bootstrapTokenPath: v.optional(v.string()),
+  /**
+   * The runtime mode, read rather than assumed.
+   *
+   * One decision depends on it: in production a database file that does not
+   * exist is a dropped volume mount, not a first run — see `boot()`.
+   */
+  nodeEnv: v.optional(v.string()),
 });
+
+/**
+ * The seed credentials are a pair.
+ *
+ * Half a pair is always a mistake — an operator who set the username and lost
+ * the password line would otherwise get a silent wizard where they expected a
+ * seeded account, and would create a second credential without noticing the
+ * first never applied.
+ */
+const PairedSeedSchema = v.pipe(
+  ConfigSchema,
+  v.check(
+    (config) => (config.educatorUsername === undefined) === (config.educatorPassword === undefined),
+    "SETUN_EDUCATOR_SEED_USERNAME and SETUN_EDUCATOR_SEED_PASSWORD must be set together, or both left unset to use the first-run setup wizard",
+  ),
+);
 
 export type ServerConfig = v.InferOutput<typeof ConfigSchema>;
 
@@ -68,12 +108,25 @@ export class ConfigurationError extends Error {
   }
 }
 
+/**
+ * A value that is present but blank counts as absent.
+ *
+ * `.env.example` ships the optional variables with an empty value, so a `.env`
+ * copied and only partly filled in delivers `""` rather than `undefined` —
+ * which, for a variable whose absence *means* something, would otherwise fail
+ * boot instead of selecting the behaviour the blank was asking for.
+ */
+function optionalValue(raw: string | undefined): string | undefined {
+  const trimmed = raw?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
 /** Development defaults exist only for values with no security meaning. */
 function readEnvironment() {
   return {
     studentCodePepper: env.SETUN_STUDENT_CODE_PEPPER,
-    educatorUsername: env.SETUN_EDUCATOR_SEED_USERNAME,
-    educatorPassword: env.SETUN_EDUCATOR_SEED_PASSWORD,
+    educatorUsername: optionalValue(env.SETUN_EDUCATOR_SEED_USERNAME),
+    educatorPassword: optionalValue(env.SETUN_EDUCATOR_SEED_PASSWORD),
     cpaListenerKey: env.SETUN_CPA_LISTENER_KEY,
     cpaBaseUrl: env.SETUN_CPA_BASE_URL ?? "http://localhost:8317",
     appOrigin: env.SETUN_APP_ORIGIN ?? "http://localhost:5173",
@@ -82,6 +135,8 @@ function readEnvironment() {
     storagePath: env.SETUN_STORAGE_PATH ?? "./data/storage",
     backupPath: env.SETUN_BACKUP_PATH ?? "./data/backups",
     mcpConfigPath: env.SETUN_MCP_CONFIG_PATH,
+    bootstrapTokenPath: optionalValue(env.SETUN_BOOTSTRAP_TOKEN_PATH),
+    nodeEnv: optionalValue(env.NODE_ENV),
   };
 }
 
@@ -92,7 +147,7 @@ function readEnvironment() {
  * discovers the next; §6.2 asks for a clear failure, not a scavenger hunt.
  */
 export function validateConfig(raw: Record<string, unknown> = readEnvironment()): ServerConfig {
-  const result = v.safeParse(ConfigSchema, raw);
+  const result = v.safeParse(PairedSeedSchema, raw);
   if (result.success) return result.output;
 
   const issues = result.issues.map((issue) => {

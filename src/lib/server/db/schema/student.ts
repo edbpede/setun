@@ -52,6 +52,18 @@ export const student = sqliteTable(
     credentialDigest: text().notNull().unique(),
     /** Non-secret trailing characters of the code. Identifies a card; cannot reconstruct it (§7). */
     credentialHint: text().notNull(),
+    /**
+     * When this pupil finished the first-login introduction (§16, §18).
+     *
+     * TODO(phase-7): nothing writes this column yet. It exists so the student
+     * first-login experience has somewhere to record completion without a
+     * migration landing in the middle of that phase. The intended flow, the
+     * privacy statement it must carry, and the questions still open are written
+     * up in `docs/setun-student-onboarding.md`; the typed shape lives in
+     * `$lib/server/student/onboarding`. Null means "has not seen it", which is
+     * also what every existing pupil reads as.
+     */
+    onboardedAt: integer({ mode: "timestamp_ms" }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

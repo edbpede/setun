@@ -42,6 +42,12 @@ const DisplayNameSchema = v.object({
   displayName: v.pipe(v.string(), v.trim(), v.maxLength(40)),
 });
 
+// TODO(phase-7): the dashboard is the second anchor for the student first-login
+// introduction — a pupil who skipped it, or who arrived here directly, needs a
+// way back to it. Whether it re-runs after a credential rotation, and whether it
+// is skippable at all, are open questions recorded in
+// `docs/setun-student-onboarding.md`; the typed shape is in
+// `$lib/server/student/onboarding`.
 export const load: PageServerLoad = ({ locals }) => {
   const student = requireStudentPage(locals);
   const db = getDb();

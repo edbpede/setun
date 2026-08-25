@@ -1,7 +1,8 @@
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { BootstrapTokenHolder, bootstrapBanner } from "./auth/bootstrap";
 import { seedEducator } from "./auth/educator";
-import { credentialEnvironment, getConfig } from "./config";
+import { credentialEnvironment, getConfig, type ServerConfig } from "./config";
 import { type AppDatabase, createDatabase } from "./db/client";
 import { applyMigrations } from "./db/migrate";
 import { markStreamingTurnsInterrupted } from "./db/queries/turns";
@@ -10,10 +11,11 @@ import { backupJob } from "./jobs/backup";
 import { retentionJob } from "./jobs/retention";
 import { JobScheduler } from "./jobs/scheduler";
 import { sessionSweepJob } from "./jobs/sessions";
-import { log } from "./logging";
+import { describeCause, log } from "./logging";
 import { McpClient } from "./mcp/client";
 import { loadMcpConfig } from "./mcp/config";
 import { registerConfiguredServers } from "./mcp/registry";
+import { adoptExistingInstall, isSetupComplete } from "./setup/state";
 import { FileStore } from "./storage/files";
 
 /**
@@ -35,6 +37,16 @@ interface Services {
   /** Null when the deployment configures no MCP servers, which is a valid pilot (§11). */
   readonly mcp: McpClient | null;
   readonly jobs: JobScheduler;
+  /**
+   * The first-run bootstrap token (§6.2, §7).
+   *
+   * Held here rather than in a module-level `let`: mutable module-scope state in
+   * a server file is the anti-pattern this codebase's rules name, and the
+   * composition root is already where the process-lifetime singletons live. It
+   * also makes the token trivially testable — a suite constructs its own holder
+   * and has no global to reset.
+   */
+  readonly bootstrap: BootstrapTokenHolder;
 }
 
 let services: Services | null = null;
@@ -44,6 +56,27 @@ function boot(): Services {
   const config = getConfig();
 
   if (config.databasePath !== ":memory:") {
+    /**
+     * In production, a database file that is not there is a dropped volume
+     * mount — not a first run.
+     *
+     * `createDatabase` would happily create one, which used to be an
+     * empty-data incident. With a setup gate in front of the application it
+     * becomes something worse: an open claim window on a deployment that
+     * already has an educator, a roster and a term of conversations, handed to
+     * whoever reaches the port first. Failing loudly is the only safe answer.
+     * Development, tests and `:memory:` keep the create-on-demand behaviour.
+     */
+    if (config.nodeEnv === "production" && !existsSync(config.databasePath)) {
+      throw new Error(
+        `Setun cannot start — SETUN_DATABASE_PATH points at '${config.databasePath}', which does not exist.\n` +
+          "  In production this means the database volume is not mounted. Setun will not create a\n" +
+          "  fresh database here, because an empty one would present a configured installation as a\n" +
+          "  cold start and reopen first-run setup. Check the volume mount, or create the file\n" +
+          "  deliberately if this really is a new installation.",
+      );
+    }
+
     mkdirSync(dirname(config.databasePath), { recursive: true });
   }
 
@@ -51,6 +84,20 @@ function boot(): Services {
 
   // Before the listener starts: no request may observe an unmigrated schema (§6).
   applyMigrations(db);
+
+  /**
+   * Every installation that predates the first-run wizard is a finished
+   * installation (§6.2).
+   *
+   * Runs before the seed rather than after it, and takes the *configuration*
+   * into account rather than only the table, because seeding is asynchronous: a
+   * cold start with seed credentials set has no educator row at this instant,
+   * and a gate that waited for one would make the first request's answer depend
+   * on a race it cannot see.
+   */
+  adoptExistingInstall(db, {
+    educatorConfigured: config.educatorUsername !== undefined,
+  });
 
   const interrupted = markStreamingTurnsInterrupted(db);
   if (interrupted > 0) {
@@ -60,12 +107,20 @@ function boot(): Services {
   // The operator account, from deployment configuration, on every boot: this is
   // the documented password-recovery path, so it must take effect on a restart
   // and not only on a first boot (§7, §6.2).
-  void seedEducator(db, {
-    username: config.educatorUsername,
-    password: config.educatorPassword,
-  }).then((result) => {
-    if (result.seeded) log.info(`seeded educator account '${config.educatorUsername}'`);
-  });
+  //
+  // Optional since PRD v0.7. With no seed credentials configured, the first-run
+  // wizard collects them instead — and re-seeding remains the recovery path for
+  // anyone who does configure them.
+  const { educatorUsername, educatorPassword } = config;
+  if (educatorUsername !== undefined && educatorPassword !== undefined) {
+    void seedEducator(db, { username: educatorUsername, password: educatorPassword }).then(
+      (result) => {
+        if (result.seeded) log.info(`seeded educator account '${educatorUsername}'`);
+      },
+    );
+  }
+
+  const bootstrap = announceBootstrapToken(db, config);
 
   // No pupil seed. Phase 1 printed one access code at first boot so the loop was
   // verifiable before a provisioning UI existed; the panel provisions in batches
@@ -116,7 +171,77 @@ function boot(): Services {
       mcpConfig.servers.length > 0
         ? new McpClient(mcpConfig.servers, { env: credentialEnvironment() })
         : null,
+    bootstrap,
   };
+}
+
+/**
+ * Mint the first-run token and put it where an operator can read it (§6.2, §21).
+ *
+ * Only on an installation that still needs setting up, so a running pilot never
+ * prints a credential it has no use for.
+ *
+ * Note the timing: `boot()` is lazy — `services ??= boot()` — so this appears on
+ * the *first request*, not at process start. That is deliberate and friendlier:
+ * a token whose fifteen minutes begin when somebody opens the page is a token
+ * that is still valid when they read it.
+ *
+ * The console is always written to; the file is an opt-in second sink and never
+ * a replacement. Both are cleared when setup completes.
+ */
+function announceBootstrapToken(db: AppDatabase, config: ServerConfig): BootstrapTokenHolder {
+  const bootstrap = new BootstrapTokenHolder();
+  if (isSetupComplete(db)) return bootstrap;
+
+  const token = bootstrap.mint();
+  log.info(bootstrapBanner({ token, appOrigin: config.appOrigin }));
+
+  if (config.bootstrapTokenPath) {
+    writeBootstrapTokenFile(config.bootstrapTokenPath, token.display);
+  }
+
+  // A token that outlives the process would be a token in a file nobody owns.
+  process.once("exit", () => {
+    bootstrap.clear();
+    removeBootstrapTokenFile(config.bootstrapTokenPath);
+  });
+
+  return bootstrap;
+}
+
+function writeBootstrapTokenFile(path: string, token: string): void {
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    // Removed first: `mode` applies at creation, so an existing file would keep
+    // whatever permissions it already had.
+    rmSync(path, { force: true });
+    writeFileSync(path, `${token}\n`, { mode: 0o600 });
+  } catch (cause) {
+    // A sink that cannot be written is not a reason to refuse to start; the
+    // console banner is the one that always exists.
+    log.warn("could not write the bootstrap token file", { cause: describeCause(cause) });
+  }
+}
+
+function removeBootstrapTokenFile(path: string | undefined): void {
+  if (!path) return;
+  try {
+    rmSync(path, { force: true });
+  } catch {
+    // Nothing useful to do at exit, and nothing left to protect: the token in
+    // memory is gone with the process either way.
+  }
+}
+
+/**
+ * Forget the bootstrap token — called once, when setup completes.
+ *
+ * Both sinks, in one place, so a future caller cannot clear the memory copy and
+ * leave the file behind.
+ */
+export function clearBootstrapToken(): void {
+  getServices().bootstrap.clear();
+  removeBootstrapTokenFile(getConfig().bootstrapTokenPath);
 }
 
 function getServices(): Services {
@@ -145,4 +270,9 @@ export function getMcpClient(): McpClient | null {
 /** The job scheduler, for the panel to report on and for tests to trigger (§16, §21). */
 export function getJobScheduler(): JobScheduler {
   return getServices().jobs;
+}
+
+/** The first-run bootstrap token holder (§6.2). Empty once setup is complete. */
+export function getBootstrapTokens(): BootstrapTokenHolder {
+  return getServices().bootstrap;
 }

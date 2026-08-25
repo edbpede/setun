@@ -1,4 +1,5 @@
 import type { Handle, HandleServerError } from "@sveltejs/kit";
+import { redirect } from "@sveltejs/kit";
 import { sequence } from "@sveltejs/kit/hooks";
 import { cookieName, getTextDirection } from "$lib/paraglide/runtime";
 import { paraglideMiddleware } from "$lib/paraglide/server";
@@ -11,6 +12,7 @@ import {
 import { getDb } from "$lib/server/boot";
 import { studentInterfaceLanguage } from "$lib/server/classroom/settings";
 import { describeCause, log } from "$lib/server/logging";
+import { isSetupComplete, isSetupGateExempt, SETUP_PATH } from "$lib/server/setup/state";
 
 /**
  * Resolve the session cookie into request-scoped state (PRD §7).
@@ -54,6 +56,45 @@ const handleSession: Handle = async ({ event, resolve }) => {
   }
 
   return resolve(event);
+};
+
+/**
+ * The first-run gate (PRD §6.2, §7, §21).
+ *
+ * Until setup completes, an installation has no operator account, no model alias
+ * and no classroom: every other route is a form that cannot succeed or a panel
+ * with nothing in it. So everything goes to the wizard, and the wizard is the
+ * only thing that answers.
+ *
+ * The flag is completion, and only completion. Not "does an educator exist" —
+ * the wizard creates one at its first step and has three steps left afterwards,
+ * so the two conditions are not the same question and collapsing them would open
+ * the gate halfway through.
+ *
+ * Placed after `handleSession` so `locals` is populated, and before
+ * `handleLocale` so the wizard is localised like everything else. The flag is
+ * put on `locals` for anything downstream that needs it, rather than re-queried
+ * per component.
+ *
+ * Once setup is complete this hook is transparent, and `/setup`'s own `load`
+ * answers `404` — not `403`, which would confirm the surface is there.
+ */
+const handleSetupGate: Handle = async ({ event, resolve }) => {
+  const complete = isSetupComplete(getDb());
+  event.locals.setupComplete = complete;
+
+  if (!complete && !isSetupGateExempt(event.url.pathname)) redirect(303, SETUP_PATH);
+
+  const response = await resolve(event);
+
+  // Never cached and never indexed: the surface carries a one-time credential
+  // field, and a proxy or a crawler has no business holding either (§21).
+  if (event.url.pathname === SETUP_PATH || event.url.pathname.startsWith(`${SETUP_PATH}/`)) {
+    response.headers.set("cache-control", "no-store");
+    response.headers.set("x-robots-tag", "noindex");
+  }
+
+  return response;
 };
 
 /**
@@ -110,7 +151,7 @@ function withLocaleCookie(request: Request, locale: string): Request {
   return new Request(request, { headers });
 }
 
-export const handle: Handle = sequence(handleSession, handleLocale);
+export const handle: Handle = sequence(handleSession, handleSetupGate, handleLocale);
 
 /**
  * What an unexpected failure tells the browser, and what it tells the log

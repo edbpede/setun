@@ -13,6 +13,7 @@ export * from "./classroom-skill";
 export * from "./conversation";
 export * from "./educator";
 export * from "./generated-image";
+export * from "./instance";
 export * from "./login-attempt";
 export * from "./mcp-server";
 export * from "./mcp-tool";

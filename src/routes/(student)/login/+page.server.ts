@@ -48,6 +48,13 @@ export const actions: Actions = {
 
     if (!result.ok) return fail(401, { failed: true });
 
+    // TODO(phase-7): the student first-login introduction begins here — this is
+    // the one path that knows a sign-in *just succeeded*, which is what
+    // distinguishes "has never seen it" from "is signed in and browsing". The
+    // decision (and the redirect target) belongs in
+    // `$lib/server/student/onboarding`; `docs/setun-student-onboarding.md` has
+    // the intended flow and the open questions. Nothing is wired up yet, and
+    // students land on /chat exactly as before.
     cookies.set(SESSION_COOKIE_NAME, result.session.token, {
       path: "/",
       httpOnly: true,

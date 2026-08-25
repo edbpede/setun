@@ -72,8 +72,11 @@ const optionalPrice = v.nullable(v.pipe(v.number(), v.minValue(0), v.maxValue(10
  *
  * A typo here would make every schedule in the classroom resolve against a zone
  * that does not exist, and `date-fns-tz` would throw on the next request.
+ *
+ * Exported because the first-run wizard creates a classroom too, and asks the
+ * same question of the same field (§6.2, §8).
  */
-const timezone = v.pipe(
+export const ianaTimezone = v.pipe(
   label(64),
   v.check((value) => {
     try {
@@ -89,7 +92,7 @@ const timezone = v.pipe(
 
 export const CreateClassroomSchema = v.object({
   name: label(120),
-  timezone: v.optional(timezone, "Europe/Copenhagen"),
+  timezone: v.optional(ianaTimezone, "Europe/Copenhagen"),
 });
 
 // --- Availability (§8) ---
