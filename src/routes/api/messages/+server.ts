@@ -1,6 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import * as v from "valibot";
-import { markArtifactEditsDelivered, pendingArtifactEditParts } from "$lib/server/agent/artifacts";
+import { markArtifactEditsDelivered, outgoingArtifactEditParts } from "$lib/server/agent/artifacts";
 import { budgetsOf } from "$lib/server/agent/budgets";
 import { assertNoTurnInFlight, TurnInFlightError } from "$lib/server/agent/concurrency";
 import { executeTurn } from "$lib/server/agent/runner";
@@ -92,8 +92,13 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   const pending = listPendingAttachments(db, { studentId: student.id, conversationId });
   // Artifacts the student edited since the model last wrote them ride along,
   // marked as theirs, so a pupil can ask about their own broken code without
-  // pasting it back in (§13).
-  const edits = pendingArtifactEditParts(db, { conversationId, studentId: student.id });
+  // pasting it back in (§13). An edited prompt also re-carries what the message
+  // it replaces held, which the new branch would otherwise leave behind.
+  const edits = outgoingArtifactEditParts(db, {
+    conversationId,
+    studentId: student.id,
+    editOfMessageId,
+  });
   const parts: MessagePart[] = [
     { type: "text", text },
     ...pending.map((file) => ({

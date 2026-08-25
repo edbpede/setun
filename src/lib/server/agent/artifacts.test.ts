@@ -8,10 +8,11 @@ import {
   listStudentArtifacts,
 } from "../db/queries/artifacts";
 import { createConversation } from "../db/queries/conversations";
-import { appendMessage } from "../db/queries/messages";
+import { appendMessage, appendSibling, getActivePath } from "../db/queries/messages";
 import { createTestDatabase, seedTestFixtures } from "../db/testing";
 import {
   markArtifactEditsDelivered,
+  outgoingArtifactEditParts,
   pendingArtifactEditParts,
   recordTurnArtifacts,
 } from "./artifacts";
@@ -213,5 +214,96 @@ describe("the student's edit travelling back to the model", () => {
         studentId: intruder.student.id,
       }),
     ).toBeUndefined();
+  });
+});
+
+describe("an edited prompt re-carrying what it replaces", () => {
+  /** The state after a message carrying one student edit has been sent. */
+  function sentWithEdit() {
+    const [recorded] = assistantTurn("```html\n<p>en</p>\n```");
+    appendArtifactVersion(db, {
+      artifactId: recorded.artifactId,
+      source: "<p>min rettelse</p>",
+      authoredBy: "student",
+    });
+
+    const parts = outgoingArtifactEditParts(db, {
+      conversationId,
+      studentId: fixtures.student.id,
+    });
+    const prompt = appendMessage(db, {
+      conversationId,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "hjælp" }, ...parts],
+    });
+    markArtifactEditsDelivered(db, parts);
+
+    return { recorded, prompt };
+  }
+
+  it("re-attaches the edit the replaced prompt was carrying", () => {
+    const { recorded, prompt } = sentWithEdit();
+
+    // The stamp says the revision was delivered — but only on a branch this
+    // retry leaves behind, so the sibling has to carry it again.
+    const retry = outgoingArtifactEditParts(db, {
+      conversationId,
+      studentId: fixtures.student.id,
+      editOfMessageId: prompt.id,
+    });
+
+    expect(retry).toHaveLength(1);
+    expect(retry[0]).toMatchObject({
+      artifactId: recorded.artifactId,
+      source: "<p>min rettelse</p>",
+    });
+
+    // And the retry's own path really does exclude the message it replaces.
+    const sibling = appendSibling(db, {
+      siblingOfId: prompt.id,
+      conversationId,
+      role: "user",
+      parts: [{ type: "text", text: "igen" }, ...retry],
+    });
+    expect(getActivePath(db, sibling?.id ?? "").map((node) => node.id)).not.toContain(prompt.id);
+
+    const sent = String(assembleContext(getActivePath(db, sibling?.id ?? "")).at(-1)?.content);
+    expect(sent).toContain("<p>min rettelse</p>");
+  });
+
+  it("prefers a newer revision over the one the replaced prompt held", () => {
+    const { recorded, prompt } = sentWithEdit();
+
+    appendArtifactVersion(db, {
+      artifactId: recorded.artifactId,
+      source: "<p>endnu en rettelse</p>",
+      authoredBy: "student",
+    });
+
+    const retry = outgoingArtifactEditParts(db, {
+      conversationId,
+      studentId: fixtures.student.id,
+      editOfMessageId: prompt.id,
+    });
+
+    // One block, not two: the newer revision supersedes rather than joins it.
+    expect(retry.map((part) => part.source)).toEqual(["<p>endnu en rettelse</p>"]);
+  });
+
+  it("carries nothing from a message belonging to another conversation", () => {
+    const { prompt } = sentWithEdit();
+    const other = createConversation(db, {
+      studentId: fixtures.student.id,
+      modelAliasId: fixtures.alias.id,
+    }).id;
+
+    expect(
+      outgoingArtifactEditParts(db, {
+        conversationId: other,
+        studentId: fixtures.student.id,
+        editOfMessageId: prompt.id,
+      }),
+    ).toEqual([]);
   });
 });

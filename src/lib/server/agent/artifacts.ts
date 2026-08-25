@@ -11,6 +11,7 @@ import {
   setArtifactTitle,
   undeliveredStudentEdits,
 } from "../db/queries/artifacts";
+import { getMessage } from "../db/queries/messages";
 import type { MessagePart } from "../db/schema";
 
 /**
@@ -110,6 +111,37 @@ export function pendingArtifactEditParts(
     title: artifact.title,
     source: latest.source,
   }));
+}
+
+/**
+ * The edits the message about to be sent should carry (§13).
+ *
+ * Editing a prompt appends a sibling, and a sibling excludes the message it
+ * replaces from the model's path — so an edit that travelled with the original
+ * reaches the model on no branch at all unless the replacement carries it
+ * again. The stamp records that a revision was delivered, not which branch it
+ * was delivered on, which is why a retry cannot rely on it. A newer undelivered
+ * revision of the same artifact supersedes what the original held.
+ */
+export function outgoingArtifactEditParts(
+  db: AppDatabase,
+  input: { conversationId: string; studentId: string; editOfMessageId?: string },
+): Extract<MessagePart, { type: "artifact-edit" }>[] {
+  const pending = pendingArtifactEditParts(db, input);
+  if (!input.editOfMessageId) return pending;
+
+  // Scoped to the conversation the caller already resolved as this student's,
+  // exactly as `appendSibling` scopes the same identifier (§21).
+  const original = getMessage(db, input.editOfMessageId);
+  if (!original || original.conversationId !== input.conversationId) return pending;
+
+  const superseded = new Set(pending.map((part) => part.artifactId));
+  const carried = original.parts.filter(
+    (part): part is Extract<MessagePart, { type: "artifact-edit" }> =>
+      part.type === "artifact-edit" && !superseded.has(part.artifactId),
+  );
+
+  return [...pending, ...carried];
 }
 
 /** Marks those edits as carried, so the following message does not repeat them (§13). */
