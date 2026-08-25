@@ -340,7 +340,7 @@ class LogFile:
 
     def write(self, stamp: str, text: str) -> None:
         with self._lock:
-            self._handle.write(f"{stamp} {text}\n")
+            _ = self._handle.write(f"{stamp} {text}\n")
             self._handle.flush()
 
     def close(self) -> None:
@@ -478,8 +478,8 @@ def write_json(path: Path, payload: Mapping[str, object]) -> None:
     """Write through a temporary file so a reader never sees half a document."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    _ = temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    _ = temporary.replace(path)
 
 
 def instance_for(name: str, mode: str) -> Instance:
@@ -570,8 +570,8 @@ class InstanceLock:
         """
         if self._handle is None:
             return
-        self._handle.truncate(0)
-        self._handle.write(str(os.getpid()))
+        _ = self._handle.truncate(0)
+        _ = self._handle.write(str(os.getpid()))
         self._handle.flush()
 
     def release(self) -> None:
@@ -1309,7 +1309,7 @@ class Supervisor:
 
     def run(self) -> int:
         for received in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-            signal.signal(received, self._on_signal)
+            _ = signal.signal(received, self._on_signal)
 
         next_probe = time.monotonic() + PROBE_INTERVAL_SECONDS
         while not self.stopping.is_set():
@@ -1368,7 +1368,7 @@ class Supervisor:
                 arguments.append("--volumes")
             if force:
                 arguments += ["--timeout", "0"]
-            subprocess.run(
+            _ = subprocess.run(
                 compose_argv(self.instance.compose_project, *arguments),
                 cwd=REPO,
                 env=self.environment,
@@ -1448,7 +1448,7 @@ def banner(instance: Instance, ports: dict[str, int], level: str, with_cpa: bool
     print(f"  {OUT.dim('logs'.ljust(NAME_COLUMN))} {OUT.dim(relative(instance.logs))}")
     print(f"  {OUT.dim('Ctrl-C'.ljust(NAME_COLUMN))} {OUT.dim(ctrl_c)}")
     print(rule)
-    sys.stdout.flush()
+    _ = sys.stdout.flush()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1479,7 +1479,7 @@ def reap_stale(instance: Instance, *, announce: bool = True) -> None:
 
     if state.get("with_cpa") and compose_command():
         arguments = ["down"] + (["--volumes"] if state.get("mode") == "ephemeral" else [])
-        subprocess.run(
+        _ = subprocess.run(
             compose_argv(state.get("compose_project", instance.compose_project), *arguments),
             cwd=REPO,
             capture_output=True,
@@ -1630,7 +1630,7 @@ def command_start(options: Options) -> int:
 
     reap_stale(instance)
 
-    require_binary("bun", hint="The stack runs on Bun 1.4 or newer — https://bun.com")
+    _ = require_binary("bun", hint="The stack runs on Bun 1.4 or newer — https://bun.com")
     if options.with_cpa:
         check_cpa_prerequisites()
 
@@ -1721,7 +1721,7 @@ def command_start(options: Options) -> int:
 def _notify(descriptor: int, healthy: bool) -> None:
     """Tell the parent whether the stack came up. Safe to call twice."""
     try:
-        os.write(descriptor, b"1" if healthy else b"0")
+        _ = os.write(descriptor, b"1" if healthy else b"0")
         os.close(descriptor)
     except OSError:
         pass
@@ -1773,9 +1773,9 @@ def _start_detached(
     os.setsid()
     lock.stamp()
     handle = (instance.logs / "supervisor.out").open("a", buffering=1, encoding="utf-8")
-    os.dup2(handle.fileno(), sys.stdout.fileno())
-    os.dup2(handle.fileno(), sys.stderr.fileno())
-    os.dup2(os.open(os.devnull, os.O_RDONLY), sys.stdin.fileno())
+    _ = os.dup2(handle.fileno(), sys.stdout.fileno())
+    _ = os.dup2(handle.fileno(), sys.stderr.fileno())
+    _ = os.dup2(os.open(os.devnull, os.O_RDONLY), sys.stdin.fileno())
     OUT.follow(sys.stdout)
 
     status = 1
@@ -1908,7 +1908,7 @@ def command_kill(options: Options) -> int:
 
     if state.get("with_cpa") and compose_command():
         project = state.get("compose_project", instance.compose_project)
-        subprocess.run(
+        _ = subprocess.run(
             compose_argv(project, "kill"), cwd=REPO, capture_output=True, text=True
         )
         # --volumes only where the instance is ephemeral, matching the message
@@ -1917,11 +1917,11 @@ def command_kill(options: Options) -> int:
         teardown = ["down", "--timeout", "0"]
         if instance.mode == "ephemeral":
             teardown.append("--volumes")
-        subprocess.run(
+        _ = subprocess.run(
             compose_argv(project, *teardown), cwd=REPO, capture_output=True, text=True
         )
 
-    _await_release(instance, 5)
+    _ = _await_release(instance, 5)
     instance.state_path.unlink(missing_ok=True)
 
     if instance.mode == "ephemeral" and instance.root.exists():
@@ -1973,12 +1973,13 @@ def command_status(options: Options) -> int:
         return 0
 
     state: RunState = instance.read_state() or {}
-    print(
+    headline = (
         f"{OUT.bold(instance.name)}  {OUT.paint('running', '38;5;29')}  "
         f"{OUT.dim('mode')} {state.get('mode', instance.mode)}  "
         f"{OUT.dim('level')} {state.get('log_level', '?')}  "
         f"{OUT.dim('since')} {state.get('started_at', '?')}"
     )
+    print(headline)
 
     entries: dict[str, ServiceState] = state.get("services") or {}
     for name in ("app", "sandbox", "cpa"):
@@ -1990,10 +1991,11 @@ def command_status(options: Options) -> int:
         mark, colour = HEALTH_MARK[health]
         pid = entry.get("pid")
         where = "container" if entry.get("containerised") else f"pid {pid}"
-        print(
+        row = (
             f"  {OUT.paint(mark, colour)} {OUT.paint(name.ljust(NAME_COLUMN), SERVICE_COLOUR[name])}"
             f" :{str(port).ljust(5)} {OUT.dim(where.ljust(12))} {OUT.dim(health)}"
         )
+        print(row)
 
     print(OUT.dim(f"  data {relative(instance.data)} ({directory_size(instance.data)})"))
     return 0
@@ -2103,7 +2105,7 @@ class Tail:
         if handle is None:
             return []
         if current.st_size < handle.tell():
-            handle.seek(0)
+            _ = handle.seek(0)
 
         collected: list[tuple[str, Line]] = []
         while True:
@@ -2114,7 +2116,7 @@ class Tail:
             if not raw.endswith(b"\n"):
                 # Half a line: the writer has not finished it. Rewind and take
                 # it whole on the next poll rather than render it twice.
-                handle.seek(position)
+                _ = handle.seek(position)
                 break
             collected.append(self._line(raw))
         return collected
@@ -2217,13 +2219,14 @@ def command_list(_options: Options) -> int:
         # Padded by hand: the colour codes make ljust() count invisible bytes.
         padding = " " * (10 - len(label))
         endpoints = f"{ports.get('app', '-')}/{ports.get('sandbox', '-')}"
-        print(
+        row = (
             f"  {instance.name.ljust(20)}"
             f"{config.get('mode', instance.mode).ljust(12)}"
             f"{state}{padding}"
             f"{endpoints.ljust(14)}"
             f"{OUT.dim(directory_size(instance.data))}"
         )
+        print(row)
     return 0
 
 
@@ -2256,12 +2259,12 @@ def command_destroy(options: Options) -> int:
         note("instance is running — stopping it first")
         options.persistent = options.name
         options.ephemeral = False
-        command_stop(options)
+        _ = command_stop(options)
 
     reap_stale(instance, announce=False)
 
     if compose_command():
-        subprocess.run(
+        _ = subprocess.run(
             compose_argv(instance.compose_project, "down", "--volumes"),
             cwd=REPO,
             capture_output=True,
@@ -2330,23 +2333,23 @@ class Formatter(argparse.RawDescriptionHelpFormatter):
 
 def add_instance_flags(parser: argparse.ArgumentParser) -> None:
     group = parser.add_mutually_exclusive_group()
-    group.add_argument(
+    _ = group.add_argument(
         "--persistent",
         metavar="NAME",
         help=f"named instance whose data survives stop (default: {DEFAULT_INSTANCE})",
     )
-    group.add_argument(
+    _ = group.add_argument(
         "--ephemeral",
         action="store_true",
         help="throwaway instance, destroyed on exit",
     )
-    parser.add_argument(
+    _ = parser.add_argument(
         "--log-level",
         choices=LEVELS,
         default=None,
         help=f"verbosity propagated to every service (default: {DEFAULT_LEVEL})",
     )
-    parser.add_argument(
+    _ = parser.add_argument(
         "-v",
         dest="verbose",
         action="count",
@@ -2356,10 +2359,10 @@ def add_instance_flags(parser: argparse.ArgumentParser) -> None:
 
 
 def add_lifecycle_flags(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--port", type=int, help="application port (default 5173)")
-    parser.add_argument("--sandbox-port", type=int, help="artifact origin port (default 5174)")
-    parser.add_argument("--cpa-port", type=int, help="gateway port (default 8317)")
-    parser.add_argument(
+    _ = parser.add_argument("--port", type=int, help="application port (default 5173)")
+    _ = parser.add_argument("--sandbox-port", type=int, help="artifact origin port (default 5174)")
+    _ = parser.add_argument("--cpa-port", type=int, help="gateway port (default 8317)")
+    _ = parser.add_argument(
         "--with-cpa",
         action="store_true",
         help=(
@@ -2367,7 +2370,7 @@ def add_lifecycle_flags(parser: argparse.ArgumentParser) -> None:
             "cpa/config.yaml); pass it on each run, it is not remembered"
         ),
     )
-    parser.add_argument(
+    _ = parser.add_argument(
         "-d", "--detach", action="store_true", help="run the supervisor in the background"
     )
 
@@ -2400,7 +2403,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_instance_flags(start)
     add_lifecycle_flags(start)
-    start.add_argument("--tail", type=int, default=50, help=argparse.SUPPRESS)
+    _ = start.add_argument("--tail", type=int, default=50, help=argparse.SUPPRESS)
     start.set_defaults(run=command_start)
 
     stop = commands.add_parser("stop", help="graceful shutdown, state preserved", formatter_class=Formatter)
@@ -2411,13 +2414,13 @@ def build_parser() -> argparse.ArgumentParser:
         "kill", help="force-terminate everything, no cleanup wait", formatter_class=Formatter
     )
     add_instance_flags(killer)
-    killer.add_argument("-f", "--force", action="store_true", help="skip the confirmation")
+    _ = killer.add_argument("-f", "--force", action="store_true", help="skip the confirmation")
     killer.set_defaults(run=command_kill)
 
     restart = commands.add_parser("restart", help="stop, then start", formatter_class=Formatter)
     add_instance_flags(restart)
     add_lifecycle_flags(restart)
-    restart.add_argument("--tail", type=int, default=50, help=argparse.SUPPRESS)
+    _ = restart.add_argument("--tail", type=int, default=50, help=argparse.SUPPRESS)
     restart.set_defaults(run=command_restart)
 
     status = commands.add_parser(
@@ -2430,8 +2433,8 @@ def build_parser() -> argparse.ArgumentParser:
         "logs", help="attach to the log view, all services or one", formatter_class=Formatter
     )
     add_instance_flags(logs)
-    logs.add_argument("service", nargs="?", help="app, sandbox or cpa; omit for all")
-    logs.add_argument(
+    _ = logs.add_argument("service", nargs="?", help="app, sandbox or cpa; omit for all")
+    _ = logs.add_argument(
         "--tail", type=int, default=50, help="lines of history per service to replay first"
     )
     logs.set_defaults(run=command_logs)
@@ -2444,15 +2447,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_instance_flags(resume)
     add_lifecycle_flags(resume)
-    resume.add_argument("name", help="instance to resume")
-    resume.add_argument("--tail", type=int, default=50, help=argparse.SUPPRESS)
+    _ = resume.add_argument("name", help="instance to resume")
+    _ = resume.add_argument("--tail", type=int, default=50, help=argparse.SUPPRESS)
     resume.set_defaults(run=command_resume)
 
     destroy = commands.add_parser(
         "destroy", help="remove an instance permanently", formatter_class=Formatter
     )
-    destroy.add_argument("name", help="instance to delete")
-    destroy.add_argument("-f", "--force", action="store_true", help="skip the confirmation")
+    _ = destroy.add_argument("name", help="instance to delete")
+    _ = destroy.add_argument("-f", "--force", action="store_true", help="skip the confirmation")
     destroy.set_defaults(run=command_destroy)
 
     return parser
