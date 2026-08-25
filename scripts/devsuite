@@ -1461,14 +1461,23 @@ def resolve_ports(options: argparse.Namespace, config: dict) -> dict[str, int]:
     }
 
 
+def attach_to_running(options: argparse.Namespace, instance: Instance) -> int:
+    """
+    What `start` does when the stack is already up: follow it, never spawn a
+    second one. Both places that discover it is running end here, so the
+    outcome does not depend on which of them noticed.
+    """
+    note(f"instance '{instance.name}' is already running — attaching to its log view")
+    return command_logs(options, instance=instance)
+
+
 def command_start(options: argparse.Namespace) -> int:
     instance = resolve_target(options, creating=True)
     assert instance is not None
 
     if instance_is_running(instance):
         # Idempotent by construction: the lock is held, so nothing is spawned.
-        note(f"instance '{instance.name}' is already running — attaching to its log view")
-        return command_logs(options, instance=instance)
+        return attach_to_running(options, instance)
 
     reap_stale(instance)
 
@@ -1492,8 +1501,11 @@ def command_start(options: argparse.Namespace) -> int:
     # student-code pepper and invalidate every access code already issued.
     lock = InstanceLock(instance.lock_path)
     if not lock.acquire():
-        note(f"instance '{instance.name}' is already running")
-        return 1
+        # The probe at the top of this function and this line are not one step:
+        # a concurrent `start` that passed the probe before the winner took the
+        # lock lands here, and "already running" has to mean the same thing at
+        # both ends of that gap.
+        return attach_to_running(options, instance)
 
     instance.materialise()
 
