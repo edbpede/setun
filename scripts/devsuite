@@ -846,8 +846,34 @@ def daemon_reachable(command: Sequence[str]) -> bool:
     return probe.returncode == 0
 
 
+# Where Homebrew keeps a formula's binaries when the formula is not linked.
+# `docker` unlinked is easy to end up with and hard to read from the symptom:
+# Colima refuses to start with "docker not found, run \'brew install docker\'"
+# on a machine where `brew list` shows docker installed.
+UNLINKED_DOCKER = (
+    Path("/opt/homebrew/opt/docker/bin/docker"),
+    Path("/usr/local/opt/docker/bin/docker"),
+)
+
+
+def unlinked_docker() -> Path | None:
+    """A Homebrew `docker` that exists but is not on PATH."""
+    if shutil.which("docker"):
+        return None
+    return next((path for path in UNLINKED_DOCKER if path.exists()), None)
+
+
 def engine_hint() -> str:
     """Advice naming the engine this machine actually has, not a guessed one."""
+    keg = unlinked_docker()
+    if keg:
+        # Colima needs the docker CLI for its own dependency check even though
+        # Compose does not, so this blocks `colima start` as well.
+        return (
+            f"`docker` is installed at {keg} but is not linked onto PATH,\n"
+            "which also stops Colima starting. Link it:\n"
+            "  brew link docker"
+        )
     if shutil.which("colima"):
         try:
             running = (
@@ -1179,10 +1205,14 @@ class Supervisor:
         if self.with_cpa:
             self.emit("suite", "stopping cpa container")
             # An ephemeral instance takes its volume with it; a persistent one
-            # keeps CPA's enrolment between runs.
-            arguments = ["down"] + (["--volumes"] if self.instance.mode == "ephemeral" else [])
+            # keeps CPA's enrolment between runs. `force` shortens the wait —
+            # it does not change what survives, because a hard stop is still
+            # not a decision to discard the instance's data.
+            arguments = ["down"]
+            if self.instance.mode == "ephemeral":
+                arguments.append("--volumes")
             if force:
-                arguments = ["down", "--volumes", "--timeout", "0"]
+                arguments += ["--timeout", "0"]
             subprocess.run(
                 compose_argv(self.instance.compose_project, *arguments),
                 cwd=REPO,
@@ -1619,11 +1649,14 @@ def command_kill(options: argparse.Namespace) -> int:
         subprocess.run(
             compose_argv(project, "kill"), cwd=REPO, capture_output=True, text=True
         )
+        # --volumes only where the instance is ephemeral, matching the message
+        # this command prints: CPA's auth volume is that instance's data as
+        # much as its database is, and `kill` leaves a persistent one's alone.
+        teardown = ["down", "--timeout", "0"]
+        if instance.mode == "ephemeral":
+            teardown.append("--volumes")
         subprocess.run(
-            compose_argv(project, "down", "--volumes", "--timeout", "0"),
-            cwd=REPO,
-            capture_output=True,
-            text=True,
+            compose_argv(project, *teardown), cwd=REPO, capture_output=True, text=True
         )
 
     _await_release(instance, 5)
@@ -2058,7 +2091,10 @@ def add_lifecycle_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--with-cpa",
         action="store_true",
-        help="also run the CLIProxyAPI container (needs a Docker engine and cpa/config.yaml)",
+        help=(
+            "also run the CLIProxyAPI container (needs a Docker engine and "
+            "cpa/config.yaml); pass it on each run, it is not remembered"
+        ),
     )
     parser.add_argument(
         "-d", "--detach", action="store_true", help="run the supervisor in the background"
