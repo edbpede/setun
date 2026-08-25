@@ -26,6 +26,7 @@
   "artifact_run": "Run",
   "artifact_save_failed": "The edit could not be saved. Try again in a moment.",
   "artifact_select_label": "Choose an artifact",
+  "artifact_split_handle": "Resize the build panel",
   "artifact_status_compiling": "Building…",
   "artifact_status_failed": "It did not run",
   "artifact_status_ready": "Running",

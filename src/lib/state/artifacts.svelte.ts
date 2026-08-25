@@ -41,6 +41,20 @@ export class ArtifactWorkspace {
   layout = $state<PanelLayout>("overlay");
   view = $state<PanelView>("preview");
 
+  /**
+   * How much of the width the split panel takes (§20).
+   *
+   * "Split view available by choice… panel handles are draggable by touch." A
+   * fixed half is the wrong half about as often as it is the right one on a
+   * 1366-pixel screen, so the handle moves it and this holds where it was left.
+   */
+  splitFraction = $state(0.5);
+
+  /** Clamped so the handle can never drag either side out of existence. */
+  setSplitFraction(fraction: number): void {
+    this.splitFraction = Math.min(0.8, Math.max(0.25, fraction));
+  }
+
   /** What the editor holds. Null while the student has not typed anything. */
   draft = $state<string | null>(null);
   /** What the frame is running. Advances only at a commit point (§13). */

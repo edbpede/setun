@@ -103,6 +103,10 @@ cp mcp.example.json mcp.json    # the tool servers this installation offers (PRD
 docker compose up -d
 ```
 
+**Operating a real installation — DNS and TLS, provider enrolment, educator password recovery,
+the backup restore procedure, and the pinned gateway upgrade — is documented in
+[`docs/setun-operations.md`](docs/setun-operations.md).**
+
 `mcp.json` is where MCP servers are defined: an endpoint is a security decision, so it lives
 in reviewable configuration rather than in the database or the panel, and credentials are
 referenced there by the *name* of an environment variable. The panel switches configured
