@@ -925,6 +925,31 @@ def engine_hint() -> str:
     )
 
 
+def warn_on_gateway_key_mismatch(key: str) -> None:
+    """
+    Warn when CPA's own config does not carry the key the app will present.
+
+    The listener key is the only thing authenticating the gateway (PRD §9), and
+    it lives in two files that nothing keeps in step: the environment or the
+    instance's own config on one side, `cpa/config.yaml` on the other. Out of
+    step, everything starts healthy and the first model call answers 401 — so it
+    is worth saying at start-up rather than leaving to be met in a lesson.
+
+    A substring test rather than a parse: there is no YAML reader in the
+    standard library, and the question is only whether the value appears at all.
+    """
+    path = REPO / "cpa" / "config.yaml"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    if key in text:
+        return
+    note(f"warning: {relative(path)} does not list this instance's listener key")
+    note("         the gateway will answer 401 until its `api-keys:` and")
+    note("         SETUN_CPA_LISTENER_KEY hold the same value")
+
+
 def check_cpa_prerequisites() -> None:
     command = compose_command()
     if command is None:
@@ -1447,6 +1472,9 @@ def command_start(options: argparse.Namespace) -> int:
         )
         if "SETUN_EDUCATOR_SEED_PASSWORD" in minted:
             note("educator sign-in for this instance: educator / educator")
+
+    if options.with_cpa:
+        warn_on_gateway_key_mismatch(resolved["SETUN_CPA_LISTENER_KEY"])
 
     environment = child_environment(instance, ports, level, resolved)
 

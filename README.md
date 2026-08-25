@@ -70,6 +70,11 @@ engine directly. The `docker compose` plugin that Docker Desktop ships is one; t
 brew install colima docker-compose && colima start   # a Docker engine without Docker Desktop
 ```
 
+CPA's `api-keys:` must carry the same value as `SETUN_CPA_LISTENER_KEY` — it is the only thing
+authenticating the gateway (PRD §9), and nothing keeps the two files in step. Where the suite
+minted the key itself, it is in that instance's `instance.json`. `--with-cpa` warns at start-up
+when the two disagree, rather than leaving a 401 to be met on the first model call.
+
 Colima *does* need the `docker` CLI on PATH for its own dependency check, even though the suite
 does not. A Homebrew `docker` that is installed but unlinked makes `colima start` report it as
 missing; `brew link docker`, or putting `$(brew --prefix docker)/bin` on PATH, settles it. The
