@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import errno
 import fcntl
+import http.client
 import json
 import os
 import re
@@ -44,11 +45,13 @@ import time
 import traceback
 import urllib.error
 import urllib.request
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from queue import Empty, Queue
-from typing import Callable, Iterable, Sequence
+from types import FrameType
+from typing import IO, NoReturn, Protocol, TypedDict, cast
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Layout — everything the suite writes lives under .devsuite/ inside the repo.
@@ -137,13 +140,25 @@ ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\
 SHUTDOWN_NOISE = re.compile(r"signal SIGTERM|Polite quit request", re.IGNORECASE)
 
 
+def colour_wanted(stream: IO[str]) -> bool:
+    return stream.isatty() and not os.environ.get("NO_COLOR") and os.environ.get("TERM") != "dumb"
+
+
 class Style:
     """Colour, or the absence of it, decided once at start-up."""
 
-    def __init__(self, stream) -> None:
-        self.enabled = (
-            stream.isatty() and not os.environ.get("NO_COLOR") and os.environ.get("TERM") != "dumb"
-        )
+    def __init__(self, stream: IO[str]) -> None:
+        self.enabled: bool = colour_wanted(stream)
+
+    def follow(self, stream: IO[str]) -> None:
+        """
+        Re-decide for a stream that has replaced the one this was built on.
+
+        The detached supervisor redirects its own stdout to a file after the
+        fork. Mutating the one `Style` every caller already holds is what keeps
+        `OUT` a constant while still answering for the stream it now writes to.
+        """
+        self.enabled = colour_wanted(stream)
 
     def paint(self, text: str, code: str) -> str:
         return f"\x1b[{code}m{text}\x1b[0m" if self.enabled else text
@@ -163,7 +178,7 @@ def note(message: str) -> None:
     print(f"{ERR.dim('suite')} {message}", file=sys.stderr, flush=True)
 
 
-def fail(message: str, *, hint: str | None = None, code: int = 1) -> "NoReturn":  # type: ignore[valid-type]
+def fail(message: str, *, hint: str | None = None, code: int = 1) -> NoReturn:
     """Stop with an actionable message rather than a traceback."""
     print(f"{ERR.paint('error', '38;5;160')} {message}", file=sys.stderr)
     if hint:
@@ -248,8 +263,8 @@ class Renderer:
     """Turns `Line`s into terminal output, coloured or plain."""
 
     def __init__(self, style: Style, floor: str) -> None:
-        self.style = style
-        self.floor = floor
+        self.style: Style = style
+        self.floor: str = floor
         # Whether the last primary line from each service was shown. A stack
         # trace whose first line was filtered out must go with it — otherwise
         # `--log-level error` leaves headless blocks of indented text behind.
@@ -298,7 +313,7 @@ class Renderer:
             text = self.style.paint(text, LEVEL_COLOUR["error"])
         return f"{gutter} {level} {name} {bar} {text}"
 
-    def emit(self, line: Line, stream=sys.stdout) -> None:
+    def emit(self, line: Line, stream: IO[str] = sys.stdout) -> None:
         if self.visible(line):
             print(self.format(line), file=stream, flush=True)
 
@@ -320,8 +335,8 @@ def short_stamp(iso: str) -> str:
 class LogFile:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._handle = path.open("a", encoding="utf-8", errors="replace")
-        self._lock = threading.Lock()
+        self._handle: IO[str] = path.open("a", encoding="utf-8", errors="replace")
+        self._lock: threading.Lock = threading.Lock()
 
     def write(self, stamp: str, text: str) -> None:
         with self._lock:
@@ -345,6 +360,42 @@ LOG_FILE_LINE = re.compile(r"^(?P<stamp>\d{4}-\d\d-\d\dT[\d:.]+Z) (?P<text>.*)$"
 # ─────────────────────────────────────────────────────────────────────────────
 
 INSTANCE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$")
+
+
+# Both documents are read back from disk, where a hand edit or an older version
+# of the suite may have left any key out — so every field is optional and every
+# read goes through `.get`, with the shape naming what the writer puts there.
+
+
+class ServiceState(TypedDict, total=False):
+    """One service's entry in `state.json`."""
+
+    pid: int | None
+    port: int
+    containerised: bool
+
+
+class RunState(TypedDict, total=False):
+    """`state.json` — what a running instance's supervisor recorded about it."""
+
+    instance: str
+    mode: str
+    supervisor_pid: int
+    started_at: str
+    log_level: str
+    with_cpa: bool
+    compose_project: str
+    services: dict[str, ServiceState]
+
+
+class InstanceConfig(TypedDict, total=False):
+    """`instance.json` — what survives between runs of one instance."""
+
+    name: str
+    mode: str
+    created_at: str
+    ports: dict[str, int]
+    secrets: dict[str, str]
 
 
 @dataclass
@@ -406,22 +457,24 @@ class Instance:
         ):
             directory.mkdir(parents=True, exist_ok=True)
 
-    def read_config(self) -> dict:
+    def read_config(self) -> InstanceConfig:
         if self.config_path.exists():
-            return json.loads(self.config_path.read_text(encoding="utf-8"))
+            return cast(
+                "InstanceConfig", json.loads(self.config_path.read_text(encoding="utf-8"))
+            )
         return {}
 
-    def write_config(self, config: dict) -> None:
+    def write_config(self, config: InstanceConfig) -> None:
         write_json(self.config_path, config)
 
-    def read_state(self) -> dict | None:
+    def read_state(self) -> RunState | None:
         try:
-            return json.loads(self.state_path.read_text(encoding="utf-8"))
+            return cast("RunState", json.loads(self.state_path.read_text(encoding="utf-8")))
         except (FileNotFoundError, json.JSONDecodeError):
             return None
 
 
-def write_json(path: Path, payload: dict) -> None:
+def write_json(path: Path, payload: Mapping[str, object]) -> None:
     """Write through a temporary file so a reader never sees half a document."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -443,11 +496,11 @@ def instance_for(name: str, mode: str) -> Instance:
             hint="Letters, digits, dot, dash and underscore; 40 characters at most.",
         )
     root = INSTANCES / name
-    stored = {}
+    stored: InstanceConfig = {}
     config_path = root / "instance.json"
     if config_path.exists():
         try:
-            stored = json.loads(config_path.read_text(encoding="utf-8"))
+            stored = cast("InstanceConfig", json.loads(config_path.read_text(encoding="utf-8")))
         except json.JSONDecodeError:
             stored = {}
     return Instance(name=name, mode=stored.get("mode", mode), root=root)
@@ -456,15 +509,17 @@ def instance_for(name: str, mode: str) -> Instance:
 def list_instances() -> list[Instance]:
     if not INSTANCES.is_dir():
         return []
-    found = []
+    found: list[Instance] = []
     for directory in sorted(INSTANCES.iterdir()):
         if not directory.is_dir():
             continue
-        config = {}
+        config: InstanceConfig = {}
         config_path = directory / "instance.json"
         if config_path.exists():
             try:
-                config = json.loads(config_path.read_text(encoding="utf-8"))
+                config = cast(
+                    "InstanceConfig", json.loads(config_path.read_text(encoding="utf-8"))
+                )
             except json.JSONDecodeError:
                 config = {}
         found.append(
@@ -489,8 +544,8 @@ def list_instances() -> list[Instance]:
 class InstanceLock:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.path = path
-        self._handle = None
+        self.path: Path = path
+        self._handle: IO[str] | None = None
 
     def acquire(self) -> bool:
         handle = self.path.open("a+")
@@ -607,7 +662,7 @@ def read_dotenv(path: Path) -> dict[str, str]:
     return values
 
 
-def resolve_secrets(instance: Instance, config: dict) -> tuple[dict[str, str], list[str]]:
+def resolve_secrets(config: InstanceConfig) -> tuple[dict[str, str], list[str]]:
     """
     Fill the four required variables, remembering anything generated.
 
@@ -706,7 +761,12 @@ def port_owner(port: int) -> str:
     return f" (held by {commands[0]})" if commands else ""
 
 
-def loopback_addresses(port: int) -> list[tuple[int, tuple]]:
+# Every shape `getaddrinfo` can hand back as a sockaddr: IPv4, IPv6, and the
+# link-layer form. Spelled out because `bind` takes the tuple as it comes.
+SocketAddress = tuple[str, int] | tuple[str, int, int, int] | tuple[int, bytes]
+
+
+def loopback_addresses(port: int) -> list[tuple[socket.AddressFamily, SocketAddress]]:
     """
     Every loopback address `localhost` resolves to, IPv4 and IPv6 alike.
 
@@ -783,7 +843,7 @@ class Service:
     port: int
     # A container's lifetime is Compose's; the suite only follows its logs.
     containerised: bool = False
-    process: subprocess.Popen | None = None
+    process: subprocess.Popen[str] | None = None
     reader: threading.Thread | None = None
     health: str = "starting"
 
@@ -1042,7 +1102,12 @@ def http_answers(port: int, path: str = "/", timeout: float = 2.0) -> bool:
     """
     request = urllib.request.Request(f"http://localhost:{port}{path}", method="GET")
     try:
-        urllib.request.urlopen(request, timeout=timeout).close()
+        # urlopen is typed as returning Any because it answers for every scheme
+        # it knows; the URL above is http, and http is what it opens.
+        response = cast(
+            "http.client.HTTPResponse", urllib.request.urlopen(request, timeout=timeout)
+        )
+        response.close()
         return True
     except urllib.error.HTTPError:
         return True
@@ -1082,20 +1147,20 @@ class Supervisor:
         environment: dict[str, str],
         lock: InstanceLock,
     ) -> None:
-        self.instance = instance
-        self.ports = ports
-        self.level = level
-        self.with_cpa = with_cpa
-        self.environment = environment
-        self.renderer = Renderer(OUT, level)
+        self.instance: Instance = instance
+        self.ports: dict[str, int] = ports
+        self.level: str = level
+        self.with_cpa: bool = with_cpa
+        self.environment: dict[str, str] = environment
+        self.renderer: Renderer = Renderer(OUT, level)
         self.queue: Queue[Line] = Queue()
         self.services: list[Service] = []
         self.files: dict[str, LogFile] = {}
-        self.stopping = threading.Event()
+        self.stopping: threading.Event = threading.Event()
         self.failure: str | None = None
         # Acquired by `command_start` before any instance state was written, and
         # held here until shutdown releases it.
-        self.lock = lock
+        self.lock: InstanceLock = lock
 
     # ── output ───────────────────────────────────────────────────────────────
 
@@ -1152,15 +1217,18 @@ class Supervisor:
         self.services.append(service)
 
     def _pump(self, service: Service) -> None:
-        assert service.process and service.process.stdout
-        for raw in service.process.stdout:
+        assert service.process is not None and service.process.stdout is not None
+        # Popen.stdout is typed IO[Any] whichever mode the child was opened in;
+        # `spawn` passes text=True, so this one yields str.
+        stream: IO[str] = service.process.stdout
+        for raw in stream:
             stamp = now_iso()
             self.files[service.name].write(stamp, ANSI_ESCAPE.sub("", raw.rstrip("\n")))
             line = make_line(service.name, raw, short_stamp(stamp))
             if self.stopping.is_set() and line.level == "error" and SHUTDOWN_NOISE.search(line.text):
                 line = replace(line, level="debug")
             self.queue.put(line)
-        service.process.stdout.close()
+        stream.close()
 
     def start_stack(self) -> None:
         self.instance.materialise()
@@ -1194,26 +1262,24 @@ class Supervisor:
         self.write_state()
 
     def write_state(self) -> None:
-        write_json(
-            self.instance.state_path,
-            {
-                "instance": self.instance.name,
-                "mode": self.instance.mode,
-                "supervisor_pid": os.getpid(),
-                "started_at": now_iso(),
-                "log_level": self.level,
-                "with_cpa": self.with_cpa,
-                "compose_project": self.instance.compose_project,
-                "services": {
-                    service.name: {
-                        "pid": service.process.pid if service.process else None,
-                        "port": service.port,
-                        "containerised": service.containerised,
-                    }
-                    for service in self.services
-                },
+        state: RunState = {
+            "instance": self.instance.name,
+            "mode": self.instance.mode,
+            "supervisor_pid": os.getpid(),
+            "started_at": now_iso(),
+            "log_level": self.level,
+            "with_cpa": self.with_cpa,
+            "compose_project": self.instance.compose_project,
+            "services": {
+                service.name: {
+                    "pid": service.process.pid if service.process else None,
+                    "port": service.port,
+                    "containerised": service.containerised,
+                }
+                for service in self.services
             },
-        )
+        }
+        write_json(self.instance.state_path, state)
 
     def await_health(self, timeout: float = HEALTH_TIMEOUT_SECONDS) -> bool:
         """Block until every service answers, rendering its start-up as it goes."""
@@ -1277,7 +1343,7 @@ class Supervisor:
         self.shutdown()
         return 1 if self.failure else 0
 
-    def _on_signal(self, number: int, _frame) -> None:
+    def _on_signal(self, number: int, _frame: FrameType | None) -> None:
         self.emit("suite", f"received {signal.Signals(number).name} — stopping")
         self.stopping.set()
 
@@ -1403,7 +1469,7 @@ def reap_stale(instance: Instance, *, announce: bool = True) -> None:
 
     for name, entry in (state.get("services") or {}).items():
         pid = entry.get("pid")
-        if entry.get("containerised") or not process_alive(pid):
+        if entry.get("containerised") or pid is None or not process_alive(pid):
             continue
         note(f"killing orphaned {name} (pid {pid})")
         try:
@@ -1428,7 +1494,44 @@ def reap_stale(instance: Instance, *, announce: bool = True) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def resolve_target(options: argparse.Namespace, *, creating: bool = False) -> Instance | None:
+class Options(Protocol):
+    """
+    Every flag any subcommand defines, as one shape.
+
+    `build_parser` gives all of them a default on the top-level parser, so each
+    is present whichever subcommand ran — which is what lets a command read a
+    flag another subcommand owns without asking whether it is there.
+    """
+
+    command: str | None
+    run: Callable[[Options], int]
+    persistent: str | None
+    ephemeral: bool
+    log_level: str | None
+    verbose: int
+    port: int | None
+    sandbox_port: int | None
+    cpa_port: int | None
+    with_cpa: bool
+    detach: bool
+    force: bool
+    service: str | None
+    tail: int
+    # `resume` and `destroy` alone take a positional instance name.
+    name: str
+
+
+def chosen_level(options: Options) -> str:
+    """
+    The level every command renders and configures its services at.
+
+    `main` resolves the flags into `log_level` before dispatching, so this only
+    names the floor for the type checker's benefit; the fallback never fires.
+    """
+    return options.log_level or DEFAULT_LEVEL
+
+
+def resolve_target(options: Options, *, creating: bool = False) -> Instance | None:
     """
     Pick the instance a command acts on, from --ephemeral / --persistent.
 
@@ -1437,11 +1540,11 @@ def resolve_target(options: argparse.Namespace, *, creating: bool = False) -> In
     is there rather than deriving a name. Returns None when `--ephemeral` was
     asked for and there is none; the caller decides whether that is an error.
     """
-    if getattr(options, "ephemeral", False):
+    if options.ephemeral:
         if creating:
             return instance_for(f"{EPHEMERAL_PREFIX}{os.getpid()}", "ephemeral")
         return sole_ephemeral()
-    name = getattr(options, "persistent", None) or DEFAULT_INSTANCE
+    name = options.persistent or DEFAULT_INSTANCE
     return instance_for(name, "persistent")
 
 
@@ -1457,7 +1560,7 @@ def sole_ephemeral() -> Instance | None:
     return found[0]
 
 
-def resolve_ports(options: argparse.Namespace, config: dict) -> dict[str, int]:
+def resolve_ports(options: Options, config: InstanceConfig) -> dict[str, int]:
     stored = config.get("ports", {})
     return {
         "app": options.port or stored.get("app") or DEFAULT_PORTS["app"],
@@ -1499,7 +1602,7 @@ def await_logs(instance: Instance, timeout: float = ATTACH_TIMEOUT_SECONDS) -> b
     return bool(log_names(instance))
 
 
-def attach_to_running(options: argparse.Namespace, instance: Instance) -> int:
+def attach_to_running(options: Options, instance: Instance) -> int:
     """
     What `start` does when the stack is already up: follow it, never spawn a
     second one. Both places that discover it is running end here, so the
@@ -1517,7 +1620,7 @@ def attach_to_running(options: argparse.Namespace, instance: Instance) -> int:
     return command_logs(options, instance=instance)
 
 
-def command_start(options: argparse.Namespace) -> int:
+def command_start(options: Options) -> int:
     instance = resolve_target(options, creating=True)
     assert instance is not None
 
@@ -1535,7 +1638,7 @@ def command_start(options: argparse.Namespace) -> int:
     # no instance directory behind for the next command to trip over.
     config = instance.read_config()
     ports = resolve_ports(options, config)
-    level = options.log_level
+    level = chosen_level(options)
 
     services = ["app", "sandbox"] + (["cpa"] if options.with_cpa else [])
     check_ports(ports, services)
@@ -1559,7 +1662,7 @@ def command_start(options: argparse.Namespace) -> int:
     # this line has already stored this instance's secrets, and minting a
     # second set would persist credentials nothing is running with.
     config = instance.read_config()
-    resolved, minted = resolve_secrets(instance, config)
+    resolved, minted = resolve_secrets(config)
     config.update(
         {
             "name": instance.name,
@@ -1644,8 +1747,6 @@ def _start_detached(
     The parent must therefore never release it — unlocking a shared
     description would unlock it for the child too.
     """
-    global OUT
-
     instance.logs.mkdir(parents=True, exist_ok=True)
     read_end, write_end = os.pipe()
     pid = os.fork()
@@ -1675,7 +1776,7 @@ def _start_detached(
     os.dup2(handle.fileno(), sys.stdout.fileno())
     os.dup2(handle.fileno(), sys.stderr.fileno())
     os.dup2(os.open(os.devnull, os.O_RDONLY), sys.stdin.fileno())
-    OUT = Style(sys.stdout)
+    OUT.follow(sys.stdout)
 
     status = 1
     try:
@@ -1700,8 +1801,9 @@ def _start_detached(
 
 def _supervisor_pid(instance: Instance) -> int | None:
     state = instance.read_state()
-    if state and state.get("supervisor_pid"):
-        return int(state["supervisor_pid"])
+    recorded = state.get("supervisor_pid") if state else None
+    if recorded:
+        return int(recorded)
     try:
         return int(instance.lock_path.read_text(encoding="utf-8").strip())
     except (OSError, ValueError):
@@ -1717,7 +1819,7 @@ def _await_release(instance: Instance, timeout: float) -> bool:
     return False
 
 
-def command_stop(options: argparse.Namespace) -> int:
+def command_stop(options: Options) -> int:
     instance = resolve_target(options)
     if instance is None:
         note("no ephemeral instance is running")
@@ -1767,7 +1869,7 @@ def confirm(question: str, forced: bool) -> bool:
     return answer in ("y", "yes")
 
 
-def command_kill(options: argparse.Namespace) -> int:
+def command_kill(options: Options) -> int:
     instance = resolve_target(options)
     if instance is None:
         note("no ephemeral instance is running")
@@ -1781,14 +1883,14 @@ def command_kill(options: argparse.Namespace) -> int:
         note("cancelled")
         return 1
 
-    state = instance.read_state() or {}
+    state: RunState = instance.read_state() or {}
 
     # Children first: they are in their own sessions and would outlive a killed
     # supervisor otherwise. This is the whole reason `kill` is not just SIGKILL
     # on one pid.
     for name, entry in (state.get("services") or {}).items():
         pid = entry.get("pid")
-        if entry.get("containerised") or not process_alive(pid):
+        if entry.get("containerised") or pid is None or not process_alive(pid):
             continue
         note(f"killing {name} (pid {pid})")
         try:
@@ -1797,7 +1899,7 @@ def command_kill(options: argparse.Namespace) -> int:
             pass
 
     supervisor = _supervisor_pid(instance)
-    if process_alive(supervisor):
+    if supervisor is not None and process_alive(supervisor):
         note(f"killing supervisor (pid {supervisor})")
         try:
             os.kill(supervisor, signal.SIGKILL)
@@ -1830,7 +1932,7 @@ def command_kill(options: argparse.Namespace) -> int:
     return 0
 
 
-def command_restart(options: argparse.Namespace) -> int:
+def command_restart(options: Options) -> int:
     code = command_stop(options)
     if code != 0:
         return code
@@ -1844,7 +1946,7 @@ def command_restart(options: argparse.Namespace) -> int:
 HEALTH_MARK = {"up": ("●", "38;5;29"), "down": ("○", "38;5;160"), "unknown": ("◌", "38;5;244")}
 
 
-def command_status(options: argparse.Namespace) -> int:
+def command_status(options: Options) -> int:
     instance = resolve_target(options)
     if instance is None:
         print(OUT.dim("no ephemeral instance"))
@@ -1870,7 +1972,7 @@ def command_status(options: argparse.Namespace) -> int:
         print(OUT.dim("  resume    ./scripts/devsuite resume " + instance.name))
         return 0
 
-    state = instance.read_state() or {}
+    state: RunState = instance.read_state() or {}
     print(
         f"{OUT.bold(instance.name)}  {OUT.paint('running', '38;5;29')}  "
         f"{OUT.dim('mode')} {state.get('mode', instance.mode)}  "
@@ -1878,7 +1980,7 @@ def command_status(options: argparse.Namespace) -> int:
         f"{OUT.dim('since')} {state.get('started_at', '?')}"
     )
 
-    entries = state.get("services") or {}
+    entries: dict[str, ServiceState] = state.get("services") or {}
     for name in ("app", "sandbox", "cpa"):
         if name not in entries:
             continue
@@ -1942,11 +2044,11 @@ class Tail:
     """
 
     def __init__(self, service: str, path: Path) -> None:
-        self.service = service
-        self.path = path
-        self.handle = None
+        self.service: str = service
+        self.path: Path = path
+        self.handle: IO[bytes] | None = None
         self.inode: int | None = None
-        self.last_stamp = ""
+        self.last_stamp: str = ""
 
     def _open(self) -> None:
         try:
@@ -1980,9 +2082,10 @@ class Tail:
     def replay(self, count: int) -> list[tuple[str, Line]]:
         """The last `count` lines, leaving the handle at the end to follow from."""
         self._open()
-        if not self.handle:
+        handle = self.handle
+        if handle is None:
             return []
-        lines = self.handle.read().splitlines(keepends=True)
+        lines = handle.read().splitlines(keepends=True)
         return [self._line(raw) for raw in (lines[-count:] if count else [])]
 
     def poll(self) -> list[tuple[str, Line]]:
@@ -1996,28 +2099,29 @@ class Tail:
             if self.handle:
                 self.handle.close()
             self._open()
-            if not self.handle:
-                return []
-        if current.st_size < self.handle.tell():
-            self.handle.seek(0)
+        handle = self.handle
+        if handle is None:
+            return []
+        if current.st_size < handle.tell():
+            handle.seek(0)
 
-        collected = []
+        collected: list[tuple[str, Line]] = []
         while True:
-            position = self.handle.tell()
-            raw = self.handle.readline()
+            position = handle.tell()
+            raw = handle.readline()
             if not raw:
                 break
             if not raw.endswith(b"\n"):
                 # Half a line: the writer has not finished it. Rewind and take
                 # it whole on the next poll rather than render it twice.
-                self.handle.seek(position)
+                handle.seek(position)
                 break
             collected.append(self._line(raw))
         return collected
 
 
 def command_logs(
-    options: argparse.Namespace,
+    options: Options,
     instance: Instance | None = None,
     detached_notice: bool = True,
 ) -> int:
@@ -2032,7 +2136,7 @@ def command_logs(
             hint="It has never been started. `./scripts/devsuite start`",
         )
 
-    wanted = getattr(options, "service", None)
+    wanted = options.service
     available = sorted(log_names(instance))
     if wanted and wanted not in available:
         fail(
@@ -2042,7 +2146,7 @@ def command_logs(
 
     names = [wanted] if wanted else available
     tails = {name: Tail(name, instance.logs / f"{name}.log") for name in names}
-    renderer = Renderer(OUT, options.log_level)
+    renderer = Renderer(OUT, chosen_level(options))
 
     running = instance_is_running(instance)
     if detached_notice:
@@ -2092,7 +2196,7 @@ def command_logs(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def command_list(_options: argparse.Namespace) -> int:
+def command_list(_options: Options) -> int:
     found = list_instances()
     if not found:
         print(OUT.dim("no instances — `./scripts/devsuite start` creates one"))
@@ -2123,7 +2227,7 @@ def command_list(_options: argparse.Namespace) -> int:
     return 0
 
 
-def command_resume(options: argparse.Namespace) -> int:
+def command_resume(options: Options) -> int:
     instance = instance_for(options.name, "persistent")
     if not instance.root.exists():
         fail(
@@ -2135,7 +2239,7 @@ def command_resume(options: argparse.Namespace) -> int:
     return command_start(options)
 
 
-def command_destroy(options: argparse.Namespace) -> int:
+def command_destroy(options: Options) -> int:
     instance = instance_for(options.name, "persistent")
     if not instance.root.exists():
         note(f"no instance named '{options.name}'")
@@ -2354,7 +2458,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def resolve_level(options: argparse.Namespace) -> str:
+def resolve_level(options: Options) -> str:
     if options.log_level:
         return options.log_level
     if options.verbose >= 2:
@@ -2366,7 +2470,9 @@ def resolve_level(options: argparse.Namespace) -> str:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
-    options = parser.parse_args(argv)
+    # argparse hands back an attribute bag; `Options` is the shape it has by
+    # the time `build_parser` has given every flag a default.
+    options = cast("Options", cast("object", parser.parse_args(argv)))
 
     if not options.command:
         parser.print_help()
