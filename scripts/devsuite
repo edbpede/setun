@@ -71,6 +71,11 @@ NAME_COLUMN = 7
 STOP_GRACE_SECONDS = 12.0
 HEALTH_TIMEOUT_SECONDS = 60.0
 
+# How long a second `start` waits for the winner of the lock to open its log
+# files before giving up on following them. Generous because it costs nothing:
+# the wait ends the moment the files settle, or the moment the winner is gone.
+ATTACH_TIMEOUT_SECONDS = 30.0
+
 # Readiness is asked for over HTTP once, while the stack is coming up.
 # After that a TCP connect answers the same question without putting a
 # request through the application every few seconds.
@@ -1461,6 +1466,40 @@ def resolve_ports(options: argparse.Namespace, config: dict) -> dict[str, int]:
     }
 
 
+def log_names(instance: Instance) -> set[str]:
+    """The services this instance has a log for. `supervisor.out` is not one."""
+    if not instance.logs.is_dir():
+        return set()
+    return {path.stem for path in instance.logs.glob("*.log") if path.stem != "supervisor"}
+
+
+def await_logs(instance: Instance, timeout: float = ATTACH_TIMEOUT_SECONDS) -> bool:
+    """
+    Wait for the log files the instance holding the lock is about to open.
+
+    The winner takes the lock before it materialises anything, and opens its
+    log files a moment later — unlinking and recreating one per service as it
+    goes. A second `start` that arrives in that gap would otherwise decide the
+    instance had never been started, or follow whichever subset of the files
+    happened to exist at the instant it looked. So the set has to be non-empty
+    *and* unchanged across a poll before it is worth following.
+
+    False when the winner is gone before it wrote anything; there is nothing to
+    attach to then.
+    """
+    deadline = time.monotonic() + timeout
+    previous: set[str] | None = None
+    while time.monotonic() < deadline:
+        current = log_names(instance)
+        if current and current == previous:
+            return True
+        if not current and not instance_is_running(instance):
+            return False
+        previous = current
+        time.sleep(0.1)
+    return bool(log_names(instance))
+
+
 def attach_to_running(options: argparse.Namespace, instance: Instance) -> int:
     """
     What `start` does when the stack is already up: follow it, never spawn a
@@ -1468,6 +1507,14 @@ def attach_to_running(options: argparse.Namespace, instance: Instance) -> int:
     outcome does not depend on which of them noticed.
     """
     note(f"instance '{instance.name}' is already running — attaching to its log view")
+    if not await_logs(instance):
+        fail(
+            f"instance '{instance.name}' holds the lock but opened no logs",
+            hint=(
+                f"{relative(instance.logs / 'supervisor.out')} has what its supervisor did,\n"
+                "if it got far enough to write one. `./scripts/devsuite status` says what is up."
+            ),
+        )
     return command_logs(options, instance=instance)
 
 
@@ -1987,9 +2034,7 @@ def command_logs(
         )
 
     wanted = getattr(options, "service", None)
-    available = sorted(
-        path.stem for path in instance.logs.glob("*.log") if path.stem != "supervisor"
-    )
+    available = sorted(log_names(instance))
     if wanted and wanted not in available:
         fail(
             f"no log for service '{wanted}'",
