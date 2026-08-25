@@ -189,6 +189,12 @@ function structuralTagEnd(source: string, name: "head" | "html"): number {
 
     if (!closesTag && tagName === name) return end;
 
+    // `<plaintext>` has no end tag — the parser stays in that mode to the end of
+    // input, so a `</plaintext>` in the source closes nothing and no structural
+    // tag can follow. Listing it beside the raw-text elements would look right
+    // and hand back the same diversion, one string away.
+    if (!closesTag && tagName === "plaintext") return -1;
+
     if (!closesTag && RAW_TEXT.has(tagName)) {
       // Resume at the end tag itself, which the loop then steps over normally.
       const close = new RegExp(`</${tagName}[\\s/>]`, "i").exec(source.slice(end));

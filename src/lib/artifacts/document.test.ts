@@ -102,6 +102,18 @@ describe("staticDocument", () => {
         intact: "<!-- an unterminated comment mentioning <head>",
         real: false,
       },
+      // `<plaintext>` runs to the end of input, and its own end tag does not
+      // close it — so nothing after either one is a place for the preamble.
+      {
+        source: "<plaintext><html><head></head><body>hi</body></html>",
+        intact: "<plaintext><html><head></head><body>hi</body></html>",
+        real: false,
+      },
+      {
+        source: "<plaintext></plaintext><html><head></head><body>hi</body></html>",
+        intact: "<plaintext></plaintext><html><head></head><body>hi</body></html>",
+        real: false,
+      },
       // A tag the source never closes is discarded at the end of input, so the
       // preamble belongs in a wrapper rather than inside it.
       { source: "<div><head", intact: "<div><head", real: false },
