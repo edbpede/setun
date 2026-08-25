@@ -37,8 +37,8 @@ const current = $derived(page.url.pathname);
         <a
           href="/educator/classrooms/{classroom.id}"
           class="flex items-center justify-between gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-secondary"
-          class:bg-secondary={current === `/educator/classrooms/${classroom.id}`}
-          class:font-medium={current === `/educator/classrooms/${classroom.id}`}
+          class:bg-secondary={current.startsWith(`/educator/classrooms/${classroom.id}`)}
+          class:font-medium={current.startsWith(`/educator/classrooms/${classroom.id}`)}
         >
           <span class="truncate text-foreground">{classroom.name}</span>
           {#if classroom.state === "locked"}
@@ -55,8 +55,9 @@ const current = $derived(page.url.pathname);
         href="/educator"
         class="mt-2 rounded-md px-2 py-1.5 text-sm text-foreground hover:bg-secondary"
         class:bg-secondary={current === "/educator"}
+        class:font-medium={current === "/educator"}
       >
-        {m.educator_create_classroom()}
+        {m.educator_dashboard_title()}
       </a>
       <a
         href="/educator/models"

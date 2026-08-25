@@ -150,7 +150,11 @@ describe("rotation kills existing sessions (§7, §21, §22)", () => {
     const { token } = createSession(db, { ownerKind: "student", ownerId: student.id });
     expect(resolveStudentSession(db, token)).not.toBeNull();
 
-    await rotateStudentCredential(db, { studentId: student.id, pepper: "test-pepper" });
+    await rotateStudentCredential(db, {
+      studentId: student.id,
+      classroomId: student.classroomId,
+      pepper: "test-pepper",
+    });
 
     expect(resolveStudentSession(db, token)).toBeNull();
   });

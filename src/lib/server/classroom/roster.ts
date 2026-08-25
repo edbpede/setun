@@ -1,9 +1,9 @@
 import { budgetDayRange } from "../agent/budgets";
 import type { AppDatabase } from "../db/client";
 import { listAliasesByIds } from "../db/queries/model-aliases";
-import { listClassroomStudents } from "../db/queries/students";
+import { lastActivityByStudent, listClassroomStudents } from "../db/queries/students";
 import { classroomUsageByStudent } from "../db/queries/usage";
-import type { Classroom } from "../db/schema";
+import type { Classroom, StudentStatus } from "../db/schema";
 import { estimateUsageCost } from "./cost-estimate";
 
 /**
@@ -24,9 +24,19 @@ import { estimateUsageCost } from "./cost-estimate";
 export interface RosterEntry {
   readonly id: string;
   readonly label: string;
-  readonly status: "active" | "disabled";
+  /** Optional, pupil-set, and clearable from the panel (§16, §17). */
+  readonly displayName: string | null;
+  readonly status: StudentStatus;
   /** Educator-authored, not pupil-authored (§10). */
   readonly instructions: string | null;
+  /** The override; null means this pupil follows the classroom setting (§10, §17). */
+  readonly attachmentsOverride: boolean | null;
+  /** What the two settings resolve to for this pupil right now. */
+  readonly attachmentsEffective: boolean;
+  /** Non-secret tail of the access code, so a printed card can be identified (§7). */
+  readonly credentialHint: string;
+  /** Null for a pupil who has never signed in (§17). */
+  readonly lastActivityAt: Date | null;
   readonly usedTokens: number;
   readonly limitTokens: number;
   readonly exhausted: boolean;
@@ -40,6 +50,7 @@ export function resolveRoster(
   db: AppDatabase,
   classroom: Classroom,
   now: Date = new Date(),
+  options: { includeRemoved?: boolean } = {},
 ): RosterEntry[] {
   const range = budgetDayRange(classroom.timezone, now);
   const rows = classroomUsageByStudent(db, {
@@ -60,7 +71,13 @@ export function resolveRoster(
     else byStudent.set(row.studentId, [row]);
   }
 
-  return listClassroomStudents(db, classroom.id).map((student) => {
+  const students = listClassroomStudents(db, classroom.id, options);
+  const lastActivity = lastActivityByStudent(
+    db,
+    students.map((student) => student.id),
+  );
+
+  return students.map((student) => {
     const usage = byStudent.get(student.id) ?? [];
     const usedTokens = usage.reduce((sum, row) => sum + row.inputTokens + row.outputTokens, 0);
 
@@ -80,8 +97,13 @@ export function resolveRoster(
     return {
       id: student.id,
       label: student.label,
+      displayName: student.displayName,
       status: student.status,
       instructions: student.instructions,
+      attachmentsOverride: student.attachmentsEnabled,
+      attachmentsEffective: student.attachmentsEnabled ?? classroom.attachmentsEnabled,
+      credentialHint: student.credentialHint,
+      lastActivityAt: lastActivity.get(student.id) ?? null,
       usedTokens,
       limitTokens: classroom.perStudentDailyTokens,
       exhausted: usedTokens >= classroom.perStudentDailyTokens,

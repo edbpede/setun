@@ -1,12 +1,15 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { seedEducator } from "./auth/educator";
-import { seedDevelopmentData } from "./auth/seed";
 import { credentialEnvironment, getConfig } from "./config";
 import { type AppDatabase, createDatabase } from "./db/client";
 import { applyMigrations } from "./db/migrate";
 import { markStreamingTurnsInterrupted } from "./db/queries/turns";
 import { GatewayAdapter } from "./gateway/adapter";
+import { backupJob } from "./jobs/backup";
+import { retentionJob } from "./jobs/retention";
+import { JobScheduler } from "./jobs/scheduler";
+import { sessionSweepJob } from "./jobs/sessions";
 import { McpClient } from "./mcp/client";
 import { loadMcpConfig } from "./mcp/config";
 import { registerConfiguredServers } from "./mcp/registry";
@@ -30,6 +33,7 @@ interface Services {
   readonly files: FileStore;
   /** Null when the deployment configures no MCP servers, which is a valid pilot (§11). */
   readonly mcp: McpClient | null;
+  readonly jobs: JobScheduler;
 }
 
 let services: Services | null = null;
@@ -62,24 +66,9 @@ function boot(): Services {
     if (result.seeded) console.info(`seeded educator account '${config.educatorUsername}'`);
   });
 
-  // An empty database gets one classroom and one student so M1 is verifiable
-  // before the Phase 5 provisioning UI. The code is printed once and never
-  // stored (§7); the promise is deliberately not awaited, because boot must not
-  // block the listener on it.
-  void seedDevelopmentData(db, { pepper: config.studentCodePepper }).then((result) => {
-    if (!result.seeded) return;
-    console.info(
-      [
-        "",
-        "  Setun seeded an empty database.",
-        `  Classroom:   Pilotklasse`,
-        `  Student:     ${result.studentLabel}`,
-        `  Access code: ${result.accessCode}`,
-        "  This code is shown once and is not recoverable.",
-        "",
-      ].join("\n"),
-    );
-  });
+  // No pupil seed. Phase 1 printed one access code at first boot so the loop was
+  // verifiable before a provisioning UI existed; the panel provisions in batches
+  // now, and a code on the operator console is a code in a log file (§7, §21).
 
   // The third operator file (§6.2). Validated here so a malformed entry or a
   // missing credential fails boot rather than a lesson (§11).
@@ -93,13 +82,35 @@ function boot(): Services {
     console.info(`registered ${mcpConfig.servers.length} MCP server(s) from ${mcpConfig.path}`);
   }
 
+  // Retention, the session sweep and the nightly snapshot (§16, §21). In-process
+  // rather than a fourth container, and started only once the schema is current
+  // — a retention pass against an unmigrated database would delete by a policy
+  // column that may not exist yet.
+  const files = new FileStore(config.storagePath);
+  const jobs = new JobScheduler()
+    .register(retentionJob(db, files))
+    .register(sessionSweepJob(db))
+    .register(
+      backupJob({
+        db,
+        storagePath: config.storagePath,
+        backupPath: config.backupPath,
+        // The pilot's zone, and the classroom default of §8. A snapshot is
+        // "nightly" in somebody's night; a server in UTC would roll the day
+        // mid-evening in Denmark.
+        timezone: "Europe/Copenhagen",
+      }),
+    );
+  jobs.start();
+
   return {
     db,
+    jobs,
+    files,
     adapter: new GatewayAdapter({
       baseUrl: config.cpaBaseUrl,
       listenerKey: config.cpaListenerKey,
     }),
-    files: new FileStore(config.storagePath),
     mcp:
       mcpConfig.servers.length > 0
         ? new McpClient(mcpConfig.servers, { env: credentialEnvironment() })
@@ -128,4 +139,9 @@ export function getFileStore(): FileStore {
 /** The MCP client, or null when no servers are configured (§11). */
 export function getMcpClient(): McpClient | null {
   return getServices().mcp;
+}
+
+/** The job scheduler, for the panel to report on and for tests to trigger (§16, §21). */
+export function getJobScheduler(): JobScheduler {
+  return getServices().jobs;
 }

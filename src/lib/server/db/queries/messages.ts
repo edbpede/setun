@@ -1,6 +1,7 @@
 import { asc, eq } from "drizzle-orm";
 import type { AppDatabase } from "../client";
 import { type Message, type MessagePart, type MessageRole, message } from "../schema";
+import { indexMessage } from "./search";
 
 /**
  * The message tree (PRD §10, §19).
@@ -38,6 +39,16 @@ export function appendMessage(
     })
     .returning()
     .all();
+
+  // The search index is maintained here rather than by a trigger: SQLite fires
+  // triggers for foreign-key cascade deletes only with recursive triggers on,
+  // and an index that outlived its conversation would be a privacy defect (§16).
+  indexMessage(db, {
+    messageId: row.id,
+    conversationId: row.conversationId,
+    parts: row.parts,
+  });
+
   return row;
 }
 

@@ -42,6 +42,13 @@ const ConfigSchema = v.object({
    */
   storagePath: nonEmpty("SETUN_STORAGE_PATH is required"),
   /**
+   * Where the nightly snapshot job writes (§21, Appendix A).
+   *
+   * A separate volume from the database in Compose, so a lost database file does
+   * not take its own backups with it.
+   */
+  backupPath: nonEmpty("SETUN_BACKUP_PATH is required"),
+  /**
    * The on-disk MCP server configuration, the third operator file of §6.2.
    *
    * Optional: a deployment that uses no tools has no file to point at, and
@@ -73,6 +80,7 @@ function readEnvironment() {
     sandboxOrigin: env.SETUN_SANDBOX_ORIGIN ?? "http://localhost:5174",
     databasePath: env.SETUN_DATABASE_PATH ?? "./data/setun.sqlite",
     storagePath: env.SETUN_STORAGE_PATH ?? "./data/storage",
+    backupPath: env.SETUN_BACKUP_PATH ?? "./data/backups",
     mcpConfigPath: env.SETUN_MCP_CONFIG_PATH,
   };
 }

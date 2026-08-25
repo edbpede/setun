@@ -1,6 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
 import type { AppDatabase } from "../client";
 import { type Conversation, conversation } from "../schema";
+import { indexConversationTitle, removeConversationFromIndex } from "./search";
 
 /**
  * Conversation reads and writes (PRD §10).
@@ -67,12 +68,21 @@ export function setConversationTitle(
   db: AppDatabase,
   input: { conversationId: string; studentId: string; title: string },
 ): void {
-  db.update(conversation)
+  const updated = db
+    .update(conversation)
     .set({ title: input.title, updatedAt: new Date() })
     .where(
       and(eq(conversation.id, input.conversationId), eq(conversation.studentId, input.studentId)),
     )
-    .run();
+    .returning({ id: conversation.id })
+    .all();
+
+  // Only when the owner-scoped statement actually matched: a title indexed for a
+  // conversation the caller does not own would be exactly the isolation hole the
+  // scoping above exists to prevent (§21).
+  if (updated.length > 0) {
+    indexConversationTitle(db, { conversationId: input.conversationId, title: input.title });
+  }
 }
 
 /** Messages, turns and buffered events go with it through the schema cascades (§16). */
@@ -87,5 +97,10 @@ export function deleteConversation(
     )
     .returning({ id: conversation.id })
     .all();
+
+  // The cascade reaches every real table; a virtual table has no foreign keys,
+  // so the index is cleared explicitly or a deleted conversation stays findable.
+  if (deleted.length > 0) removeConversationFromIndex(db, input.conversationId);
+
   return deleted.length > 0;
 }

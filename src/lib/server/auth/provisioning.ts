@@ -24,6 +24,28 @@ export interface ProvisionedStudent {
   readonly code: GeneratedCode;
 }
 
+/**
+ * Provision a batch (§17).
+ *
+ * "Provisioning: batch creation of pseudonymous accounts — labels are generated
+ * word pairs from a localised wordlist shipped in the repository, unique within
+ * a classroom, speakable in class — and printable credential cards."
+ *
+ * Sequential rather than concurrent: uniqueness within the classroom is decided
+ * against the labels already taken, and two parallel calls would read the same
+ * set and could pick the same pair.
+ */
+export async function provisionStudents(
+  db: AppDatabase,
+  input: { classroomId: string; pepper: string; count: number; locale?: WordlistLocale },
+): Promise<ProvisionedStudent[]> {
+  const provisioned: ProvisionedStudent[] = [];
+  for (let i = 0; i < input.count; i++) {
+    provisioned.push(await provisionStudent(db, input));
+  }
+  return provisioned;
+}
+
 export async function provisionStudent(
   db: AppDatabase,
   input: { classroomId: string; pepper: string; locale?: WordlistLocale },
@@ -50,15 +72,20 @@ export async function provisionStudent(
  */
 export async function rotateStudentCredential(
   db: AppDatabase,
-  input: { studentId: string; pepper: string },
-): Promise<GeneratedCode> {
+  input: { studentId: string; classroomId: string; pepper: string },
+): Promise<GeneratedCode | null> {
   const code = generateCode();
 
-  updateStudentCredential(db, {
+  // Classroom-scoped: an educator's URL must not be a way to reissue a code for
+  // a pupil in another class, and a mismatched pair updates nothing (§21).
+  const updated = updateStudentCredential(db, {
     studentId: input.studentId,
+    classroomId: input.classroomId,
     credentialDigest: await digestCode(code.normalised, input.pepper),
     credentialHint: code.hint,
   });
+  if (!updated) return null;
+
   invalidateAllSessionsFor(db, { ownerKind: "student", ownerId: input.studentId });
 
   return code;
