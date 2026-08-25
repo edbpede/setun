@@ -78,3 +78,56 @@ export function describeCause(cause: unknown): string {
   const redacted = redactCredentials(raw);
   return redacted.length > MAX_DETAIL ? `${redacted.slice(0, MAX_DETAIL)}…` : redacted;
 }
+
+/**
+ * How much is logged — a separate question from what a log line may contain.
+ *
+ * §16 governs the *content* of a log line, and everything above this point
+ * enforces it. This governs the *volume*, which is an operational choice: a
+ * pilot classroom wants `info`, a reproduction wants `debug`, and a noisy
+ * container in a shared terminal wants `error`.
+ *
+ * Read from `process.env` rather than `$env/dynamic/private`, unlike
+ * `$lib/server/config`. Two callers need it outside a Vite graph — the Drizzle
+ * client factory, which `bun test` builds against an in-memory database, and
+ * the suites themselves — and a log level is an operational knob rather than a
+ * secret, so the server-only guarantee `$lib/server/` already gives is enough.
+ */
+export type LogLevel = "silent" | "error" | "warn" | "info" | "debug" | "trace";
+
+const LEVELS: readonly LogLevel[] = ["silent", "error", "warn", "info", "debug", "trace"];
+
+const DEFAULT_LEVEL: LogLevel = "info";
+
+/** The configured level, or the default when the variable is absent or unrecognised. */
+export function logLevel(): LogLevel {
+  const configured = process.env.SETUN_LOG_LEVEL?.trim().toLowerCase();
+  return LEVELS.includes(configured as LogLevel) ? (configured as LogLevel) : DEFAULT_LEVEL;
+}
+
+/** Whether a line of the given severity should be written at the configured level. */
+export function logEnabled(level: Exclude<LogLevel, "silent">): boolean {
+  return LEVELS.indexOf(logLevel()) >= LEVELS.indexOf(level);
+}
+
+/**
+ * The server's log entry point.
+ *
+ * Server code calls this rather than `console` directly, so the level is
+ * honoured in one place instead of at fifteen call sites that would each have
+ * to remember to check it.
+ */
+export const log = {
+  error: (...parts: unknown[]) => {
+    if (logEnabled("error")) console.error(...parts);
+  },
+  warn: (...parts: unknown[]) => {
+    if (logEnabled("warn")) console.warn(...parts);
+  },
+  info: (...parts: unknown[]) => {
+    if (logEnabled("info")) console.info(...parts);
+  },
+  debug: (...parts: unknown[]) => {
+    if (logEnabled("debug")) console.debug(...parts);
+  },
+};

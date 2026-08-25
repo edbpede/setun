@@ -3,6 +3,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { format, parseISO, subDays } from "date-fns";
 import { formatInTimeZone } from "date-fns-tz";
 import type { AppDatabase } from "../db/client";
+import { log } from "../logging";
 import type { ScheduledJob } from "./scheduler";
 
 /**
@@ -235,9 +236,9 @@ export function backupJob(options: BackupOptions): ScheduledJob {
     runAtStart: true,
     async run(now) {
       const outcome = await runBackup(options, now);
-      if (outcome.created) console.info(`backup snapshot ${snapshotName(outcome.day)} written`);
+      if (outcome.created) log.info(`backup snapshot ${snapshotName(outcome.day)} written`);
       if (outcome.pruned.length > 0) {
-        console.info(`backup pruned ${outcome.pruned.length} expired snapshot(s)`);
+        log.info(`backup pruned ${outcome.pruned.length} expired snapshot(s)`);
       }
     },
   };

@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { type BunSQLiteDatabase, drizzle } from "drizzle-orm/bun-sqlite";
+import { logEnabled } from "../logging";
 import * as schema from "./schema";
 
 /**
@@ -32,7 +33,11 @@ export function createDatabase(path: string): AppDatabase {
   // to delete a student's messages, turns and attachments with them (§16).
   sqlite.exec("PRAGMA foreign_keys = ON;");
 
-  return drizzle(sqlite, { schema }) as AppDatabase;
+  // Query logging is a development knob and off at every normal level: Drizzle
+  // prints each statement *with its bound parameters*, which for this schema
+  // means message bodies and artifact source. §16 keeps that out of a log, so
+  // it takes an explicit `--log-level debug` to turn on.
+  return drizzle(sqlite, { schema, logger: logEnabled("debug") }) as AppDatabase;
 }
 
 /**

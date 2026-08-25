@@ -4,7 +4,7 @@ import type { Classroom } from "../db/schema";
 import type { GatewayAdapter } from "../gateway/adapter";
 import type { GatewayToolDefinition } from "../gateway/dialect";
 import type { ElicitationFieldSpec } from "../gateway/events";
-import { describeCause } from "../logging";
+import { describeCause, log } from "../logging";
 import type { McpClient } from "../mcp/client";
 import type { McpToolResult } from "../mcp/legacy/results";
 import { McpError } from "../mcp/protocol";
@@ -243,7 +243,7 @@ export async function executeTool(input: {
 
         // Storing the image failed. That is the tool's problem to report, not
         // the turn's to die of — the pupil keeps the conversation (§10, §21).
-        console.warn("image generation failed to store", { cause: describeCause(cause) });
+        log.warn("image generation failed to store", { cause: describeCause(cause) });
         return { text: imageRefusalForModel("unavailable"), isError: true };
       }
 
@@ -279,7 +279,7 @@ export async function executeTool(input: {
         // The tool's failure is the model's problem to work around, not the
         // turn's to die of. No endpoint, credential or stack trace travels in
         // the text the model is given (§21).
-        console.warn("mcp tool call failed", {
+        log.warn("mcp tool call failed", {
           server: tool.mcp.serverKey,
           tool: tool.mcp.toolName,
           kind: cause instanceof McpError ? cause.kind : "unknown",

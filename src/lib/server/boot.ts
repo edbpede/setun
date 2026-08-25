@@ -10,6 +10,7 @@ import { backupJob } from "./jobs/backup";
 import { retentionJob } from "./jobs/retention";
 import { JobScheduler } from "./jobs/scheduler";
 import { sessionSweepJob } from "./jobs/sessions";
+import { log } from "./logging";
 import { McpClient } from "./mcp/client";
 import { loadMcpConfig } from "./mcp/config";
 import { registerConfiguredServers } from "./mcp/registry";
@@ -53,7 +54,7 @@ function boot(): Services {
 
   const interrupted = markStreamingTurnsInterrupted(db);
   if (interrupted > 0) {
-    console.info(`marked ${interrupted} in-flight turn(s) interrupted after restart`);
+    log.info(`marked ${interrupted} in-flight turn(s) interrupted after restart`);
   }
 
   // The operator account, from deployment configuration, on every boot: this is
@@ -63,7 +64,7 @@ function boot(): Services {
     username: config.educatorUsername,
     password: config.educatorPassword,
   }).then((result) => {
-    if (result.seeded) console.info(`seeded educator account '${config.educatorUsername}'`);
+    if (result.seeded) log.info(`seeded educator account '${config.educatorUsername}'`);
   });
 
   // No pupil seed. Phase 1 printed one access code at first boot so the loop was
@@ -79,7 +80,7 @@ function boot(): Services {
 
   if (mcpConfig.servers.length > 0) {
     registerConfiguredServers(db, mcpConfig.servers);
-    console.info(`registered ${mcpConfig.servers.length} MCP server(s) from ${mcpConfig.path}`);
+    log.info(`registered ${mcpConfig.servers.length} MCP server(s) from ${mcpConfig.path}`);
   }
 
   // Retention, the session sweep and the nightly snapshot (§16, §21). In-process

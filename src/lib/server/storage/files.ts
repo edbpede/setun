@@ -1,6 +1,6 @@
 import { unlink } from "node:fs/promises";
 import { join, normalize } from "node:path";
-import { describeCause } from "../logging";
+import { describeCause, log } from "../logging";
 
 /**
  * The local file store (PRD §15, §16, §21).
@@ -75,7 +75,7 @@ export class FileStore {
 
       // Through `describeCause`, which redacts and truncates: the path it quotes
       // is an internal identifier, which §16 permits, and never content.
-      console.error("storage remove failed", { cause: describeCause(cause) });
+      log.error("storage remove failed", { cause: describeCause(cause) });
       return false;
     }
   }
