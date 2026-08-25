@@ -70,6 +70,11 @@ engine directly. The `docker compose` plugin that Docker Desktop ships is one; t
 brew install colima docker-compose && colima start   # a Docker engine without Docker Desktop
 ```
 
+Colima *does* need the `docker` CLI on PATH for its own dependency check, even though the suite
+does not. A Homebrew `docker` that is installed but unlinked makes `colima start` report it as
+missing; `brew link docker`, or putting `$(brew --prefix docker)/bin` on PATH, settles it. The
+suite says so by name when it cannot reach an engine.
+
 ### Two modes
 
 **`--persistent NAME`** — a named instance whose data survives `stop`. The default, as `dev`.

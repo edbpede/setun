@@ -163,7 +163,8 @@ def fail(message: str, *, hint: str | None = None, code: int = 1) -> "NoReturn":
     print(f"{ERR.paint('error', '38;5;160')} {message}", file=sys.stderr)
     if hint:
         for line in hint.splitlines():
-            print(f"      {ERR.dim(line)}", file=sys.stderr)
+            # A blank line in a hint stays blank rather than becoming indent.
+            print(f"      {ERR.dim(line)}" if line else "", file=sys.stderr)
     sys.exit(code)
 
 
@@ -776,16 +777,31 @@ def sandbox_service(level: str, port: int) -> Service:
 # uses whichever is there rather than insisting on the one it expected. Neither
 # needs the `docker` CLI itself: Compose talks to the engine directly, through
 # the same docker context.
-COMPOSE_CANDIDATES: tuple[list[str], ...] = (["docker", "compose"], ["docker-compose"])
-
 _COMPOSE_CACHE: dict[str, list[str]] = {}
+
+
+def compose_candidates() -> list[list[str]]:
+    """
+    Every way this machine might reach Compose, best first.
+
+    An unlinked Homebrew `docker` still carries its CLI plugins, so it is worth
+    asking directly before falling back. Between that and the standalone
+    binary, the suite never needs `brew link` — only Colima does, for its own
+    dependency check.
+    """
+    candidates = [["docker", "compose"]]
+    keg = unlinked_docker()
+    if keg:
+        candidates.append([str(keg), "compose"])
+    candidates.append(["docker-compose"])
+    return candidates
 
 
 def compose_command() -> list[str] | None:
     """The Compose command on this machine, or None if there is not one."""
     if "argv" not in _COMPOSE_CACHE:
         _COMPOSE_CACHE["argv"] = []
-        for candidate in COMPOSE_CANDIDATES:
+        for candidate in compose_candidates():
             if not shutil.which(candidate[0]):
                 continue
             try:
@@ -867,12 +883,21 @@ def engine_hint() -> str:
     """Advice naming the engine this machine actually has, not a guessed one."""
     keg = unlinked_docker()
     if keg:
-        # Colima needs the docker CLI for its own dependency check even though
-        # Compose does not, so this blocks `colima start` as well.
+        # Compose does not need the docker CLI, and the suite has already found
+        # one by the time this runs. Colima does: its dependency check refuses
+        # to start the VM without a `docker` on PATH, reporting it as not
+        # installed on a machine where it plainly is.
         return (
-            f"`docker` is installed at {keg} but is not linked onto PATH,\n"
-            "which also stops Colima starting. Link it:\n"
-            "  brew link docker"
+            f"`docker` is installed at {keg} but is not on PATH.\n"
+            "Compose does not need it; Colima's own dependency check does.\n"
+            "\n"
+            "Put it on PATH, changing no Homebrew state:\n"
+            f'  export PATH="{keg.parent}:$PATH"\n'
+            "Or link it — brew names the conflicting formula if there is one:\n"
+            "  brew link docker\n"
+            "\n"
+            "Then start the engine:\n"
+            "  colima start"
         )
     if shutil.which("colima"):
         try:
