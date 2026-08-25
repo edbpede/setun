@@ -64,10 +64,12 @@ export function retentionCutoffs(
 /**
  * Apply every classroom's retention policy once.
  *
- * Files are collected before their rows go: a cascade deletes the row that names
- * a file and leaves the bytes on the volume otherwise, which would make
- * "expiring a conversation deletes its attachments" false in the only sense that
- * matters (§16).
+ * Files go before their rows: a cascade deletes the row that names a file and
+ * leaves the bytes on the volume otherwise, which would make "expiring a
+ * conversation deletes its attachments" false in the only sense that matters
+ * (§16). The order also decides what a failed removal costs — the row is the
+ * only record of where those bytes are, so it stays until they are gone and the
+ * next hourly pass tries again.
  */
 export async function runRetention(
   db: AppDatabase,
@@ -87,12 +89,18 @@ export async function runRetention(
       before: cutoffs.conversationsBefore,
     });
     if (expired.length > 0) {
-      const doomed = attachmentFilesFor(db, expired);
-      conversations += deleteConversations(db, expired);
-      for (const file of doomed) {
-        await files.remove(file.storagePath);
-        removedFiles += 1;
+      const stranded = new Set<string>();
+      for (const file of attachmentFilesFor(db, expired)) {
+        if (await files.remove(file.storagePath)) removedFiles += 1;
+        else stranded.add(file.conversationId);
       }
+
+      // A conversation whose bytes are still on disk keeps its row, and with it
+      // the only path back to them; the rest of the batch expires now.
+      conversations += deleteConversations(
+        db,
+        expired.filter((id) => !stranded.has(id)),
+      );
     }
 
     if (!cutoffs.creationsBefore) continue;
@@ -102,14 +110,14 @@ export async function runRetention(
       before: cutoffs.creationsBefore,
     });
     artifacts += deleteArtifacts(db, creations.artifactIds);
-    images += deleteGeneratedImages(
-      db,
-      creations.images.map((image) => image.id),
-    );
+
+    const removed: string[] = [];
     for (const image of creations.images) {
-      await files.remove(image.storagePath);
+      if (!(await files.remove(image.storagePath))) continue;
       removedFiles += 1;
+      removed.push(image.id);
     }
+    images += deleteGeneratedImages(db, removed);
   }
 
   return { conversations, artifacts, images, files: removedFiles };

@@ -17,6 +17,11 @@ export interface DoomedFile {
   readonly storagePath: string;
 }
 
+/** The same, carrying the conversation whose row still names it. */
+export interface DoomedAttachment extends DoomedFile {
+  readonly conversationId: string;
+}
+
 /** Conversations in one classroom last touched before `before`. */
 export function expiredConversationIds(
   db: AppDatabase,
@@ -33,18 +38,32 @@ export function expiredConversationIds(
     .map((row) => row.id);
 }
 
-/** Attachment files belonging to a set of conversations, before the rows cascade away. */
+/**
+ * Attachment files belonging to a set of conversations, before the rows cascade away.
+ *
+ * Each file is returned with its conversation so a removal that fails can hold
+ * back just that conversation's row rather than the whole batch (§16).
+ */
 export function attachmentFilesFor(
   db: AppDatabase,
   conversationIds: readonly string[],
-): DoomedFile[] {
+): DoomedAttachment[] {
   if (conversationIds.length === 0) return [];
 
-  return db
-    .select({ storagePath: attachment.storagePath })
-    .from(attachment)
-    .where(inArray(attachment.conversationId, [...conversationIds]))
-    .all();
+  return (
+    db
+      .select({ storagePath: attachment.storagePath, conversationId: attachment.conversationId })
+      .from(attachment)
+      .where(inArray(attachment.conversationId, [...conversationIds]))
+      .all()
+      // The column is nullable — an upload before its message has no
+      // conversation — but the predicate above matched one, so these rows have it.
+      .flatMap((row) =>
+        row.conversationId === null
+          ? []
+          : [{ storagePath: row.storagePath, conversationId: row.conversationId }],
+      )
+  );
 }
 
 /**

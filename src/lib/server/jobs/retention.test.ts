@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { recordAttachmentWithinLimit } from "../db/queries/attachments";
 import { updateClassroomSettings } from "../db/queries/classrooms";
 import { createConversation } from "../db/queries/conversations";
 import { recordGeneratedImage } from "../db/queries/images";
@@ -126,6 +127,82 @@ describe("runRetention", () => {
       settings: { creationRetentionDays: 90 },
     });
     expect((await runRetention(db, store(), NOW)).images).toBe(1);
+  });
+
+  it("keeps an expired conversation whose attachment bytes could not be removed", async () => {
+    const db = createTestDatabase();
+    const { student, alias } = seedTestFixtures(db);
+
+    const root = mkdtempSync(join(tmpdir(), "setun-retention-"));
+    const expire = (id: string) =>
+      backdate(
+        db,
+        "UPDATE conversation SET updatedAt = ? WHERE id = ?",
+        new Date("2026-06-01T10:00:00Z"),
+        id,
+      );
+
+    const stuck = createConversation(db, { studentId: student.id, modelAliasId: alias.id });
+    const storagePath = `attachments/${student.id}/${crypto.randomUUID()}.txt`;
+    // A directory where the file should be: `unlink` refuses it, which is what
+    // a permission or I/O failure looks like from the job's side.
+    mkdirSync(join(root, storagePath), { recursive: true });
+    recordAttachmentWithinLimit(db, {
+      studentId: student.id,
+      conversationId: stuck.id,
+      kind: "text",
+      mediaType: "text/plain",
+      filename: "noter.txt",
+      byteSize: 4,
+      storagePath,
+      maxPerMessage: 4,
+    });
+    expire(stuck.id);
+
+    const clean = createConversation(db, { studentId: student.id, modelAliasId: alias.id });
+    expire(clean.id);
+
+    const outcome = await runRetention(db, new FileStore(root), NOW);
+
+    // Only the conversation whose bytes are gone; the other keeps the row that
+    // still names the file, so the next hourly pass can try again.
+    expect(outcome).toMatchObject({ conversations: 1, files: 0 });
+    expect(db.$client.query("SELECT id FROM conversation").all()).toEqual([{ id: stuck.id }]);
+    expect(db.$client.query("SELECT count(*) as n FROM attachment").get()).toEqual({ n: 1 });
+  });
+
+  it("keeps a creation whose bytes could not be removed, so the next pass retries", async () => {
+    const db = createTestDatabase();
+    const { student, classroom } = seedTestFixtures(db);
+    updateClassroomSettings(db, {
+      classroomId: classroom.id,
+      settings: { creationRetentionDays: 90 },
+    });
+
+    const root = mkdtempSync(join(tmpdir(), "setun-retention-"));
+    const storagePath = `images/${student.id}/${crypto.randomUUID()}.png`;
+    // A directory where the file should be: `unlink` refuses it, which is what
+    // a permission or I/O failure looks like from the job's side.
+    mkdirSync(join(root, storagePath), { recursive: true });
+
+    const image = recordGeneratedImage(db, {
+      studentId: student.id,
+      prompt: "en vulkan",
+      mediaType: "image/png",
+      storagePath,
+    });
+    backdate(
+      db,
+      "UPDATE generated_image SET createdAt = ? WHERE id = ?",
+      new Date("2024-01-01T10:00:00Z"),
+      image.id,
+    );
+
+    const outcome = await runRetention(db, new FileStore(root), NOW);
+
+    // The row is the only record of where those bytes are, so it stays.
+    expect(outcome).toMatchObject({ images: 0, files: 0 });
+    expect(db.$client.query("SELECT count(*) as n FROM generated_image").get()).toEqual({ n: 1 });
   });
 });
 
