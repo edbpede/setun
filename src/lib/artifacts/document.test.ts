@@ -65,6 +65,25 @@ describe("staticDocument", () => {
     expect(html).toContain("connect-src 'none'");
   });
 
+  it("ignores a head or html tag that is only named inside a comment", () => {
+    /** What the parser is left with once every comment is discarded. */
+    const uncommented = (html: string) => html.replace(/<!--[\s\S]*?(?:-->|$)/g, "");
+
+    for (const source of [
+      "<!-- <head> --><!doctype html><html><head><title>Kort</title></head><body>hi</body></html>",
+      "<!-- <html> --><p>hi</p>",
+      "<!-- an unterminated comment mentioning <head>",
+    ]) {
+      const html = staticDocument({ language: "html", source, origin: ORIGIN, runId: "r" });
+
+      // The preamble has to be a real part of the document. Buried inside a
+      // comment it would leave the artifact on the origin's own broader policy
+      // and the panel without its lifecycle events.
+      expect(uncommented(html)).toContain("connect-src 'none'");
+      expect(uncommented(html)).toContain("window.__setunReady");
+    }
+  });
+
   it("denies outbound network and framing on every path", () => {
     for (const source of ["<p>x</p>", "<html><body>x</body></html>", "<head></head>"]) {
       const html = staticDocument({ language: "html", source, origin: ORIGIN, runId: "r" });

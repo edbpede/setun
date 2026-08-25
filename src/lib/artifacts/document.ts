@@ -104,20 +104,37 @@ export function staticDocument(input: {
 }
 
 /**
+ * The source with comment bodies blanked out, one space per character.
+ *
+ * A tag named inside a comment is not a tag, and inserting the preamble after
+ * one would bury the whole of it inside that comment — where the browser reads
+ * none of it, leaving the artifact on the origin's broader policy and the panel
+ * without its lifecycle events. Blanking rather than removing keeps every index
+ * valid against the original string. An unterminated comment runs to the end,
+ * as the parser treats it.
+ */
+function maskComments(source: string): string {
+  return source.replace(/<!--[\s\S]*?(?:-->|$)/g, (comment) => " ".repeat(comment.length));
+}
+
+/**
  * Put the preamble into whatever the model wrote.
  *
  * Models emit anything from a bare `<div>` to a full document with a doctype,
  * and rewriting their markup is not this function's job — it finds the earliest
- * position that is inside the document and inserts there.
+ * position that is inside the document and inserts there. Positions are found
+ * against the masked source and applied to the real one.
  */
 function injectIntoHtml(source: string, head: string, ack: string): string {
-  const headOpen = /<head[^>]*>/i.exec(source);
+  const scan = maskComments(source);
+
+  const headOpen = /<head[^>]*>/i.exec(scan);
   if (headOpen) {
     const at = headOpen.index + headOpen[0].length;
     return `${source.slice(0, at)}${head}${source.slice(at)}\n${ack}`;
   }
 
-  const htmlOpen = /<html[^>]*>/i.exec(source);
+  const htmlOpen = /<html[^>]*>/i.exec(scan);
   if (htmlOpen) {
     const at = htmlOpen.index + htmlOpen[0].length;
     return `${source.slice(0, at)}<head><meta charset="utf-8">${head}</head>${source.slice(at)}\n${ack}`;
