@@ -1475,27 +1475,26 @@ def log_names(instance: Instance) -> set[str]:
 
 def await_logs(instance: Instance, timeout: float = ATTACH_TIMEOUT_SECONDS) -> bool:
     """
-    Wait for the log files the instance holding the lock is about to open.
+    Wait until there is a log to follow.
 
-    The winner takes the lock before it materialises anything, and opens its
-    log files a moment later — unlinking and recreating one per service as it
-    goes. A second `start` that arrives in that gap would otherwise decide the
-    instance had never been started, or follow whichever subset of the files
-    happened to exist at the instant it looked. So the set has to be non-empty
-    *and* unchanged across a poll before it is worth following.
+    The winner takes the lock before it materialises anything, so a second
+    `start` can reach the log view before the first file exists. Waiting here is
+    what keeps that gap from reading as an instance that was never started.
+
+    Presence is all that is waited for. Completeness cannot be decided from
+    here — the previous run's files are indistinguishable from this one's, so a
+    set that looks whole may be last run's — and it does not need to be: the
+    view picks up each log as it appears.
 
     False when the winner is gone before it wrote anything; there is nothing to
     attach to then.
     """
     deadline = time.monotonic() + timeout
-    previous: set[str] | None = None
     while time.monotonic() < deadline:
-        current = log_names(instance)
-        if current and current == previous:
+        if log_names(instance):
             return True
-        if not current and not instance_is_running(instance):
+        if not instance_is_running(instance):
             return False
-        previous = current
         time.sleep(0.1)
     return bool(log_names(instance))
 
@@ -2042,7 +2041,7 @@ def command_logs(
         )
 
     names = [wanted] if wanted else available
-    tails = [Tail(name, instance.logs / f"{name}.log") for name in names]
+    tails = {name: Tail(name, instance.logs / f"{name}.log") for name in names}
     renderer = Renderer(OUT, options.log_level)
 
     running = instance_is_running(instance)
@@ -2054,7 +2053,7 @@ def command_logs(
         )
 
     replay: list[tuple[str, Line]] = []
-    for tail in tails:
+    for tail in tails.values():
         replay.extend(tail.replay(options.tail))
     for _, line in sorted(replay, key=lambda item: item[0]):
         renderer.emit(line)
@@ -2064,8 +2063,17 @@ def command_logs(
 
     try:
         while True:
+            # The set of logs is not fixed for the run. A start that enables a
+            # service the last one did not opens its file after this view has
+            # already listed what exists — and the files that were there when
+            # it looked may be the previous run's. Picking new ones up as they
+            # appear is what keeps the view showing the whole stack.
+            if not wanted:
+                for name in sorted(log_names(instance) - tails.keys()):
+                    tails[name] = Tail(name, instance.logs / f"{name}.log")
+
             batch: list[tuple[str, Line]] = []
-            for tail in tails:
+            for tail in tails.values():
                 batch.extend(tail.poll())
             for _, line in sorted(batch, key=lambda item: item[0]):
                 renderer.emit(line)
