@@ -1,0 +1,31 @@
+# CPA for local development, driven by scripts/devsuite.
+#
+# Not an override of docker-compose.yml, and deliberately so. There, CPA sits on
+# an `internal` network with no published port — it is reachable only by the app
+# container, and that unreachability is a stated property of the deployment
+# (PRD §6, §9). Locally the application runs on the *host*, so it must reach the
+# gateway over a published port; the two topologies genuinely differ, and an
+# override that quietly punched a hole in the production file would be the worse
+# way to say so.
+#
+# What is shared is what matters: the same pinned image, the same unmodified
+# upstream, the same operator-owned cpa/config.yaml. The image tag here and the
+# one in docker-compose.yml must be bumped together.
+#
+# The project name comes from `--project-name`, so each instance gets its own
+# container and its own auth volume, and `destroy` can take both away.
+
+services:
+  cpa:
+    image: eceasy/cli-proxy-api:v7.2.140
+    restart: unless-stopped
+    # Loopback only. A development gateway that answered on every interface
+    # would be a provider credential listening on the office wifi.
+    ports:
+      - "127.0.0.1:${SETUN_CPA_PORT:-8317}:8317"
+    volumes:
+      - ./cpa/config.yaml:/CLIProxyAPI/config.yaml
+      - cpa-auth:/root/.cli-proxy-api
+
+volumes:
+  cpa-auth:
