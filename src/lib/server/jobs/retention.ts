@@ -10,6 +10,7 @@ import {
   expiredCreations,
 } from "../db/queries/retention";
 import type { Classroom } from "../db/schema";
+import { log } from "../logging";
 import type { FileStore } from "../storage/files";
 import type { ScheduledJob } from "./scheduler";
 
@@ -134,7 +135,7 @@ export function retentionJob(db: AppDatabase, files: FileStore): ScheduledJob {
     async run(now) {
       const outcome = await runRetention(db, files, now);
       if (outcome.conversations + outcome.artifacts + outcome.images > 0) {
-        console.info("retention pass", outcome);
+        log.info("retention pass", outcome);
       }
     },
   };

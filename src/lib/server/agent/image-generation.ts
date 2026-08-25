@@ -5,6 +5,7 @@ import { recordUsageEvent } from "../db/queries/usage";
 import type { Classroom, GeneratedImage, ModelAlias } from "../db/schema";
 import type { GatewayAdapter } from "../gateway/adapter";
 import { GatewayError } from "../gateway/errors";
+import { log } from "../logging";
 import { extensionFor, type FileStore } from "../storage/files";
 
 /**
@@ -90,7 +91,7 @@ export async function generateImage(input: GenerateImageInput): Promise<ImageGen
     if (cause instanceof Error && cause.name === "AbortError") throw cause;
     // One student-facing outcome for every gateway failure; the detail stays in
     // the operator log (§9, §21).
-    console.warn("image generation failed", {
+    log.warn("image generation failed", {
       classroomId: classroom.id,
       cause: cause instanceof GatewayError ? cause.code : "unknown",
     });

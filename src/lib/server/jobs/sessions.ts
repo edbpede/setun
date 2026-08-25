@@ -1,6 +1,7 @@
 import { subDays } from "date-fns";
 import type { AppDatabase } from "../db/client";
 import { deleteDeadSessions } from "../db/queries/retention";
+import { log } from "../logging";
 import type { ScheduledJob } from "./scheduler";
 
 /**
@@ -33,7 +34,7 @@ export function sessionSweepJob(db: AppDatabase): ScheduledJob {
     runAtStart: true,
     run(now) {
       const removed = sweepSessions(db, now);
-      if (removed > 0) console.info(`session sweep removed ${removed} dead session row(s)`);
+      if (removed > 0) log.info(`session sweep removed ${removed} dead session row(s)`);
     },
   };
 }

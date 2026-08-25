@@ -42,6 +42,15 @@ project.inlang/cache/
 !/cpa/config.example.yaml
 /mcp.json
 
+# Python bytecode. `scripts/devsuite` is a script rather than a module, so this
+# only appears when something imports it — a test of one of its helpers does.
+__pycache__/
+
+# Development suite runtime state (scripts/devsuite): per-instance databases,
+# file storage, logs and pid files. Generated in full on every start, and an
+# instance's data is a pupil's own work exactly as /data below is.
+/.devsuite
+
 # The development database and file storage. Attachments and generated images
 # land here, and they are a pupil's own work (PRD §16, §21).
 /data

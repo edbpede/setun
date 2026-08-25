@@ -1,7 +1,7 @@
 import type { AppDatabase } from "../db/client";
 import { recordMcpProbe, syncMcpTools, upsertMcpServer } from "../db/queries/mcp";
 import type { McpServer } from "../db/schema";
-import { describeCause } from "../logging";
+import { describeCause, log } from "../logging";
 import type { McpClient } from "./client";
 import type { McpServerConfig } from "./config";
 
@@ -70,7 +70,7 @@ export async function refreshServer(
   } catch (cause) {
     recordMcpProbe(db, { serverId: server.id, reachability: "unreachable" });
     // No upstream URL, credential or stack trace travels further than this line (§21).
-    console.warn("mcp server unreachable", {
+    log.warn("mcp server unreachable", {
       configKey: server.configKey,
       cause: describeCause(cause),
     });

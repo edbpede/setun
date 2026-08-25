@@ -10,7 +10,7 @@ import {
 } from "$lib/server/auth/sessions";
 import { getDb } from "$lib/server/boot";
 import { studentInterfaceLanguage } from "$lib/server/classroom/settings";
-import { describeCause } from "$lib/server/logging";
+import { describeCause, log } from "$lib/server/logging";
 
 /**
  * Resolve the session cookie into request-scoped state (PRD §7).
@@ -129,7 +129,7 @@ export const handleError: HandleServerError = ({ error, event, status, message }
   // faults and do not deserve an operator line each.
   if (status !== 500) return { message };
 
-  console.error("request failed", {
+  log.error("request failed", {
     route: event.route.id,
     method: event.request.method,
     cause: describeCause(error),
