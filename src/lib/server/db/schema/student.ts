@@ -2,6 +2,9 @@ import { integer, sqliteTable, text, unique } from "drizzle-orm/sqlite-core";
 import { classroom, INTERFACE_LANGUAGES } from "./classroom";
 import { createdAt, primaryId, updatedAt } from "./helpers";
 
+export const STUDENT_STATUSES = ["active", "disabled", "removed"] as const;
+export type StudentStatus = (typeof STUDENT_STATUSES)[number];
+
 /**
  * A pseudonymous participant (PRD §7, §16).
  *
@@ -20,9 +23,16 @@ export const student = sqliteTable(
     label: text().notNull(),
     /** Optional, student-set, freely cleared (§16). */
     displayName: text(),
-    status: text({ enum: ["active", "disabled"] })
-      .notNull()
-      .default("active"),
+    /**
+     * Roster standing (§16, §17).
+     *
+     * §16 asks that the panel "clearly distinguishes disabling, removal from a
+     * class, and permanent deletion", and the first two are states rather than
+     * events: a disabled pupil is on the roster and cannot sign in; a removed
+     * one is off it, their work kept, and permanent deletion is the row going
+     * away with everything that cascades from it.
+     */
+    status: text({ enum: STUDENT_STATUSES }).notNull().default("active"),
     /**
      * Educator-authored, applies to this student alone (§10).
      *

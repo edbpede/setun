@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import { expect, type Page, test } from "@playwright/test";
 import * as m from "../src/lib/paraglide/messages";
 import { APP_ORIGIN, E2E_DATABASE_PATH, E2E_PEPPER } from "../playwright.config";
+import { clearLoginWindow } from "./support/login-window";
 
 /**
  * Attachments, image generation and turn responses, at the API (PRD §10, §11,
@@ -14,6 +15,13 @@ import { APP_ORIGIN, E2E_DATABASE_PATH, E2E_PEPPER } from "../playwright.config"
  * clicks a button: each assertion goes at the endpoint, because hiding a control
  * in the interface is never access control (§8).
  */
+
+/**
+ * Appendix A caps one IP at 30 login attempts per 15 minutes, and every worker
+ * here is loopback. Cleared per test so the suites do not fail each other's
+ * sign-ins; the limiter itself is asserted in `bun test` (§7, §22).
+ */
+test.beforeEach(clearLoginWindow);
 
 test.describe.configure({ mode: "serial" });
 

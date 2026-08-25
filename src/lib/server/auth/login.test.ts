@@ -211,7 +211,11 @@ describe("rotation", () => {
 
     expect(resolveStudentSession(db, login.session.token)).not.toBeNull();
 
-    await rotateStudentCredential(db, { studentId: student.id, pepper: PEPPER });
+    await rotateStudentCredential(db, {
+      studentId: student.id,
+      classroomId: student.classroomId,
+      pepper: PEPPER,
+    });
 
     // The old cookie stops working on the next request, not at expiry (§7, §21).
     expect(resolveStudentSession(db, login.session.token)).toBeNull();
@@ -220,7 +224,12 @@ describe("rotation", () => {
   it("retires the old code and accepts the new one", async () => {
     const { student, code } = await provision();
 
-    const rotated = await rotateStudentCredential(db, { studentId: student.id, pepper: PEPPER });
+    const rotated = await rotateStudentCredential(db, {
+      studentId: student.id,
+      classroomId: student.classroomId,
+      pepper: PEPPER,
+    });
+    if (!rotated) throw new Error("rotation refused a pupil in their own classroom");
 
     expect(
       (await attemptStudentLogin(db, { code: code.normalised, ip: IP, pepper: PEPPER })).ok,

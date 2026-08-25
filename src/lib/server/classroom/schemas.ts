@@ -7,6 +7,7 @@ import {
   PERMISSION_MODES,
   SESSION_POLICIES,
   SKILL_AUTHORING_POLICIES,
+  STUDENT_STATUSES,
 } from "../db/schema";
 import { OPEN_DURATIONS } from "./schedule";
 
@@ -98,6 +99,17 @@ export const SetStateSchema = v.object({
   state: v.picklist(CLASSROOM_STATES),
   /** Only read for `open`; a lock stands until the educator lifts it (§8). */
   duration: v.optional(v.picklist(OPEN_DURATIONS), "indefinite"),
+});
+
+/**
+ * The dashboard's one-click lock (§17).
+ *
+ * Names the classroom, because the dashboard shows several; the classroom pages
+ * take it from the route instead.
+ */
+export const LockClassroomSchema = v.object({
+  classroomId: v.pipe(v.string(), v.uuid()),
+  state: v.picklist(CLASSROOM_STATES),
 });
 
 /**
@@ -243,6 +255,53 @@ export const StudentInstructionsSchema = v.object({
     v.maxLength(4_000),
     v.transform(blankToNull),
   ),
+});
+
+// --- Provisioning and roster actions (§7, §16, §17) ---
+
+/** Batch size, bounded by what a class is: a roster, not an import. */
+export const ProvisionSchema = v.object({
+  count: v.pipe(
+    v.unknown(),
+    v.transform(Number),
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+    v.maxValue(40),
+  ),
+});
+
+/** Parsed by hand from one row of the roster; every action names one pupil. */
+export const StudentIdSchema = v.object({ studentId: v.pipe(v.string(), v.uuid()) });
+
+/**
+ * The three distinctions §16 asks the panel to draw.
+ *
+ * `active` and `disabled` are the two ends of the enable/disable pair; `removed`
+ * takes a pupil off the roster with their work kept. Permanent deletion is a
+ * separate action with a separate schema, because it is not a status.
+ */
+export const StudentStatusSchema = v.object({
+  studentId: v.pipe(v.string(), v.uuid()),
+  status: v.picklist(STUDENT_STATUSES),
+});
+
+/** Per-student attachment override; `inherit` hands the decision back to the classroom (§10). */
+export const StudentAttachmentsSchema = v.object({
+  studentId: v.pipe(v.string(), v.uuid()),
+  attachments: v.picklist(["on", "off", "inherit"]),
+});
+
+/**
+ * Permanent deletion, typed rather than clicked.
+ *
+ * The educator retypes the pupil's label. §16 calls this out as a distinct
+ * action from disabling and removal, and the distinction is worth a keystroke:
+ * nothing here is recoverable.
+ */
+export const DeleteStudentSchema = v.object({
+  studentId: v.pipe(v.string(), v.uuid()),
+  confirmLabel: v.pipe(v.string(), v.trim(), v.minLength(1)),
 });
 
 // --- Model aliases (§9, §16) ---

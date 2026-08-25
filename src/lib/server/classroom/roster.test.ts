@@ -121,12 +121,17 @@ describe("resolveRoster", () => {
     // The shape is closed: no conversation, message or prompt field exists to
     // read, which is the point (§16).
     expect(Object.keys(entry).sort()).toEqual([
+      "attachmentsEffective",
+      "attachmentsOverride",
       "costDkk",
       "costUsd",
+      "credentialHint",
+      "displayName",
       "exhausted",
       "id",
       "instructions",
       "label",
+      "lastActivityAt",
       "limitTokens",
       "status",
       "usedTokens",

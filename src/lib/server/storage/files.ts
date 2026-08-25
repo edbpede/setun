@@ -1,5 +1,6 @@
 import { unlink } from "node:fs/promises";
 import { join, normalize } from "node:path";
+import { describeCause } from "../logging";
 
 /**
  * The local file store (PRD §15, §16, §21).
@@ -51,9 +52,32 @@ export class FileStore {
     return new Uint8Array(await file.arrayBuffer());
   }
 
-  /** Delete a stored file; a file already gone is success, not a failure. */
-  async remove(storagePath: string): Promise<void> {
-    await unlink(this.#absolute(storagePath)).catch(() => {});
+  /**
+   * Delete a stored file. True once the bytes are gone.
+   *
+   * A file already absent is success — deleting twice is how a retry looks. A
+   * real failure is not: the caller is usually about to delete the row that
+   * names this path, and that row is the only record of where the bytes are, so
+   * a suppressed `EACCES` would strand private data on the volume with nothing
+   * left pointing at it (§16). Reported here and answered to the caller, which
+   * decides whether the row may go.
+   */
+  async remove(storagePath: string): Promise<boolean> {
+    // Outside the guard: a path of the wrong shape is a broken row rather than a
+    // failed delete, and it is refused here exactly as it is on a read.
+    const absolute = this.#absolute(storagePath);
+
+    try {
+      await unlink(absolute);
+      return true;
+    } catch (cause) {
+      if ((cause as { code?: string } | null)?.code === "ENOENT") return true;
+
+      // Through `describeCause`, which redacts and truncates: the path it quotes
+      // is an internal identifier, which §16 permits, and never content.
+      console.error("storage remove failed", { cause: describeCause(cause) });
+      return false;
+    }
   }
 
   #absolute(storagePath: string): string {

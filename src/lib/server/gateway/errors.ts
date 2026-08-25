@@ -31,42 +31,14 @@ export class GatewayError extends Error {
   }
 }
 
-/** Values that look like credentials are replaced before anything is logged (§16, §21). */
-const REDACTION = "[redacted]";
-
-const SENSITIVE_HEADERS = new Set(["authorization", "x-api-key", "proxy-authorization", "cookie"]);
-
 /**
- * Redact credential-shaped substrings from arbitrary text.
+ * Redaction lives in `$lib/server/logging`, and is re-exported here.
  *
- * Applied to every upstream detail before it is logged, because an upstream
- * error body can quote the request that produced it — including its headers.
+ * The gateway was the first caller and is still the loudest one, but the MCP
+ * registry, the agent loop and the job scheduler log failures too — one copy of
+ * the patterns, four importers (§16, §21, §6.1).
  */
-export function redactCredentials(text: string): string {
-  return (
-    text
-      // `Authorization: Bearer sk-…` and friends, header-style.
-      .replace(
-        /\b(authorization|x-api-key|proxy-authorization|cookie)\s*[:=]\s*\S+/gi,
-        `$1: ${REDACTION}`,
-      )
-      // Bare bearer tokens anywhere in a message.
-      .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, `Bearer ${REDACTION}`)
-      // Provider key prefixes quoted in a body.
-      .replace(/\b(sk|pk|api)[-_][A-Za-z0-9._-]{8,}/gi, REDACTION)
-  );
-}
-
-/** Headers safe to log: sensitive ones are replaced, not omitted, so their presence still shows. */
-export function redactHeaders(headers: Headers | Record<string, string>): Record<string, string> {
-  const entries = headers instanceof Headers ? [...headers.entries()] : Object.entries(headers);
-  return Object.fromEntries(
-    entries.map(([key, value]) => [
-      key,
-      SENSITIVE_HEADERS.has(key.toLowerCase()) ? REDACTION : value,
-    ]),
-  );
-}
+export { redactCredentials, redactHeaders } from "../logging";
 
 /** Map an upstream HTTP status onto a failure code. */
 export function failureCodeForStatus(status: number): GatewayFailureCode {

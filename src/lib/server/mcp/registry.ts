@@ -1,6 +1,7 @@
 import type { AppDatabase } from "../db/client";
 import { recordMcpProbe, syncMcpTools, upsertMcpServer } from "../db/queries/mcp";
 import type { McpServer } from "../db/schema";
+import { describeCause } from "../logging";
 import type { McpClient } from "./client";
 import type { McpServerConfig } from "./config";
 
@@ -71,7 +72,7 @@ export async function refreshServer(
     // No upstream URL, credential or stack trace travels further than this line (§21).
     console.warn("mcp server unreachable", {
       configKey: server.configKey,
-      cause: cause instanceof Error ? `${cause.name}: ${cause.message}` : String(cause),
+      cause: describeCause(cause),
     });
 
     return {

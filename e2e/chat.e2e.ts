@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import { expect, test } from "@playwright/test";
 import * as m from "../src/lib/paraglide/messages";
 import { E2E_DATABASE_PATH, E2E_PEPPER } from "../playwright.config";
+import { clearLoginWindow } from "./support/login-window";
 
 /**
  * The student flow, first cut (plan 1.8, PRD §22).
@@ -36,6 +37,13 @@ async function provisionStudent(): Promise<{ label: string; code: string }> {
 
   return JSON.parse(stdout.trim());
 }
+
+/**
+ * Appendix A caps one IP at 30 login attempts per 15 minutes, and every worker
+ * here is loopback. Cleared per test so the suites do not fail each other's
+ * sign-ins; the limiter itself is asserted in `bun test` (§7, §22).
+ */
+test.beforeEach(clearLoginWindow);
 
 test("a student logs in, chats with a streaming answer, and logs out", async ({ page }) => {
   const { code } = await provisionStudent();

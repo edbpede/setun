@@ -382,54 +382,54 @@ hooks = [
 
 ### 5.1 Educator panel (§17)
 
-- [ ] `(educator)/` dashboard: classroom state, active students, gateway health (from 2.6), current window, usage against budgets, one-click lock — design via `frontend-design`, dense single-operator layout
-- [ ] Roster: per-student status, usage and allowance with cost estimate, last activity, per-student instructions and attachment overrides, disable/enable/rotate/clear-display-name/remove/delete — with the classroom-deletion distinctions (disable vs remove vs permanent, §16)
-- [ ] Provisioning: batch account creation using the Phase 1 pseudonym and code modules; printable credential cards (code shown at provisioning and rotation only, §7); the dev seed from 1.3 retired
-- [ ] Consolidation pass over the Phase 2–3 routes (classroom config, aliases, MCP, skills) into the §17 information architecture
-- [ ] Vitest Browser Mode: panel forms (§22); Playwright: educator flow — create classroom, provision, open, lock, rotate (§22)
+- [x] `(educator)/` dashboard: classroom state, active students, gateway health (from 2.6), current window, usage against budgets, one-click lock — design via `frontend-design`, dense single-operator layout
+- [x] Roster: per-student status, usage and allowance with cost estimate, last activity, per-student instructions and attachment overrides, disable/enable/rotate/clear-display-name/remove/delete — with the classroom-deletion distinctions (disable vs remove vs permanent, §16)
+- [x] Provisioning: batch account creation using the Phase 1 pseudonym and code modules; printable credential cards (code shown at provisioning and rotation only, §7); the dev seed from 1.3 retired
+- [x] Consolidation pass over the Phase 2–3 routes (classroom config, aliases, MCP, skills) into the §17 information architecture
+- [x] Vitest Browser Mode: panel forms (§22); Playwright: educator flow — create classroom, provision, open, lock, rotate (§22)
 
 ### 5.2 Student dashboard (§18)
 
-- [ ] `src/routes/(student)/` dashboard: account status, open/closed with next window, allowance used with cost estimate, language override, display name (set/change/clear), conversation list with search, creations gallery link, own skills — everything the system knows about the student, visible to the student (§18)
+- [x] `src/routes/(student)/` dashboard: account status, open/closed with next window, allowance used with cost estimate, language override, display name (set/change/clear), conversation list with search, creations gallery link, own skills — everything the system knows about the student, visible to the student (§18)
 
 ### 5.3 Conversation search (§10)
 
-- [ ] FTS5 index over titles and message content, `unicode61` tokenizer with `remove_diacritics 2` (Appendix A); index maintenance in the message query module
-- [ ] Search endpoint and UI, strictly scoped to the requesting student
-- [ ] Security tests: cross-student search isolation (§22)
+- [x] FTS5 index over titles and message content, `unicode61` tokenizer with `remove_diacritics 2` (Appendix A); index maintenance in the message query module
+- [x] Search endpoint and UI, strictly scoped to the requesting student
+- [x] Security tests: cross-student search isolation (§22)
 
 ### 5.4 Jobs: scheduler, retention, backups (§6, §16, §21)
 
-- [ ] `src/lib/server/jobs/scheduler.ts` — in-process scheduler started with the server, portable across Node and Bun (§6 — dev runs under Node, so not `Bun.cron`)
-- [ ] Retention job: conversation expiry per classroom policy (default 30 days) deleting messages and attachments; creations governed separately — kept until deleted unless a creations retention period is set (§16)
-- [ ] Session cleanup job
-- [ ] Backup job: nightly `VACUUM INTO` snapshot plus images and skills directories, 14 days retained on the backup volume (§21, Appendix A); **restore rehearsal performed and documented** — the pilot does not ship without it (§21)
-- [ ] `bun test`: retention resolution, backup file naming/rotation
+- [x] `src/lib/server/jobs/scheduler.ts` — in-process scheduler started with the server, portable across Node and Bun (§6 — dev runs under Node, so not `Bun.cron`)
+- [x] Retention job: conversation expiry per classroom policy (default 30 days) deleting messages and attachments; creations governed separately — kept until deleted unless a creations retention period is set (§16)
+- [x] Session cleanup job
+- [x] Backup job: nightly `VACUUM INTO` snapshot plus images and skills directories, 14 days retained on the backup volume (§21, Appendix A); **restore rehearsal performed and documented** — the pilot does not ship without it (§21)
+- [x] `bun test`: retention resolution, backup file naming/rotation
 
 ### 5.5 Log hygiene (§16, §21)
 
-- [ ] Review pass: normal-level logs carry internal identifiers, request ids, aliases, latency, status, token counts — no prompt or response content; credentials redacted everywhere including gateway headers and error paths; production errors expose no stack traces or infrastructure detail
-- [ ] `bun test`: redaction on representative error paths
+- [x] Review pass: normal-level logs carry internal identifiers, request ids, aliases, latency, status, token counts — no prompt or response content; credentials redacted everywhere including gateway headers and error paths; production errors expose no stack traces or infrastructure detail
+- [x] `bun test`: redaction on representative error paths
 
 ### 5.6 Chromebook performance pass (§20)
 
-- [ ] Verify under sixfold CPU throttling: < 250 KB gzipped JS on the chat route, first meaningful paint < 2 s cold, no dropped frames streaming plain text
-- [ ] Memory and layout items: content-visibility on off-screen messages, windowed long conversations, drafts and scroll surviving tab discard (resume already server-side), no backdrop blur, no persistent header, overlay sidebar, on-screen-keyboard handling, touch-sized targets and draggable handles
-- [ ] Scoped markdown re-rendering (current block only) confirmed from Phase 1; fix regressions found
+- [x] Verify under sixfold CPU throttling: < 250 KB gzipped JS on the chat route, first meaningful paint < 2 s cold, no dropped frames streaming plain text
+- [x] Memory and layout items: content-visibility on off-screen messages, windowed long conversations, drafts and scroll surviving tab discard (resume already server-side), no backdrop blur, no persistent header, overlay sidebar, on-screen-keyboard handling, touch-sized targets and draggable handles
+- [x] Scoped markdown re-rendering (current block only) confirmed from Phase 1; fix regressions found
 
 ### 5.7 Danish locale completion (§5, §8)
 
-- [ ] Every Paraglide message translated; `da` wordlist reviewed; a sweep confirming no string literals in components escaped the convention
+- [x] Every Paraglide message translated; `da` wordlist reviewed; a sweep confirming no string literals in components escaped the convention
 
 ### 5.8 Full test suite and CI (§22)
 
-- [ ] Playwright: all three §22 flows complete, asserted at the API level not only the UI (student chat+build flow, educator flow, scheduling flow)
-- [ ] Security suite complete per §22: auth failures and brute force, revoked/disabled credentials, sessions after rotation and force-logout, out-of-hours access, cross-student access including search and attachments, disabled models/tools/skills, artifact escape suite
+- [x] Playwright: all three §22 flows complete, asserted at the API level not only the UI (student chat+build flow, educator flow, scheduling flow)
+- [x] Security suite complete per §22: auth failures and brute force, revoked/disabled credentials, sessions after rotation and force-logout, out-of-hours access, cross-student access including search and attachments, disabled models/tools/skills, artifact escape suite
 - [ ] All five CI gates green on `main`
 
 ### 5.9 Operator documentation (§6.2)
 
-- [ ] `docs/` operator guide: the three operator files (Compose, `.env`, MCP config), the two DNS hostnames and TLS modes, CPA provider enrolment on the host, educator password recovery via re-seed, backup restore procedure, upgrade note on the pinned CPA version
+- [x] `docs/` operator guide: the three operator files (Compose, `.env`, MCP config), the two DNS hostnames and TLS modes, CPA provider enrolment on the host, educator password recovery via re-seed, backup restore procedure, upgrade note on the pinned CPA version
 
 ---
 

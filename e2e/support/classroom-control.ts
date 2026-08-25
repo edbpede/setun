@@ -5,6 +5,8 @@ import {
   updateClassroomSettings,
 } from "../../src/lib/server/db/queries/classrooms";
 import { listAvailableAliases } from "../../src/lib/server/db/queries/model-aliases";
+import { listClassroomStudents } from "../../src/lib/server/db/queries/students";
+import { changeStudentStatus } from "../../src/lib/server/classroom/students";
 import { openE2eDatabase } from "./database";
 
 /**
@@ -143,6 +145,24 @@ switch (command) {
       settings: { perStudentDailyTokens: 250_000 },
     });
     break;
+
+  /**
+   * Switch one pupil off, by label — the §16 disable, invalidating their
+   * sessions in the same call exactly as the panel does (§7, §21).
+   */
+  case "disable-student": {
+    const target = listClassroomStudents(db, classroom.id).find((row) => row.label === argument);
+    if (!target) {
+      console.error(`no pupil labelled '${argument}' in '${classroomName}'`);
+      process.exit(1);
+    }
+    changeStudentStatus(db, {
+      studentId: target.id,
+      classroomId: classroom.id,
+      status: "disabled",
+    });
+    break;
+  }
 
   default:
     console.error(`unknown command: ${command}`);

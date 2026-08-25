@@ -1,14 +1,15 @@
 <script lang="ts">
 import { superForm } from "sveltekit-superforms";
+import DashboardRow from "$lib/components/educator/DashboardRow.svelte";
 import * as m from "$lib/paraglide/messages";
 import type { PageProps } from "./$types";
 
 /**
- * Create a classroom, and the gateway's state (PRD §9, §17).
+ * The panel's dashboard (PRD §9, §17).
  *
- * The gateway line says exactly two things — answering or not, and how many
- * models — because that is all an educator can act on, and everything else
- * would be infrastructure detail (§9, §21).
+ * Rooms first, in the order a lesson needs them — open ones at the top — then
+ * the gateway line, then the form that makes a new room. An educator arriving
+ * mid-lesson should not have to scroll past a form to reach the lock.
  */
 let { data }: PageProps = $props();
 
@@ -16,14 +17,43 @@ let { data }: PageProps = $props();
 // subscribing to page updates internally, so the compiler's warning about a
 // locally-referenced value does not apply to this API.
 // svelte-ignore state_referenced_locally
-const { form, errors, enhance, submitting } = superForm(data.form);
+const { form, errors, enhance: formEnhance, submitting } = superForm(data.form);
 </script>
 
-<div class="flex max-w-lg flex-col gap-8">
+<div class="flex max-w-3xl flex-col gap-8">
   <section class="flex flex-col gap-3">
-    <h1 class="text-base font-semibold text-foreground">{m.educator_create_classroom()}</h1>
+    <h1 class="text-base font-semibold text-foreground">{m.educator_dashboard_title()}</h1>
 
-    <form method="POST" action="?/create" use:enhance class="flex flex-col gap-3">
+    {#if data.dashboard.length === 0}
+      <p class="text-xs text-muted-foreground">{m.educator_no_classrooms()}</p>
+    {:else}
+      <ul class="flex flex-col gap-2">
+        {#each data.dashboard as overview (overview.id)}
+          <li><DashboardRow {overview} /></li>
+        {/each}
+      </ul>
+    {/if}
+  </section>
+
+  <section class="flex flex-col gap-1.5 border-t border-border pt-6">
+    <h2 class="text-sm font-medium text-foreground">{m.educator_gateway_health_title()}</h2>
+    <p
+      class="text-sm"
+      class:text-muted-foreground={data.gateway.reachable}
+      class:text-destructive={!data.gateway.reachable}
+    >
+      {#if data.gateway.reachable}
+        {m.educator_gateway_reachable({ count: data.gateway.modelCount })}
+      {:else}
+        {m.educator_gateway_unreachable()}
+      {/if}
+    </p>
+  </section>
+
+  <section class="flex max-w-lg flex-col gap-3 border-t border-border pt-6">
+    <h2 class="text-sm font-medium text-foreground">{m.educator_create_classroom()}</h2>
+
+    <form method="POST" action="?/create" use:formEnhance class="flex flex-col gap-3">
       <label class="flex flex-col gap-1.5">
         <span class="text-sm font-medium text-foreground">{m.educator_classroom_name_label()}</span>
         <input
@@ -53,16 +83,5 @@ const { form, errors, enhance, submitting } = superForm(data.form);
         {m.educator_create_classroom()}
       </button>
     </form>
-  </section>
-
-  <section class="flex flex-col gap-1.5 border-t border-border pt-6">
-    <h2 class="text-sm font-medium text-foreground">{m.educator_gateway_health_title()}</h2>
-    <p class="text-sm" class:text-muted-foreground={data.gateway.reachable} class:text-destructive={!data.gateway.reachable}>
-      {#if data.gateway.reachable}
-        {m.educator_gateway_reachable({ count: data.gateway.modelCount })}
-      {:else}
-        {m.educator_gateway_unreachable()}
-      {/if}
-    </p>
   </section>
 </div>

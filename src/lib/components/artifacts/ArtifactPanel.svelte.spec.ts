@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { page } from "vitest/browser";
+import { page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-svelte";
 import * as m from "$lib/paraglide/messages";
 import { type ArtifactView, ArtifactWorkspace } from "$lib/state/artifacts.svelte";
@@ -171,6 +171,33 @@ describe("ArtifactPanel", () => {
 
     await page.getByRole("button", { name: m.artifact_layout_split() }).click();
     expect(workspace.layout).toBe("split");
+  });
+
+  it("gives split view a handle that moves the divider (§20)", async () => {
+    await page.viewport(1024, 768);
+
+    const workspace = openWorkspace();
+    render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX });
+    await page.getByRole("button", { name: m.artifact_layout_split() }).click();
+
+    const handle = page.getByRole("separator", { name: m.artifact_split_handle() });
+    await expect.element(handle).toBeInTheDocument();
+
+    // Keyboard first, because a drag must not be the only way to move it.
+    const before = workspace.splitFraction;
+    await handle.click();
+    await userEvent.keyboard("{ArrowRight}");
+    expect(workspace.splitFraction).toBeGreaterThan(before);
+  });
+
+  it("never lets the divider drag either side out of existence (§20)", () => {
+    const workspace = openWorkspace();
+
+    workspace.setSplitFraction(0);
+    expect(workspace.splitFraction).toBe(0.25);
+
+    workspace.setSplitFraction(1);
+    expect(workspace.splitFraction).toBe(0.8);
   });
 
   it("shows a build failure as text", async () => {

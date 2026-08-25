@@ -57,11 +57,52 @@ const tabs = $derived([
 
 const shell = $derived(
   workspace.layout === "split"
-    ? "fixed inset-y-0 right-0 z-40 w-full border-l border-border sm:w-1/2"
+    ? "fixed inset-y-0 right-0 z-40 w-full border-l border-border"
     : workspace.layout === "fullscreen"
       ? "fixed inset-0 z-50"
       : "fixed inset-0 z-40",
 );
+
+/** Only split view has a width to set; the other two fill what they are given. */
+const shellStyle = $derived(
+  workspace.layout === "split" ? `width: ${(1 - workspace.splitFraction) * 100}%` : "",
+);
+
+/**
+ * The split handle, dragged by pointer (§20).
+ *
+ * "Panel handles are draggable by touch." Pointer events rather than mouse or
+ * touch events: one code path covers a finger, a stylus and a trackpad, and
+ * `setPointerCapture` keeps the drag alive when the finger leaves the 12-pixel
+ * bar — which on a touchscreen it does immediately.
+ *
+ * The visual bar is thin and the hit area is not: the element is padded out to a
+ * finger-sized target, which is the §20 rule for every control here.
+ */
+function dragSplit(event: PointerEvent): void {
+  const handle = event.currentTarget as HTMLElement;
+  handle.setPointerCapture(event.pointerId);
+
+  const move = (moved: PointerEvent) => {
+    workspace.setSplitFraction(moved.clientX / window.innerWidth);
+  };
+  const release = () => {
+    handle.removeEventListener("pointermove", move);
+    handle.removeEventListener("pointerup", release);
+    handle.removeEventListener("pointercancel", release);
+  };
+
+  handle.addEventListener("pointermove", move);
+  handle.addEventListener("pointerup", release);
+  handle.addEventListener("pointercancel", release);
+}
+
+/** The keyboard equivalent, because a drag is not an accessible-only affordance. */
+function nudgeSplit(event: KeyboardEvent): void {
+  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+  event.preventDefault();
+  workspace.setSplitFraction(workspace.splitFraction + (event.key === "ArrowLeft" ? -0.05 : 0.05));
+}
 
 /**
  * Store the current source as a revision.
@@ -131,8 +172,40 @@ $effect(() => {
 </script>
 
 {#if workspace.visible}
+  {#if workspace.layout === "split"}
+    <!--
+      The split handle (§20). A thin bar with a finger-sized hit area, sitting on
+      the panel's leading edge; `touch-action: none` so a drag moves the divider
+      rather than scrolling the conversation behind it.
+    -->
+    <!--
+      The ARIA window-splitter pattern: a focusable `separator` with a value is a
+      widget, not decoration. The compiler's heuristic reads the element rather
+      than the role, so the two rules it raises are suppressed deliberately here.
+    -->
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={m.artifact_split_handle()}
+      aria-valuenow={Math.round(workspace.splitFraction * 100)}
+      aria-valuemin={25}
+      aria-valuemax={80}
+      tabindex="0"
+      onpointerdown={dragSplit}
+      onkeydown={nudgeSplit}
+      class="split-handle fixed inset-y-0 z-50 hidden w-6 cursor-col-resize sm:block"
+      style="right: {(1 - workspace.splitFraction) * 100}%; margin-right: -0.75rem"
+    >
+      <span class="pointer-events-none absolute inset-y-0 left-1/2 w-0.5 -translate-x-1/2 bg-border"
+      ></span>
+    </div>
+  {/if}
+
   <section
     class="{shell} flex flex-col bg-background"
+    style={shellStyle}
     aria-label={m.artifact_panel_title()}
     data-artifact-id={artifact?.id ?? ""}
   >
@@ -362,3 +435,10 @@ $effect(() => {
     {/if}
   </section>
 {/if}
+
+<style>
+/* A drag must move the divider, not scroll the page behind it. */
+.split-handle {
+  touch-action: none;
+}
+</style>

@@ -3,10 +3,11 @@
  *
  * A student's label is their identity in the classroom, so both halves are
  * concrete, friendly and classroom-appropriate in each locale. Danish is a
- * translation in spirit rather than word-for-word: the adjective must inflect
- * naturally with the neuter/common gender of the noun it is paired with, so the
- * Danish nouns are all common gender (`en`-ord) and the adjectives are given in
- * the form that agrees with them.
+ * translation in spirit rather than word-for-word: a Danish adjective inflects
+ * with the gender of the noun it qualifies, and a label carries no article to
+ * disambiguate, so every Danish noun here is common gender (`en`-ord) and every
+ * Danish adjective is in the form that agrees with one. A neuter noun would need
+ * `-t` on the adjective and would read as a mistake beside the rest.
  *
  * 48 x 48 = 2304 combinations per locale, which is ample for a classroom and
  * still small enough that every entry has been read.
@@ -147,7 +148,7 @@ const da: Wordlist = {
     "mægtig",
     "ædel",
     "tålmodig",
-    "leken",
+    "legende",
     "høflig",
     "stolt",
     "kvik",
@@ -180,8 +181,8 @@ const da: Wordlist = {
     "lunde",
     "ravn",
     "laks",
-    "pindsvin",
-    "egern",
+    "muldvarp",
+    "skovmus",
     "sæl",
     "svane",
     "hare",
@@ -199,14 +200,14 @@ const da: Wordlist = {
     "ø",
     "flod",
     "fjord",
-    "kompas",
+    "kikkert",
     "lygte",
-    "anker",
+    "kaj",
     "drage",
     "komet",
     "planet",
     "kvarts",
-    "rav",
+    "perle",
     "opal",
     "ceder",
     "bregne",

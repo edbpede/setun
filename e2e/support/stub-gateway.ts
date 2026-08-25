@@ -41,6 +41,21 @@ export const ARTIFACT_REPLY = [
   "Prøv den.",
 ].join("\n");
 
+/**
+ * A prompt containing this asks the stub for a long answer, streamed flat out.
+ *
+ * The §20 frame budget is about plain text arriving faster than a dual-core
+ * Celeron can lay it out, so the case worth measuring is many small deltas with
+ * no delay between them.
+ */
+export const LONG_MARKER = "LANG-TEKST";
+
+/** Long enough to stream for a while; ordinary prose, because that is the case §20 names. */
+export const LONG_REPLY = Array.from(
+  { length: 120 },
+  (_, i) => `sætning ${i} om hvordan et neuralt netværk sender information videre.`,
+).join(" ");
+
 const SLOW_WORD_DELAY_MS = 400;
 
 export async function startStubGateway(
@@ -74,7 +89,11 @@ export async function startStubGateway(
      */
     const slow = payload.includes(SLOW_MARKER);
     const perWordDelay = slow ? SLOW_WORD_DELAY_MS : options.delayMs;
-    const body = payload.includes(ARTIFACT_MARKER) ? ARTIFACT_REPLY : reply;
+    const body = payload.includes(ARTIFACT_MARKER)
+      ? ARTIFACT_REPLY
+      : payload.includes(LONG_MARKER)
+        ? LONG_REPLY
+        : reply;
 
     response.writeHead(200, {
       "content-type": "text/event-stream",

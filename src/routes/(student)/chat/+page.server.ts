@@ -1,5 +1,4 @@
-import { fail, redirect } from "@sveltejs/kit";
-import * as v from "valibot";
+import { redirect } from "@sveltejs/kit";
 import { generationAliases } from "$lib/server/agent/image-generation";
 import { requireStudentPage } from "$lib/server/auth/guards";
 import { destroySession, SESSION_COOKIE_NAME } from "$lib/server/auth/sessions";
@@ -17,18 +16,8 @@ import {
   listConversations,
 } from "$lib/server/db/queries/conversations";
 import { getActivePath } from "$lib/server/db/queries/messages";
-import { setStudentInterfaceLanguage } from "$lib/server/db/queries/students";
 import { findActiveTurn } from "$lib/server/db/queries/turns";
-import { INTERFACE_LANGUAGES } from "$lib/server/db/schema";
 import type { Actions, PageServerLoad } from "./$types";
-
-/**
- * The student's own language choice (§8, §18).
- *
- * A one-field form, so a plain progressively-enhanced action — Valibot-validated
- * all the same (§5).
- */
-const LanguageSchema = v.object({ language: v.picklist(INTERFACE_LANGUAGES) });
 
 /**
  * The chat route's data (PRD §10).
@@ -144,22 +133,6 @@ export const actions: Actions = {
     });
 
     redirect(303, `/chat?c=${conversation.id}`);
-  },
-
-  /** Override the classroom's interface language for this pupil alone (§8, §18). */
-  language: async ({ request, locals }) => {
-    const student = requireStudentPage(locals);
-
-    const body = await request.formData();
-    const parsed = v.safeParse(LanguageSchema, { language: body.get("language") });
-    if (!parsed.success) return fail(400, { invalid: true });
-
-    setStudentInterfaceLanguage(getDb(), {
-      studentId: student.id,
-      interfaceLanguage: parsed.output.language,
-    });
-
-    return { saved: true };
   },
 
   logout: async ({ locals, cookies }) => {
