@@ -729,6 +729,25 @@ def port_free(port: int) -> bool:
 
 
 def check_ports(ports: dict[str, int], services: Sequence[str]) -> None:
+    # A free port is not yet a usable one. Two services given the same number
+    # both pass a bindability probe and then race for the single endpoint, so
+    # the clash has to be caught here rather than as a service exiting later
+    # and taking the whole stack down with it.
+    wanted: dict[int, list[str]] = {}
+    for name in services:
+        wanted.setdefault(ports[name], []).append(name)
+    clashing = [(port, names) for port, names in sorted(wanted.items()) if len(names) > 1]
+    if clashing:
+        details = "\n".join(f"{' and '.join(names)} both want :{port}" for port, names in clashing)
+        fail(
+            "two services in this stack were given the same port",
+            hint=(
+                f"{details}\n"
+                "Each one needs its own:\n"
+                "  ./scripts/devsuite start --port 5173 --sandbox-port 5174 --cpa-port 8317"
+            ),
+        )
+
     taken = [(name, ports[name]) for name in services if not port_free(ports[name])]
     if not taken:
         return
