@@ -209,11 +209,23 @@ async function prune(backupPath: string, today: string, retainDays: number): Pro
   return pruned.sort();
 }
 
+/**
+ * Whether the storage tree is there — and never "no" because we could not tell.
+ *
+ * Absent is an answer: a deployment that has taken no uploads has no tree to
+ * copy, and its nights are complete with the database half alone. Any other
+ * `stat` failure is not an answer, and swallowing it would publish exactly the
+ * half-night this job now retries — so it is raised, the scheduler logs it, and
+ * the next tick tries again.
+ */
 async function exists(path: string): Promise<boolean> {
-  return stat(path).then(
-    () => true,
-    () => false,
-  );
+  try {
+    await stat(path);
+    return true;
+  } catch (cause) {
+    if ((cause as { code?: string } | null)?.code === "ENOENT") return false;
+    throw cause;
+  }
 }
 
 export function backupJob(options: BackupOptions): ScheduledJob {

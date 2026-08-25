@@ -112,6 +112,26 @@ describe("runBackup", () => {
     expect(readdirSync(backupPath).filter((name) => name.endsWith(".partial"))).toEqual([]);
   });
 
+  it("does not call a night complete when the storage tree cannot be read", async () => {
+    const { db, backupPath } = workspace();
+
+    // A file where a directory should be: `stat` fails with ENOTDIR rather than
+    // ENOENT, which is "cannot tell", not "there is nothing to copy".
+    const root = mkdtempSync(join(tmpdir(), "setun-backup-"));
+    writeFileSync(join(root, "storage"), "not a directory");
+    const storagePath = join(root, "storage", "tree");
+
+    await expect(
+      runBackup(
+        { db, storagePath, backupPath, timezone: TIMEZONE },
+        new Date("2026-08-25T03:30:00+02:00"),
+      ),
+    ).rejects.toThrow();
+
+    // Nothing published, so the night is still due on the next tick.
+    expect(readdirSync(backupPath)).toEqual([]);
+  });
+
   it("refuses a backup path that lives inside the storage tree", async () => {
     const { db, storagePath } = workspace();
 
