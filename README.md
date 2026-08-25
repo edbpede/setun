@@ -58,9 +58,17 @@ and come back with `logs`, where **Ctrl-C only detaches**. Starting an instance 
 running attaches to its log view rather than spawning a second one.
 
 Caddy is not part of it: locally Vite serves both origins on their own ports, and the Caddyfile
-needs real hostnames and certificates. CPA is opt-in with `--with-cpa` — it needs Docker and an
-operator's filled-in `cpa/config.yaml`, and it runs from `scripts/devsuite.compose.yml` because
-the deployment's CPA is deliberately unreachable from the host (PRD §6, §9).
+needs real hostnames and certificates. CPA is opt-in with `--with-cpa` — it needs a Docker engine
+and an operator's filled-in `cpa/config.yaml`, and it runs from `scripts/devsuite.compose.yml`
+because the deployment's CPA is deliberately unreachable from the host (PRD §6, §9).
+
+Either form of Compose works, and the `docker` CLI itself is not required — Compose reaches the
+engine directly. The `docker compose` plugin that Docker Desktop ships is one; the standalone
+`docker-compose` that Homebrew installs is the other, which is what a Colima machine has:
+
+```sh
+brew install colima docker-compose && colima start   # a Docker engine without Docker Desktop
+```
 
 ### Two modes
 
