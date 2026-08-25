@@ -17,9 +17,9 @@ export interface DoomedFile {
   readonly storagePath: string;
 }
 
-/** The same, carrying the conversation whose row still names it. */
+/** The same, carrying the attachment row that names it. */
 export interface DoomedAttachment extends DoomedFile {
-  readonly conversationId: string;
+  readonly id: string;
 }
 
 /** Conversations in one classroom last touched before `before`. */
@@ -39,10 +39,10 @@ export function expiredConversationIds(
 }
 
 /**
- * Attachment files belonging to a set of conversations, before the rows cascade away.
+ * Attachment files belonging to a set of conversations, before the rows go.
  *
- * Each file is returned with its conversation so a removal that fails can hold
- * back just that conversation's row rather than the whole batch (§16).
+ * Each file is returned with its row's id, so the caller can delete exactly the
+ * rows whose bytes it managed to remove (§16).
  */
 export function attachmentFilesFor(
   db: AppDatabase,
@@ -50,41 +50,64 @@ export function attachmentFilesFor(
 ): DoomedAttachment[] {
   if (conversationIds.length === 0) return [];
 
-  return (
-    db
-      .select({ storagePath: attachment.storagePath, conversationId: attachment.conversationId })
-      .from(attachment)
-      .where(inArray(attachment.conversationId, [...conversationIds]))
-      .all()
-      // The column is nullable — an upload before its message has no
-      // conversation — but the predicate above matched one, so these rows have it.
-      .flatMap((row) =>
-        row.conversationId === null
-          ? []
-          : [{ storagePath: row.storagePath, conversationId: row.conversationId }],
-      )
-  );
+  return db
+    .select({ id: attachment.id, storagePath: attachment.storagePath })
+    .from(attachment)
+    .where(inArray(attachment.conversationId, [...conversationIds]))
+    .all();
 }
 
 /**
- * Delete conversations by id.
+ * Delete expired conversations, and the attachment rows whose bytes are gone.
  *
- * Messages, turns and attachments follow through the schema cascades; artifacts
- * and generated images do not, because their conversation reference is nullable
- * precisely so creations outlive the conversation that produced them (§16).
+ * Messages, turns and any remaining attachments follow through the schema
+ * cascades; artifacts and generated images do not, because their conversation
+ * reference is nullable precisely so creations outlive the conversation that
+ * produced them (§16).
+ *
+ * The two deletes share one synchronous transaction because they must not be
+ * separable. An upload that landed after the caller read the attachment list
+ * would otherwise be cascaded away by the conversation delete with its file
+ * still on the volume and nothing left naming it — the orphan the caller's
+ * bytes-before-rows ordering exists to prevent. A conversation still holding an
+ * attachment row, whether from that race or from a removal that failed, is left
+ * for the next pass, which reads it normally.
  */
-export function deleteConversations(db: AppDatabase, conversationIds: readonly string[]): number {
-  if (conversationIds.length === 0) return 0;
+export function deleteConversations(
+  db: AppDatabase,
+  input: { conversationIds: readonly string[]; removedAttachmentIds: readonly string[] },
+): number {
+  if (input.conversationIds.length === 0) return 0;
 
-  const deleted = db
-    .delete(conversation)
-    .where(inArray(conversation.id, [...conversationIds]))
-    .returning({ id: conversation.id })
-    .all();
+  return db.transaction((tx) => {
+    if (input.removedAttachmentIds.length > 0) {
+      tx.delete(attachment)
+        .where(inArray(attachment.id, [...input.removedAttachmentIds]))
+        .run();
+    }
 
-  for (const row of deleted) removeConversationFromIndex(db, row.id);
+    const holding = new Set(
+      tx
+        .select({ conversationId: attachment.conversationId })
+        .from(attachment)
+        .where(inArray(attachment.conversationId, [...input.conversationIds]))
+        .all()
+        .map((row) => row.conversationId),
+    );
 
-  return deleted.length;
+    const deletable = input.conversationIds.filter((id) => !holding.has(id));
+    if (deletable.length === 0) return 0;
+
+    const deleted = tx
+      .delete(conversation)
+      .where(inArray(conversation.id, deletable))
+      .returning({ id: conversation.id })
+      .all();
+
+    for (const row of deleted) removeConversationFromIndex(tx, row.id);
+
+    return deleted.length;
+  });
 }
 
 /** Creations in one classroom made before `before`, when the classroom sets a period (§16). */

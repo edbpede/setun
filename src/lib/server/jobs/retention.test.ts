@@ -171,6 +171,58 @@ describe("runRetention", () => {
     expect(db.$client.query("SELECT count(*) as n FROM attachment").get()).toEqual({ n: 1 });
   });
 
+  it("keeps an expired conversation that gained an attachment while the pass ran", async () => {
+    const db = createTestDatabase();
+    const { student, alias } = seedTestFixtures(db);
+
+    const conversation = createConversation(db, { studentId: student.id, modelAliasId: alias.id });
+    backdate(
+      db,
+      "UPDATE conversation SET updatedAt = ? WHERE id = ?",
+      new Date("2026-06-01T10:00:00Z"),
+      conversation.id,
+    );
+
+    // The upload lands after the job has read the attachment list — here, from
+    // inside `remove`, which is the only await between the read and the delete.
+    const root = mkdtempSync(join(tmpdir(), "setun-retention-"));
+    const files = new FileStore(root);
+    const late = {
+      remove: async (storagePath: string) => {
+        recordAttachmentWithinLimit(db, {
+          studentId: student.id,
+          conversationId: conversation.id,
+          kind: "text",
+          mediaType: "text/plain",
+          filename: "sent-mens-passet-kørte.txt",
+          byteSize: 4,
+          storagePath: `attachments/${student.id}/${crypto.randomUUID()}.txt`,
+          maxPerMessage: 4,
+        });
+        return files.remove(storagePath);
+      },
+    } as unknown as FileStore;
+
+    recordAttachmentWithinLimit(db, {
+      studentId: student.id,
+      conversationId: conversation.id,
+      kind: "text",
+      mediaType: "text/plain",
+      filename: "noter.txt",
+      byteSize: 4,
+      storagePath: `attachments/${student.id}/${crypto.randomUUID()}.txt`,
+      maxPerMessage: 4,
+    });
+
+    const outcome = await runRetention(db, late, NOW);
+
+    // The conversation survives rather than cascading the new row away with its
+    // bytes still on the volume; the next pass reads that attachment normally.
+    expect(outcome.conversations).toBe(0);
+    expect(db.$client.query("SELECT count(*) as n FROM conversation").get()).toEqual({ n: 1 });
+    expect(db.$client.query("SELECT count(*) as n FROM attachment").get()).toEqual({ n: 1 });
+  });
+
   it("keeps a creation whose bytes could not be removed, so the next pass retries", async () => {
     const db = createTestDatabase();
     const { student, classroom } = seedTestFixtures(db);

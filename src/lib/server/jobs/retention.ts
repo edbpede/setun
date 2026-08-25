@@ -89,18 +89,20 @@ export async function runRetention(
       before: cutoffs.conversationsBefore,
     });
     if (expired.length > 0) {
-      const stranded = new Set<string>();
+      const removedAttachmentIds: string[] = [];
       for (const file of attachmentFilesFor(db, expired)) {
-        if (await files.remove(file.storagePath)) removedFiles += 1;
-        else stranded.add(file.conversationId);
+        if (!(await files.remove(file.storagePath))) continue;
+        removedFiles += 1;
+        removedAttachmentIds.push(file.id);
       }
 
-      // A conversation whose bytes are still on disk keeps its row, and with it
-      // the only path back to them; the rest of the batch expires now.
-      conversations += deleteConversations(
-        db,
-        expired.filter((id) => !stranded.has(id)),
-      );
+      // Only the rows whose bytes are gone. A conversation still holding an
+      // attachment — one that could not be removed, or one uploaded while this
+      // pass ran — keeps its row, and with it the only path back to the bytes.
+      conversations += deleteConversations(db, {
+        conversationIds: expired,
+        removedAttachmentIds,
+      });
     }
 
     if (!cutoffs.creationsBefore) continue;

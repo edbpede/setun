@@ -123,8 +123,16 @@ export function removeMessageFromIndex(db: AppDatabase, messageId: string): void
   );
 }
 
+/**
+ * Anything that can run a statement: the database, or a transaction on it.
+ *
+ * Retention deletes a conversation and cleans its index entry inside one
+ * transaction, and a transaction handle is not an `AppDatabase`.
+ */
+export type SqlRunner = Pick<AppDatabase, "run">;
+
 /** Called wherever a conversation goes: the student deleting it, and retention (§16). */
-export function removeConversationFromIndex(db: AppDatabase, conversationId: string): void {
+export function removeConversationFromIndex(db: SqlRunner, conversationId: string): void {
   db.run(sql`delete from ${sql.identifier(SEARCH_TABLE)} where conversationId = ${conversationId}`);
 }
 
