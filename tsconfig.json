@@ -15,7 +15,8 @@
     // `verbatimModuleSyntax` and `isolatedModules` are inherited from ./.svelte-kit/tsconfig.json.
     "types": ["bun"]
   },
-  // The generated config covers src/, test/ and tests/ but not the Playwright suite.
+  // The generated config covers src/, test/ and tests/ but not the Playwright
+  // suite or the separate-origin sandbox host, both of which are type-checked here.
   "include": [
     "./.svelte-kit/ambient.d.ts",
     "./.svelte-kit/non-ambient.d.ts",
@@ -27,7 +28,8 @@
     "./src/**/*.js",
     "./src/**/*.ts",
     "./src/**/*.svelte",
-    "./e2e/**/*.ts"
+    "./e2e/**/*.ts",
+    "./sandbox/**/*.ts"
   ]
   // Path aliases are handled by https://svelte.dev/docs/kit/configuration#alias
   // except $lib which is handled by https://svelte.dev/docs/kit/configuration#files

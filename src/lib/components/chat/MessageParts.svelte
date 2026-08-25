@@ -77,6 +77,21 @@ const failed = $derived(
       loading="lazy"
       class="my-1 max-h-80 w-full rounded-md border border-border object-contain"
     />
+  {:else if part.type === "artifact-edit"}
+    <!--
+      The pupil's own current source, carried to the model on this message (§13).
+      Shown as a compact reference rather than the code itself: they did not type
+      it into the composer, and a wall of markup in the transcript reads as noise.
+    -->
+    <span
+      class="my-0.5 inline-flex max-w-full items-center gap-1.5 rounded-md border border-border bg-secondary px-2 py-1 text-xs"
+    >
+      <span class="truncate">
+        {m.artifact_edit_part_label({
+          title: part.title ?? m.artifact_untitled({ language: part.language }),
+        })}
+      </span>
+    </span>
   {:else if part.type === "attachment"}
     <span
       class="my-0.5 inline-flex max-w-full items-center gap-1.5 rounded-md border border-border bg-secondary px-2 py-1 text-xs"

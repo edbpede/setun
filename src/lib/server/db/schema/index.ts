@@ -4,6 +4,7 @@
  * Re-exported here as the single surface the connection module binds and the
  * query modules import; the migration generator reads it through this file too.
  */
+export * from "./artifact";
 export * from "./attachment";
 export * from "./classroom";
 export * from "./classroom-mcp-tool";

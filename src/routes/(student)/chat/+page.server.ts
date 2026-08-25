@@ -6,6 +6,8 @@ import { destroySession, SESSION_COOKIE_NAME } from "$lib/server/auth/sessions";
 import { getDb } from "$lib/server/boot";
 import { classroomAvailability } from "$lib/server/classroom/enforcement";
 import { resolveClassroomStatus } from "$lib/server/classroom/status";
+import { getConfig } from "$lib/server/config";
+import { listConversationArtifacts } from "$lib/server/db/queries/artifacts";
 import { listPendingAttachments } from "$lib/server/db/queries/attachments";
 import { listClassroomAliases } from "$lib/server/db/queries/classroom-aliases";
 import { getClassroom } from "$lib/server/db/queries/classrooms";
@@ -98,6 +100,28 @@ export const load: PageServerLoad = ({ locals, url }) => {
         )
       : [],
     status: resolveClassroomStatus(db, student),
+    // Artifacts this conversation produced, each with the revision on screen.
+    // Creations outlive conversations, so the gallery reads them separately (§16).
+    artifacts: active
+      ? listConversationArtifacts(db, {
+          conversationId: active.id,
+          studentId: student.id,
+        }).map(({ artifact, latest }) => ({
+          id: artifact.id,
+          language: artifact.language,
+          title: artifact.title,
+          latest: {
+            id: latest.id,
+            revision: latest.revision,
+            source: latest.source,
+            authoredBy: latest.authoredBy,
+            createdAt: latest.createdAt.toISOString(),
+          },
+        }))
+      : [],
+    // A distinct hostname, and the only other thing Caddy exposes: artifacts are
+    // isolated by origin, not by path (§6, §14). Public, not a secret.
+    sandboxOrigin: getConfig().sandboxOrigin,
   };
 };
 

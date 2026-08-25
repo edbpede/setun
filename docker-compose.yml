@@ -78,7 +78,7 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       # Built from sandbox/ by the repository's own build step and served
       # statically — the application never serves the sandbox hostname (§6).
-      - ./build/sandbox:/srv/sandbox:ro
+      - ./build-sandbox:/srv/sandbox:ro
       - caddy-data:/data
       - caddy-config:/config
     networks: [edge]

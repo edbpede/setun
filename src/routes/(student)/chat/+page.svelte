@@ -1,7 +1,9 @@
 <script lang="ts">
+import { untrack } from "svelte";
 import { enhance } from "$app/forms";
 import { invalidateAll } from "$app/navigation";
 import { readEventStream } from "$lib/chat/sse-client";
+import ArtifactPanel from "$lib/components/artifacts/ArtifactPanel.svelte";
 import SetunMark from "$lib/components/brand/SetunMark.svelte";
 import ChatMessage from "$lib/components/chat/ChatMessage.svelte";
 import Composer from "$lib/components/chat/Composer.svelte";
@@ -12,6 +14,7 @@ import AllowanceMeter from "$lib/components/classroom/AllowanceMeter.svelte";
 import ClassroomClosed from "$lib/components/classroom/ClassroomClosed.svelte";
 import * as m from "$lib/paraglide/messages";
 import { getLocale } from "$lib/paraglide/runtime";
+import { ArtifactWorkspace } from "$lib/state/artifacts.svelte";
 import { ClassroomState } from "$lib/state/classroom.svelte";
 import { ComposerState } from "$lib/state/composer.svelte";
 import { ConversationState } from "$lib/state/conversation.svelte";
@@ -30,6 +33,7 @@ let { data }: PageProps = $props();
 const conversation = new ConversationState();
 const composer = new ComposerState();
 const classroom = new ClassroomState();
+const artifacts = new ArtifactWorkspace();
 
 let scroller = $state<HTMLDivElement | null>(null);
 let refusal = $state<string | null>(null);
@@ -62,6 +66,18 @@ $effect(() => {
   composer.attach(data.conversation?.id ?? null);
   // Uploads that survived a reload; the server is the record of what is pending.
   composer.setAttachments(data.pendingAttachments);
+});
+
+// Every turn ends with an `invalidateAll`, so an artifact the model just wrote
+// arrives here without a second request. A draft the pupil is typing survives
+// unless the revision it was based on has been superseded (§13).
+//
+// Untracked because `replace` reads the list it is replacing — to tell whether
+// the open artifact gained a revision — and an effect that depends on what it
+// writes re-runs itself forever.
+$effect(() => {
+  const next = data.artifacts;
+  untrack(() => artifacts.replace(next));
 });
 
 // A turn was still streaming when this tab loaded: replay the buffer and tail
@@ -311,6 +327,27 @@ async function abort(): Promise<void> {
         </select>
       </form>
 
+      <!--
+        The Build entry point. Prominent and always present rather than an
+        obscure toggle, and it opens whether or not anything has been built —
+        the empty panel is where a pupil learns that building is a thing (§13).
+      -->
+      <button
+        type="button"
+        onclick={() => artifacts.toggle()}
+        aria-expanded={artifacts.visible}
+        class="shrink-0 rounded-md bg-primary px-2.5 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+      >
+        {m.artifact_build()}{artifacts.items.length > 0 ? ` (${artifacts.items.length})` : ""}
+      </button>
+
+      <a
+        href="/creations"
+        class="shrink-0 text-xs text-muted-foreground hover:text-foreground"
+      >
+        {m.creations_link()}
+      </a>
+
       <a
         href="/skills"
         class="shrink-0 text-xs text-muted-foreground hover:text-foreground"
@@ -420,4 +457,10 @@ async function abort(): Promise<void> {
     </form>
   {/if}
   {/if}
+
+  <!--
+    Over the conversation rather than beside it: at 1366x768 a second column
+    costs more than it shows, so split view is a choice and not the default (§20).
+  -->
+  <ArtifactPanel workspace={artifacts} sandboxOrigin={data.sandboxOrigin} />
 </div>

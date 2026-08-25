@@ -72,12 +72,39 @@ export interface RunTurnInput {
 /** How many times one call may ask the student for input before the loop gives up. */
 const MAX_ELICITATION_ROUNDS = 3;
 
-/** Flatten a stored message's parts into the text the dialect sends. */
+/**
+ * Flatten a stored message's parts into the text the dialect sends.
+ *
+ * An artifact the student edited travels as a marked fenced block rather than as
+ * bare prose: the model has to be able to tell the pupil's current source from
+ * the version it wrote itself, which is the whole point of carrying it (§13).
+ * The marker is addressed to the model, so it is not a Paraglide message.
+ */
 function textOf(message: Pick<Message, "parts">): string {
   return message.parts
-    .filter((part) => part.type === "text")
-    .map((part) => part.text)
+    .filter(
+      (part): part is Extract<MessagePart, { type: "text" | "artifact-edit" }> =>
+        part.type === "text" || part.type === "artifact-edit",
+    )
+    .map((part) => (part.type === "text" ? part.text : encodeArtifactEdit(part)))
     .join("");
+}
+
+const FENCE = "```";
+
+/** The marked block an edited artifact travels in (§13). */
+function encodeArtifactEdit(part: Extract<MessagePart, { type: "artifact-edit" }>): string {
+  const named = part.title ? ` "${part.title}"` : "";
+
+  return [
+    "",
+    "",
+    `[The student's edited version of the ${part.language} artifact${named}.`,
+    "This is the current source, not the version you last wrote.]",
+    `${FENCE}${part.language}`,
+    part.source,
+    FENCE,
+  ].join("\n");
 }
 
 /**
