@@ -65,22 +65,95 @@ describe("staticDocument", () => {
     expect(html).toContain("connect-src 'none'");
   });
 
-  it("ignores a head or html tag that is only named inside a comment", () => {
-    /** What the parser is left with once every comment is discarded. */
-    const uncommented = (html: string) => html.replace(/<!--[\s\S]*?(?:-->|$)/g, "");
+  it("is not diverted by a structural tag that is only text", () => {
+    /**
+     * Each source names a structural tag somewhere the parser reads no markup,
+     * paired with the run of text that must come through untouched. Splitting
+     * that run is what a context-blind scan does — and it buries the preamble
+     * where the browser acts on none of it, leaving the artifact on the origin's
+     * broader policy and the panel without its lifecycle events.
+     *
+     * `real` marks the sources that go on to open a document of their own: the
+     * preamble belongs in *that* head, after the decoy, rather than in a wrapper
+     * put in front of markup the artifact already had.
+     */
+    const diversions: readonly { source: string; intact: string; real: boolean }[] = [
+      // Comments, including one holding a `>` of its own, and one unterminated.
+      {
+        source:
+          "<!-- <head> --><!doctype html><html><head><title>Kort</title></head><body>hi</body></html>",
+        intact: "<!-- <head> -->",
+        real: true,
+      },
+      {
+        source: "<!-- a > b <head> --><html><head></head><body>hi</body></html>",
+        intact: "<!-- a > b <head> -->",
+        real: true,
+      },
+      { source: "<!-- <html> --><p>hi</p>", intact: "<!-- <html> -->", real: false },
+      // A bogus comment: the parser ends it at the first `>`, wherever that is.
+      {
+        source: "<!bogus <head> ><html><head></head><body>hi</body></html>",
+        intact: "<!bogus <head> >",
+        real: true,
+      },
+      {
+        source: "<!-- an unterminated comment mentioning <head>",
+        intact: "<!-- an unterminated comment mentioning <head>",
+        real: false,
+      },
+      // A tag the source never closes is discarded at the end of input, so the
+      // preamble belongs in a wrapper rather than inside it.
+      { source: "<div><head", intact: "<div><head", real: false },
+      // Raw text and RCDATA: nothing inside these is markup.
+      {
+        source:
+          '<script>const example = "<head>";</script><html><head></head><body>hi</body></html>',
+        intact: '<script>const example = "<head>";</script>',
+        real: true,
+      },
+      {
+        source: "<style>/* <head> */</style><html><head></head><body>hi</body></html>",
+        intact: "<style>/* <head> */</style>",
+        real: true,
+      },
+      {
+        source: "<title>about <head></title><html><head></head><body>hi</body></html>",
+        intact: "<title>about <head></title>",
+        real: true,
+      },
+      {
+        source: "<textarea><head></textarea><html><head></head><body>hi</body></html>",
+        intact: "<textarea><head></textarea>",
+        real: true,
+      },
+      // A quoted attribute value, where `>` does not close the tag either.
+      {
+        source: '<div title="<head>"></div><html><head></head><body>hi</body></html>',
+        intact: '<div title="<head>"></div>',
+        real: true,
+      },
+      {
+        source: "<div data-x='<html>'></div><html><head></head><body>hi</body></html>",
+        intact: "<div data-x='<html>'></div>",
+        real: true,
+      },
+    ];
 
-    for (const source of [
-      "<!-- <head> --><!doctype html><html><head><title>Kort</title></head><body>hi</body></html>",
-      "<!-- <html> --><p>hi</p>",
-      "<!-- an unterminated comment mentioning <head>",
-    ]) {
+    for (const { source, intact, real } of diversions) {
       const html = staticDocument({ language: "html", source, origin: ORIGIN, runId: "r" });
+      const policy = html.indexOf("connect-src 'none'");
 
-      // The preamble has to be a real part of the document. Buried inside a
-      // comment it would leave the artifact on the origin's own broader policy
-      // and the panel without its lifecycle events.
-      expect(uncommented(html)).toContain("connect-src 'none'");
-      expect(uncommented(html)).toContain("window.__setunReady");
+      expect(html).toContain(intact);
+      expect(policy).toBeGreaterThan(-1);
+      expect(html).toContain("window.__setunReady");
+
+      // Where the artifact opens a document of its own the decoy is passed over
+      // and the preamble lands in that head, after it. Where it opens none, the
+      // preamble is in the wrapper's head and the decoy follows it in the body.
+      // Either way it is never the decoy itself that the preamble goes into.
+      if (real) expect(policy).toBeGreaterThan(html.indexOf(intact));
+      else expect(policy).toBeLessThan(html.indexOf(intact));
     }
   });
 

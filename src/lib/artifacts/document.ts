@@ -104,17 +104,102 @@ export function staticDocument(input: {
 }
 
 /**
- * The source with comment bodies blanked out, one space per character.
- *
- * A tag named inside a comment is not a tag, and inserting the preamble after
- * one would bury the whole of it inside that comment — where the browser reads
- * none of it, leaving the artifact on the origin's broader policy and the panel
- * without its lifecycle events. Blanking rather than removing keeps every index
- * valid against the original string. An unterminated comment runs to the end,
- * as the parser treats it.
+ * Elements the parser does not read as markup: only their own end tag closes
+ * them, and a tag named inside one is text. `noscript` belongs here because
+ * scripting is always enabled in the frame an artifact runs in.
  */
-function maskComments(source: string): string {
-  return source.replace(/<!--[\s\S]*?(?:-->|$)/g, (comment) => " ".repeat(comment.length));
+const RAW_TEXT = new Set([
+  "script",
+  "style",
+  "textarea",
+  "title",
+  "xmp",
+  "iframe",
+  "noembed",
+  "noframes",
+  "noscript",
+]);
+
+/**
+ * Past the `>` that closes a start tag, with quoted attribute values skipped,
+ * or -1 for a tag the source never closes — which the parser discards at the
+ * end of input, and which is therefore no place to put the preamble.
+ */
+function tagEnd(source: string, from: number): number {
+  let quote = "";
+
+  for (let at = from; at < source.length; at += 1) {
+    const char = source[at];
+
+    if (quote) {
+      if (char === quote) quote = "";
+    } else if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === ">") {
+      return at + 1;
+    }
+  }
+
+  return -1;
+}
+
+/**
+ * The end of the first real `<head>` or `<html>` start tag, or -1.
+ *
+ * A regular expression cannot answer this, and the artifact is hostile source
+ * by assumption: `<head>` reads as ordinary text inside a comment, inside a
+ * `<script>` or `<title>`, and inside a quoted attribute value. Inserting after
+ * any of those buries the preamble where the browser reads none of it, leaving
+ * the artifact on the origin's broader policy and the panel without its
+ * lifecycle events. So the scan walks the source as the tokenizer does, past
+ * every context in which `<` opens nothing.
+ */
+function structuralTagEnd(source: string, name: "head" | "html"): number {
+  let at = 0;
+
+  while (at < source.length) {
+    const open = source.indexOf("<", at);
+    if (open < 0) return -1;
+
+    if (source.startsWith("<!--", open)) {
+      const close = source.indexOf("-->", open + 4);
+      at = close < 0 ? source.length : close + 3;
+      continue;
+    }
+
+    // Doctypes and bogus `<!`/`<?` constructs run to the next `>`.
+    if (source.startsWith("<!", open) || source.startsWith("<?", open)) {
+      const close = source.indexOf(">", open);
+      at = close < 0 ? source.length : close + 1;
+      continue;
+    }
+
+    const tag = /^<(\/?)([a-zA-Z][^\s/>]*)/.exec(source.slice(open));
+    if (!tag) {
+      at = open + 1;
+      continue;
+    }
+
+    const closesTag = tag[1] === "/";
+    const tagName = tag[2].toLowerCase();
+    const end = tagEnd(source, open + tag[0].length);
+
+    // An unclosed tag swallows the rest of the input, so nothing follows it.
+    if (end < 0) return -1;
+
+    if (!closesTag && tagName === name) return end;
+
+    if (!closesTag && RAW_TEXT.has(tagName)) {
+      // Resume at the end tag itself, which the loop then steps over normally.
+      const close = new RegExp(`</${tagName}[\\s/>]`, "i").exec(source.slice(end));
+      at = close ? end + close.index : source.length;
+      continue;
+    }
+
+    at = end;
+  }
+
+  return -1;
 }
 
 /**
@@ -122,22 +207,17 @@ function maskComments(source: string): string {
  *
  * Models emit anything from a bare `<div>` to a full document with a doctype,
  * and rewriting their markup is not this function's job — it finds the earliest
- * position that is inside the document and inserts there. Positions are found
- * against the masked source and applied to the real one.
+ * position that is really inside the document and inserts there.
  */
 function injectIntoHtml(source: string, head: string, ack: string): string {
-  const scan = maskComments(source);
-
-  const headOpen = /<head[^>]*>/i.exec(scan);
-  if (headOpen) {
-    const at = headOpen.index + headOpen[0].length;
-    return `${source.slice(0, at)}${head}${source.slice(at)}\n${ack}`;
+  const headEnd = structuralTagEnd(source, "head");
+  if (headEnd > -1) {
+    return `${source.slice(0, headEnd)}${head}${source.slice(headEnd)}\n${ack}`;
   }
 
-  const htmlOpen = /<html[^>]*>/i.exec(scan);
-  if (htmlOpen) {
-    const at = htmlOpen.index + htmlOpen[0].length;
-    return `${source.slice(0, at)}<head><meta charset="utf-8">${head}</head>${source.slice(at)}\n${ack}`;
+  const htmlEnd = structuralTagEnd(source, "html");
+  if (htmlEnd > -1) {
+    return `${source.slice(0, htmlEnd)}<head><meta charset="utf-8">${head}</head>${source.slice(htmlEnd)}\n${ack}`;
   }
 
   return `<!doctype html><html><head><meta charset="utf-8">${head}</head><body>${source}\n${ack}</body></html>`;
