@@ -56,7 +56,9 @@ The ones that deserve a note:
   in to seed it at every boot, which is also how a forgotten password is reset (section 6).
   Setting only one fails boot, deliberately: half a pair would silently select the wizard where
   you expected a seeded account.
-- `SETUN_BOOTSTRAP_TOKEN_PATH` — optional, and normally left unset. See section 4.
+- `SETUN_BOOTSTRAP_TOKEN_PATH` — optional, and normally left unset in a deployment. See
+  section 4. (Local development is the exception: `scripts/devsuite start --first-run` sets it
+  itself, so the suite can put the token on its own banner.)
 
 ### `mcp.json`
 
@@ -161,7 +163,8 @@ access before an account exists. Access codes get the opposite treatment — nev
   path inside the container; the token is written there with mode `0600` and deleted the moment
   setup completes. The log is still written. Never point it inside the `storage` or `backups`
   volume — the nightly snapshot would copy it — and never treat it as a substitute for keeping
-  the log private.
+  the log private. This is the same affordance the development suite uses to exercise the wizard
+  locally; see "Exercising the first-run wizard" in `README.md`.
 
 ### While setup is unfinished
 

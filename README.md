@@ -57,6 +57,10 @@ aligned, colour-coded log view.
 and come back with `logs`, where **Ctrl-C only detaches**. Starting an instance that is already
 running attaches to its log view rather than spawning a second one.
 
+Every start, resume and attach prints where to sign in and as whom.
+`http://localhost:5173` is the **student** login and asks for an access code; the educator entry
+point is `/educator/login`, panel at `/educator`.
+
 Caddy is not part of it: locally Vite serves both origins on their own ports, and the Caddyfile
 needs real hostnames and certificates. CPA is opt-in with `--with-cpa` — it needs a Docker engine
 and an operator's filled-in `cpa/config.yaml`, and it runs from `scripts/devsuite.compose.yml`
@@ -99,12 +103,32 @@ The four values `.env.example` gives no default for — the code pepper, the two
 credentials and the CPA listener key — are read from the environment or `.env` when they are
 there. When they are not, the suite mints development values *per instance* and keeps them in
 that instance's own `instance.json`; it never writes to `.env`. A generated educator signs in as
-`educator` / `educator`.
+`educator` / `educator`, and the banner says so on every run, not only the one that minted them.
+A password *you* supplied through the environment or `.env` is named rather than echoed.
 
-Because a dev instance always has seed credentials, it never sees the first-run setup wizard —
-an installation with a seeded account is complete by definition (PRD §6.2). To exercise the
-wizard, run the build with the two `SETUN_EDUCATOR_SEED_*` variables unset against an empty
-database; the token appears in the server's own output.
+### Exercising the first-run wizard
+
+An instance with seed credentials is a finished installation by definition (PRD §6.2), so it
+never sees the wizard. `--first-run` is the instance that does:
+
+```sh
+./scripts/devsuite start --first-run --persistent setup --port 6173 --sandbox-port 6174
+```
+
+It blanks both `SETUN_EDUCATOR_SEED_*` variables for the child — a blank counts as absent — so
+the application gates every path to `/setup`. This is the one place the suite overrides a real
+environment variable or a line in `.env`; it says so when it does.
+
+The bootstrap token is lifted onto the suite's own banner, by pointing
+`SETUN_BOOTSTRAP_TOKEN_PATH` at the instance's `run/` directory. That is what makes `--detach`
+usable here: otherwise the token is printed only to a log file nobody is watching. It is valid
+fifteen minutes and a restart mints another.
+
+The flag needs a database that has never been through setup, because "setup started" and "setup
+completed" are recorded in the database itself; an instance that already has one is refused, with
+`--ephemeral` and `destroy` named as the ways forward. It is remembered in `instance.json` rather
+than passed on every run, so `resume` comes back to an unfinished wizard — with a fresh token and
+your progress intact — rather than seeding an account half-way through creating one.
 
 ### Log levels
 
@@ -130,7 +154,8 @@ Everything is inside the repository, under `.devsuite/`, and gitignored:
   instance.json   mode, ports, and any generated development values
   data/           db/setun.sqlite, storage/, backups/ — this instance's whole state
   logs/           one plain, timestamped file per service
-  run/            state.json, and the lock that makes `start` idempotent
+  run/            state.json, the lock that makes `start` idempotent, and — under
+                  --first-run — the bootstrap token the banner reads back
 ```
 
 Nothing is written to `$HOME` or `/tmp`.
