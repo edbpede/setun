@@ -104,7 +104,10 @@ credentials and the CPA listener key — are read from the environment or `.env`
 there. When they are not, the suite mints development values *per instance* and keeps them in
 that instance's own `instance.json`; it never writes to `.env`. A generated educator signs in as
 `educator` / `educator`, and the banner says so on every run, not only the one that minted them.
-A password *you* supplied through the environment or `.env` is named rather than echoed.
+A password *you* supplied through the environment or `.env` is named rather than echoed. While a
+stack is up the banner reports the account that stack was *started* with — recorded in its
+`run/state.json` — rather than whatever the environment or `.env` says now, because the running
+application seeded the former and only a restart would pick up the latter.
 
 ### Exercising the first-run wizard
 

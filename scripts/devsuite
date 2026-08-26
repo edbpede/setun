@@ -91,6 +91,14 @@ PROBE_INTERVAL_SECONDS = 3.0
 # instance whose setup is already finished mints nothing, and waits this out.
 BOOTSTRAP_TOKEN_WAIT_SECONDS = 5.0
 
+# How long a minted token is worth typing — BOOTSTRAP_TOKEN_TTL_MS in
+# src/lib/server/auth/bootstrap.ts, which is the deadline `/setup` enforces.
+# Held here because the file the application drops cannot answer the question on
+# its own: expiry is evaluated in memory, and the file is unlinked only at exit
+# or on completion, so a stack left running past the deadline keeps a token file
+# whose contents the setup claim now refuses.
+BOOTSTRAP_TOKEN_TTL_SECONDS = 15 * 60
+
 # Where an operator signs in, per role. `/` is the *student* login and asks for
 # an access code, so a banner that printed only the origin sent the one person
 # who cannot use it to the one screen they cannot use.
@@ -399,6 +407,11 @@ class RunState(TypedDict, total=False):
     with_cpa: bool
     compose_project: str
     services: dict[str, ServiceState]
+    # The educator the running children were spawned with, and whether its
+    # password is the development value in `instance.json`: see
+    # `educator_credentials`. Absent where the run seeded no operator account.
+    educator_username: str
+    educator_password_minted: bool
 
 
 class InstanceConfig(TypedDict, total=False):
@@ -747,16 +760,26 @@ def supplied_seed_keys() -> list[str]:
     return [key for key in EDUCATOR_SEED_KEYS if os.environ.get(key) or dotenv.get(key)]
 
 
-def educator_credentials(config: InstanceConfig) -> tuple[str, str | None] | None:
+def educator_credentials(
+    config: InstanceConfig, state: RunState | None
+) -> tuple[str, str | None] | None:
     """
     The educator this instance signs in as, and its password where the suite
     knows it. None where the instance has no seeded account at all.
 
-    Re-derived from `instance.json`, the environment and `.env` rather than
-    threaded through from `resolve_secrets`: `attach_to_running` reports on a
-    stack it did not start and has no resolved set to read, and the banner has
-    to say the same thing on the run that minted the values and on every run
-    after it.
+    A *running* stack is answered for out of its own `state.json`. The children
+    were spawned with a fixed environment and the application seeds the account
+    from it on every boot, so the environment and `.env` as they read *now* are
+    not evidence of anything: an operator who edited either after the stack came
+    up would otherwise be shown a username the running application never seeded,
+    or — where the line was removed outright — no seeded identity at all, since
+    a value that came from outside is never kept in `instance.json`.
+
+    Where no run state exists there is no stack to contradict, and the same
+    precedence `resolve_secrets` uses answers instead: a real environment
+    variable or `.env` beats what the instance holds. That is the case on the
+    banner a foreground `start` prints, which runs before the supervisor has
+    written any state, and on every instance that is currently stopped.
 
     A password the *operator* supplied — a real environment variable, or a line
     in `.env` — is named rather than echoed. Only the development value the
@@ -766,10 +789,16 @@ def educator_credentials(config: InstanceConfig) -> tuple[str, str | None] | Non
     if config.get("first_run"):
         return None
 
-    dotenv = read_dotenv(REPO / ".env")
     stored = config.get("secrets", {})
     username_key, password_key = EDUCATOR_SEED_KEYS
 
+    if state:
+        running = state.get("educator_username")
+        if running:
+            minted = state.get("educator_password_minted", False)
+            return running, (stored.get(password_key) if minted else None)
+
+    dotenv = read_dotenv(REPO / ".env")
     username = os.environ.get(username_key) or dotenv.get(username_key) or stored.get(username_key)
     if not username:
         return None
@@ -1378,6 +1407,20 @@ class Supervisor:
                 for service in self.services
             },
         }
+
+        # Recorded from the dictionary the children were spawned with, which is
+        # the only account the application actually seeded. The password itself
+        # is not: the development value is already in `instance.json` and the
+        # banner reads it from there, and an operator's own is never echoed.
+        username_key, password_key = EDUCATOR_SEED_KEYS
+        username = self.environment.get(username_key)
+        if username:
+            minted = self.instance.read_config().get("secrets", {}).get(password_key)
+            state["educator_username"] = username
+            state["educator_password_minted"] = (
+                bool(minted) and self.environment.get(password_key) == minted
+            )
+
         write_json(self.instance.state_path, state)
 
     def await_health(self, timeout: float = HEALTH_TIMEOUT_SECONDS) -> bool:
@@ -1556,10 +1599,11 @@ def sign_in_rows(instance: Instance, ports: dict[str, int]) -> list[tuple[str, s
     """
     Where an operator signs in, and as whom.
 
-    Read from instance.json on every call rather than only on the run that
-    minted the values: a `resume`, a re-`start` and an attach all land on the
-    same instance and all need the same answer, and the alternative is reading
-    a gitignored JSON file by hand.
+    Read from instance.json — and, where the stack is up, from the state its
+    supervisor recorded — on every call rather than only on the run that minted
+    the values: a `resume`, a re-`start` and an attach all land on the same
+    instance and all need the same answer, and the alternative is reading a
+    gitignored JSON file by hand.
 
     `http://localhost:5173` is the *student* login and asks for an access code,
     so it is never the answer to this question — the row names /educator/login,
@@ -1575,7 +1619,7 @@ def sign_in_rows(instance: Instance, ports: dict[str, int]) -> list[tuple[str, s
         # installation is `announce_first_run`'s answer once it has.
         return [("set up", OUT.dim("first-run wizard — the details follow once the app answers"))]
 
-    credentials = educator_credentials(config)
+    credentials = educator_credentials(config, instance.read_state())
     rows = [("sign in", f"{origin}{EDUCATOR_LOGIN_PATH}")]
     if credentials is None:
         return rows
