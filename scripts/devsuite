@@ -84,6 +84,27 @@ ATTACH_TIMEOUT_SECONDS = 30.0
 # request through the application every few seconds.
 PROBE_INTERVAL_SECONDS = 3.0
 
+# How long to wait for the bootstrap token file after the stack is healthy.
+# Short by design: the application mints on its first request and the health
+# probe is a request, so the file is there by the time this is asked — this
+# only covers the gap between the response and the write landing on disk. An
+# instance whose setup is already finished mints nothing, and waits this out.
+BOOTSTRAP_TOKEN_WAIT_SECONDS = 5.0
+
+# How long a minted token is worth typing — BOOTSTRAP_TOKEN_TTL_MS in
+# src/lib/server/auth/bootstrap.ts, which is the deadline `/setup` enforces.
+# Held here because the file the application drops cannot answer the question on
+# its own: expiry is evaluated in memory, and the file is unlinked only at exit
+# or on completion, so a stack left running past the deadline keeps a token file
+# whose contents the setup claim now refuses.
+BOOTSTRAP_TOKEN_TTL_SECONDS = 15 * 60
+
+# Where an operator signs in, per role. `/` is the *student* login and asks for
+# an access code, so a banner that printed only the origin sent the one person
+# who cannot use it to the one screen they cannot use.
+EDUCATOR_LOGIN_PATH = "/educator/login"
+SETUP_PATH = "/setup"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Log levels
 # ─────────────────────────────────────────────────────────────────────────────
@@ -386,6 +407,11 @@ class RunState(TypedDict, total=False):
     with_cpa: bool
     compose_project: str
     services: dict[str, ServiceState]
+    # The educator the running children were spawned with, and whether its
+    # password is the development value in `instance.json`: see
+    # `educator_credentials`. Absent where the run seeded no operator account.
+    educator_username: str
+    educator_password_minted: bool
 
 
 class InstanceConfig(TypedDict, total=False):
@@ -396,6 +422,8 @@ class InstanceConfig(TypedDict, total=False):
     created_at: str
     ports: dict[str, int]
     secrets: dict[str, str]
+    # Set once by `start --first-run`, and never cleared: see `first_run_wanted`.
+    first_run: bool
 
 
 @dataclass
@@ -427,6 +455,18 @@ class Instance:
     @property
     def lock_path(self) -> Path:
         return self.run / "suite.lock"
+
+    @property
+    def bootstrap_token_path(self) -> Path:
+        """
+        Where the application drops the first-run token, when asked to.
+
+        Under run/ rather than data/: the token is runtime state with a
+        fifteen-minute life, and `docs/setun-operations.md` §4 says explicitly
+        never to point SETUN_BOOTSTRAP_TOKEN_PATH inside storage/ or backups/,
+        which the nightly snapshot copies.
+        """
+        return self.run / "bootstrap-token"
 
     @property
     def database_path(self) -> Path:
@@ -644,6 +684,18 @@ GENERATED_SECRETS: dict[str, Callable[[], str]] = {
     "SETUN_CPA_LISTENER_KEY": lambda: secrets.token_hex(24),
 }
 
+# The two of those four the first-run wizard collects for itself. Under
+# `--first-run` they are set to the empty string rather than left out: a blank
+# counts as absent (`optionalValue`, src/lib/server/config.ts), and absent seed
+# credentials are the whole of what hands an installation to the wizard rather
+# than adopting it as already set up (PRD §6.2). Set rather than omitted,
+# because an omitted key would simply inherit whatever the parent environment
+# or `.env` holds — which is the case the flag exists to override.
+EDUCATOR_SEED_KEYS: tuple[str, ...] = (
+    "SETUN_EDUCATOR_SEED_USERNAME",
+    "SETUN_EDUCATOR_SEED_PASSWORD",
+)
+
 
 def read_dotenv(path: Path) -> dict[str, str]:
     if not path.exists():
@@ -662,13 +714,23 @@ def read_dotenv(path: Path) -> dict[str, str]:
     return values
 
 
-def resolve_secrets(config: InstanceConfig) -> tuple[dict[str, str], list[str]]:
+def resolve_secrets(
+    config: InstanceConfig, *, first_run: bool = False
+) -> tuple[dict[str, str], list[str]]:
     """
     Fill the four required variables, remembering anything generated.
 
     Stored on the instance rather than regenerated per start: a persistent
     instance that changed its pepper between `stop` and `resume` would
     invalidate every access code it had issued (PRD §7).
+
+    `first_run` blanks the two educator seed variables and neither mints nor
+    stores them, so the instance has no operator account and boot gates every
+    path to the wizard. This is the one place the ordinary precedence — a real
+    environment variable or `.env` beats anything the suite holds — is
+    deliberately inverted, because a `.env` the operator filled in would
+    otherwise silently defeat the flag. `supplied_seed_keys` names what was
+    overridden so the caller can say so rather than leave it to be discovered.
     """
     dotenv = read_dotenv(REPO / ".env")
     stored = dict(config.get("secrets", {}))
@@ -676,6 +738,9 @@ def resolve_secrets(config: InstanceConfig) -> tuple[dict[str, str], list[str]]:
     minted: list[str] = []
 
     for key, mint in GENERATED_SECRETS.items():
+        if first_run and key in EDUCATOR_SEED_KEYS:
+            resolved[key] = ""
+            continue
         supplied = os.environ.get(key) or dotenv.get(key)
         if supplied:
             resolved[key] = supplied
@@ -689,11 +754,65 @@ def resolve_secrets(config: InstanceConfig) -> tuple[dict[str, str], list[str]]:
     return resolved, minted
 
 
+def supplied_seed_keys() -> list[str]:
+    """Educator seed variables a real environment or `.env` would otherwise set."""
+    dotenv = read_dotenv(REPO / ".env")
+    return [key for key in EDUCATOR_SEED_KEYS if os.environ.get(key) or dotenv.get(key)]
+
+
+def educator_credentials(
+    config: InstanceConfig, state: RunState | None
+) -> tuple[str, str | None] | None:
+    """
+    The educator this instance signs in as, and its password where the suite
+    knows it. None where the instance has no seeded account at all.
+
+    A *running* stack is answered for out of its own `state.json`. The children
+    were spawned with a fixed environment and the application seeds the account
+    from it on every boot, so the environment and `.env` as they read *now* are
+    not evidence of anything: an operator who edited either after the stack came
+    up would otherwise be shown a username the running application never seeded,
+    or — where the line was removed outright — no seeded identity at all, since
+    a value that came from outside is never kept in `instance.json`.
+
+    Where no run state exists there is no stack to contradict, and the same
+    precedence `resolve_secrets` uses answers instead: a real environment
+    variable or `.env` beats what the instance holds. That is the case on the
+    banner a foreground `start` prints, which runs before the supervisor has
+    written any state, and on every instance that is currently stopped.
+
+    A password the *operator* supplied — a real environment variable, or a line
+    in `.env` — is named rather than echoed. Only the development value the
+    suite minted itself is printed, and that one is already in a gitignored
+    file the banner names two lines further up.
+    """
+    if config.get("first_run"):
+        return None
+
+    stored = config.get("secrets", {})
+    username_key, password_key = EDUCATOR_SEED_KEYS
+
+    if state:
+        running = state.get("educator_username")
+        if running:
+            minted = state.get("educator_password_minted", False)
+            return running, (stored.get(password_key) if minted else None)
+
+    dotenv = read_dotenv(REPO / ".env")
+    username = os.environ.get(username_key) or dotenv.get(username_key) or stored.get(username_key)
+    if not username:
+        return None
+
+    supplied = os.environ.get(password_key) or dotenv.get(password_key)
+    return username, (None if supplied else stored.get(password_key))
+
+
 def child_environment(
     instance: Instance,
     ports: dict[str, int],
     level: str,
     resolved_secrets: dict[str, str],
+    bootstrap_token_path: Path | None = None,
 ) -> dict[str, str]:
     app_origin = f"http://localhost:{ports['app']}"
     sandbox_origin = f"http://localhost:{ports['sandbox']}"
@@ -722,6 +841,15 @@ def child_environment(
             "FORCE_COLOR": "0",
         }
     )
+
+    if bootstrap_token_path is not None:
+        # The application always prints the first-run token to its own log, and
+        # given a path writes it there too — mode 0600, removed the moment setup
+        # completes. Pointing that at the instance's run/ directory is what lets
+        # the suite read it back and put it on the banner, which is the only way
+        # a `--detach`ed start ever shows it: the log the token is printed to is
+        # a file nobody is watching.
+        environment["SETUN_BOOTSTRAP_TOKEN_PATH"] = str(bootstrap_token_path)
 
     if level == "trace":
         # Vite has no level below `info`; its debug namespaces are what goes
@@ -1279,6 +1407,20 @@ class Supervisor:
                 for service in self.services
             },
         }
+
+        # Recorded from the dictionary the children were spawned with, which is
+        # the only account the application actually seeded. The password itself
+        # is not: the development value is already in `instance.json` and the
+        # banner reads it from there, and an operator's own is never echoed.
+        username_key, password_key = EDUCATOR_SEED_KEYS
+        username = self.environment.get(username_key)
+        if username:
+            minted = self.instance.read_config().get("secrets", {}).get(password_key)
+            state["educator_username"] = username
+            state["educator_password_minted"] = (
+                bool(minted) and self.environment.get(password_key) == minted
+            )
+
         write_json(self.instance.state_path, state)
 
     def await_health(self, timeout: float = HEALTH_TIMEOUT_SECONDS) -> bool:
@@ -1444,10 +1586,119 @@ def banner(instance: Instance, ports: dict[str, int], level: str, with_cpa: bool
     print(f"  {OUT.paint('sandbox'.ljust(NAME_COLUMN), SERVICE_COLOUR['sandbox'])} http://localhost:{ports['sandbox']}")
     if with_cpa:
         print(f"  {OUT.paint('cpa'.ljust(NAME_COLUMN), SERVICE_COLOUR['cpa'])} http://127.0.0.1:{ports['cpa']} {OUT.dim('(container)')}")
+    for label, value in sign_in_rows(instance, ports):
+        print(f"  {OUT.dim(label.ljust(NAME_COLUMN))} {value}")
     print(f"  {OUT.dim('data'.ljust(NAME_COLUMN))} {OUT.dim(relative(instance.data))}")
     print(f"  {OUT.dim('logs'.ljust(NAME_COLUMN))} {OUT.dim(relative(instance.logs))}")
     print(f"  {OUT.dim('Ctrl-C'.ljust(NAME_COLUMN))} {OUT.dim(ctrl_c)}")
     print(rule)
+    _ = sys.stdout.flush()
+
+
+def sign_in_rows(instance: Instance, ports: dict[str, int]) -> list[tuple[str, str]]:
+    """
+    Where an operator signs in, and as whom.
+
+    Read from instance.json — and, where the stack is up, from the state its
+    supervisor recorded — on every call rather than only on the run that minted
+    the values: a `resume`, a re-`start` and an attach all land on the same
+    instance and all need the same answer, and the alternative is reading a
+    gitignored JSON file by hand.
+
+    `http://localhost:5173` is the *student* login and asks for an access code,
+    so it is never the answer to this question — the row names /educator/login,
+    or /setup where the wizard still owns the installation.
+    """
+    origin = f"http://localhost:{ports['app']}"
+    config = instance.read_config()
+
+    if config.get("first_run"):
+        # Deliberately vague, because at banner time it is: the wizard's own
+        # state lives in a database the application has not opened yet, and
+        # whether this run needs a token or is walking into a finished
+        # installation is `announce_first_run`'s answer once it has.
+        return [("set up", OUT.dim("first-run wizard — the details follow once the app answers"))]
+
+    credentials = educator_credentials(config, instance.read_state())
+    rows = [("sign in", f"{origin}{EDUCATOR_LOGIN_PATH}")]
+    if credentials is None:
+        return rows
+
+    username, password = credentials
+    rows.append(
+        ("as", f"{username} / {password}" if password else f"{username} {OUT.dim('(password from the environment or .env)')}")
+    )
+    return rows
+
+
+@dataclass(frozen=True)
+class BootstrapToken:
+    """A token the application left on disk, and whether it is still worth typing."""
+
+    value: str
+    expired: bool
+
+
+def read_bootstrap_token(instance: Instance, wait: float) -> BootstrapToken | None:
+    """
+    The first-run token the application wrote, once it has written one.
+
+    None means the application minted nothing, and the only reason it does that
+    is a setup it already considers finished — so the caller reports a wizard
+    this instance completed on an earlier run rather than a missing token.
+
+    A file that is past its fifteen minutes is reported as expired rather than
+    as absent, because the two mean opposite things to whoever reads the banner.
+    The application mints once, holds the token in memory, and evaluates expiry
+    there; the file is a second sink it unlinks at exit and on completion, and
+    at no point in between. So a stack left running past the deadline keeps a
+    file the setup claim now refuses, and an attach that printed it would be
+    handing over a credential that cannot work. The mtime is the mint:
+    `writeBootstrapTokenFile` removes the file and rewrites it every time.
+    """
+    deadline = time.monotonic() + wait
+    path = instance.bootstrap_token_path
+    while True:
+        try:
+            token = path.read_text(encoding="utf-8").strip()
+            age = time.time() - path.stat().st_mtime
+        except OSError:
+            token, age = "", 0.0
+        if token:
+            return BootstrapToken(token, age > BOOTSTRAP_TOKEN_TTL_SECONDS)
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.2)
+
+
+def announce_first_run(instance: Instance, ports: dict[str, int], wait: float) -> None:
+    """
+    Put the bootstrap token where the operator is actually looking.
+
+    The application prints it to its own log and nowhere else, which a detached
+    start never shows and an attached one buries under Vite's start-up. Lifting
+    it onto the suite's own output is the whole reason the suite points
+    SETUN_BOOTSTRAP_TOKEN_PATH at the instance; it is not a second copy of a
+    secret, because the log it comes from is the same log the suite is already
+    rendering.
+    """
+    origin = f"http://localhost:{ports['app']}"
+    minutes = BOOTSTRAP_TOKEN_TTL_SECONDS // 60
+    token = read_bootstrap_token(instance, wait)
+    if token is None:
+        made = OUT.dim("(the account the wizard created)")
+        print(f"  {OUT.dim('sign in'.ljust(NAME_COLUMN))} {origin}{EDUCATOR_LOGIN_PATH} {made}")
+    elif token.expired:
+        # Naming it as lapsed rather than printing it: the value is still on
+        # disk, but `/setup` stopped accepting it, and only a restart mints
+        # another — the application does not re-mint on expiry.
+        lapsed = OUT.dim(f"(its {minutes} minutes are up — `devsuite restart` mints a new one)")
+        print(f"  {OUT.dim('set up'.ljust(NAME_COLUMN))} {origin}{SETUP_PATH}")
+        print(f"  {OUT.dim('token'.ljust(NAME_COLUMN))} {OUT.bold('lapsed')} {lapsed}")
+    else:
+        life = OUT.dim(f"({minutes} minutes; a restart mints a new one)")
+        print(f"  {OUT.dim('set up'.ljust(NAME_COLUMN))} {origin}{SETUP_PATH}")
+        print(f"  {OUT.dim('token'.ljust(NAME_COLUMN))} {OUT.bold(token.value)} {life}")
     _ = sys.stdout.flush()
 
 
@@ -1513,6 +1764,7 @@ class Options(Protocol):
     sandbox_port: int | None
     cpa_port: int | None
     with_cpa: bool
+    first_run: bool
     detach: bool
     force: bool
     service: str | None
@@ -1558,6 +1810,49 @@ def sole_ephemeral() -> Instance | None:
             hint="\n".join(f"--persistent {instance.name}" for instance in found),
         )
     return found[0]
+
+
+def first_run_wanted(options: Options, instance: Instance, config: InstanceConfig) -> bool:
+    """
+    Whether this instance runs with no operator account, so the wizard gates it.
+
+    Remembered on the instance rather than passed per run, unlike `--with-cpa`.
+    The wizard is several screens and survives a `stop`, and `resume` is exactly
+    when somebody comes back to an unfinished one: an instance whose seed
+    credentials returned on the next start would seed an operator account
+    half-way through creating one, and `adoptExistingInstall` would have nothing
+    to say about it because the claim is already in the database. So the flag
+    adopts an instance once and the instance keeps it — which also makes it
+    idempotent, since a second `--first-run` on the same instance changes
+    nothing.
+
+    Adoption needs a database that has never been through setup, and the only
+    database certain of that is one that does not exist yet: `setupStartedAt`
+    and `setupCompletedAt` live in the file, and a flag that cleared them would
+    be a flag that deletes data. Refusing names the two commands that discard a
+    database on purpose.
+    """
+    already = bool(config.get("first_run"))
+    if not options.first_run or already:
+        return already
+
+    if instance.database_path.exists():
+        fail(
+            (
+                f"instance '{instance.name}' already has a database — --first-run needs "
+                "one that has never been set up"
+            ),
+            hint=(
+                "Whether first-run setup has been started or finished is recorded in the\n"
+                f"database itself ({relative(instance.database_path)}), so there is nothing\n"
+                "left for the wizard to claim. Point --first-run at a database that has none:\n"
+                f"  ./scripts/devsuite start --first-run --persistent {instance.name}-setup\n"
+                "  ./scripts/devsuite start --first-run --ephemeral\n"
+                "or discard this one first:\n"
+                f"  ./scripts/devsuite destroy {instance.name}"
+            ),
+        )
+    return True
 
 
 def resolve_ports(options: Options, config: InstanceConfig) -> dict[str, int]:
@@ -1617,6 +1912,28 @@ def attach_to_running(options: Options, instance: Instance) -> int:
                 "if it got far enough to write one. `./scripts/devsuite status` says what is up."
             ),
         )
+
+    # The same header a start prints. An attach is the run where the operator is
+    # least likely to still have the sign-in details on screen — the stack was
+    # started in another terminal, possibly days ago — so it is the run that
+    # needs them most. The ports come from the running instance's own config
+    # rather than from this command's flags, which it is not in a position to
+    # apply.
+    config = instance.read_config()
+    ports = config.get("ports") or dict(DEFAULT_PORTS)
+    state = instance.read_state() or {}
+    banner(
+        instance,
+        ports,
+        state.get("log_level", chosen_level(options)),
+        "cpa" in (state.get("services") or {}),
+        "detaches; the stack keeps running",
+    )
+    if config.get("first_run"):
+        # Already running, so the token file is either there or was never
+        # written; nothing to wait for.
+        announce_first_run(instance, ports, wait=0.0)
+
     return command_logs(options, instance=instance)
 
 
@@ -1637,6 +1954,9 @@ def command_start(options: Options) -> int:
     # Before anything is created on disk: a start that cannot bind must leave
     # no instance directory behind for the next command to trip over.
     config = instance.read_config()
+    # Before the lock, because refusing is cheaper than a stack that comes up
+    # and then has to be told it cannot do what it was started for.
+    _ = first_run_wanted(options, instance, config)
     ports = resolve_ports(options, config)
     level = chosen_level(options)
 
@@ -1662,7 +1982,8 @@ def command_start(options: Options) -> int:
     # this line has already stored this instance's secrets, and minting a
     # second set would persist credentials nothing is running with.
     config = instance.read_config()
-    resolved, minted = resolve_secrets(config)
+    first_run = first_run_wanted(options, instance, config)
+    resolved, minted = resolve_secrets(config, first_run=first_run)
     config.update(
         {
             "name": instance.name,
@@ -1671,6 +1992,8 @@ def command_start(options: Options) -> int:
             "ports": ports,
         }
     )
+    if first_run:
+        config["first_run"] = True
     instance.write_config(config)
 
     if minted:
@@ -1679,16 +2002,34 @@ def command_start(options: Options) -> int:
             + ", ".join(sorted(minted))
             + f" — held in {relative(instance.config_path)}, never written to .env"
         )
-        if "SETUN_EDUCATOR_SEED_PASSWORD" in minted:
-            note("educator sign-in for this instance: educator / educator")
+
+    token_path: Path | None = None
+    if first_run:
+        overridden = supplied_seed_keys()
+        if overridden:
+            note(
+                "--first-run overrides "
+                + " and ".join(sorted(overridden))
+                + (
+                    " for this instance — a seeded operator account would be adopted as a"
+                    " finished installation and the wizard would never run"
+                )
+            )
+        # A token file the previous run left behind — the application unlinks it
+        # at exit and on completion, but not after a SIGKILL — would be reported
+        # as this run's, and it is worthless: the token lives in the process.
+        instance.bootstrap_token_path.unlink(missing_ok=True)
+        token_path = instance.bootstrap_token_path
 
     if options.with_cpa:
         warn_on_gateway_key_mismatch(resolved["SETUN_CPA_LISTENER_KEY"])
 
-    environment = child_environment(instance, ports, level, resolved)
+    environment = child_environment(instance, ports, level, resolved, token_path)
 
     if options.detach:
-        return _start_detached(instance, ports, level, options.with_cpa, environment, lock)
+        return _start_detached(
+            instance, ports, level, options.with_cpa, environment, lock, first_run
+        )
 
     supervisor = Supervisor(instance, ports, level, options.with_cpa, environment, lock)
 
@@ -1715,6 +2056,11 @@ def command_start(options: Options) -> int:
         supervisor.shutdown()
         return 1
 
+    if first_run:
+        # After health rather than on the banner: the application mints on its
+        # first request, and the health probe is that request.
+        announce_first_run(instance, ports, BOOTSTRAP_TOKEN_WAIT_SECONDS)
+
     return supervisor.run()
 
 
@@ -1734,6 +2080,7 @@ def _start_detached(
     with_cpa: bool,
     environment: dict[str, str],
     lock: InstanceLock,
+    first_run: bool = False,
 ) -> int:
     """
     Fork a supervisor into its own session and return once it reports healthy.
@@ -1764,6 +2111,12 @@ def _start_detached(
                 ),
             )
         banner(instance, ports, level, with_cpa, "n/a — detached; `devsuite stop` ends it")
+        if first_run:
+            # The child reported healthy, so its first request has been served
+            # and the token is already on disk. This is the only place a
+            # detached start can show it at all: the log it was printed to is a
+            # file nobody is watching.
+            announce_first_run(instance, ports, BOOTSTRAP_TOKEN_WAIT_SECONDS)
         note(f"supervisor detached (pid {pid}) — attach with `./scripts/devsuite logs`")
         return 0
 
@@ -2300,6 +2653,30 @@ modes
   --ephemeral         throwaway instance, destroyed on exit — including on
                       Ctrl-C and on crash
 
+signing in            every start, resume and attach prints where to sign in for
+                      the instance's own port. http://localhost:5173 is the
+                      *student* login and asks for an access code; the educator
+                      entry point is /educator/login, panel at /educator.
+                      A generated educator signs in as educator / educator, read
+                      back from instance.json on every run. A password supplied
+                      through the environment or .env is named, never echoed.
+
+  --first-run         run with no operator account, so the first-run setup wizard
+                      owns the instance: the two SETUN_EDUCATOR_SEED_* variables
+                      are blanked for the child — overriding the environment and
+                      .env, which is the one place the suite does — and the app
+                      gates every path to /setup. The bootstrap token is lifted
+                      onto the banner from SETUN_BOOTSTRAP_TOKEN_PATH, pointed at
+                      the instance's run/ directory, so a --detach'd start shows
+                      it too. It is valid 15 minutes and a restart mints another.
+
+                      Needs a database that has never been through setup, because
+                      that is where "setup started" and "setup completed" are
+                      recorded; an instance that already has one is refused
+                      rather than emptied. Remembered on the instance, so
+                      `resume` comes back to an unfinished wizard rather than
+                      seeding an account half-way through it.
+
 log levels            silent < error < warn < info < debug < trace  (default: info)
   app, sandbox        Vite's own --logLevel for silent/error/warn/info; debug and
                       trace pin Vite at info and raise SETUN_LOG_LEVEL, which
@@ -2320,6 +2697,8 @@ examples
   ./scripts/devsuite start                       # persistent 'dev', attached
   ./scripts/devsuite start --ephemeral -vv       # throwaway, trace logging
   ./scripts/devsuite start --with-cpa --detach   # full stack in the background
+  ./scripts/devsuite start --first-run \
+      --persistent setup --port 6173 --sandbox-port 6174   # exercise the wizard
   ./scripts/devsuite logs app                    # follow one service
   ./scripts/devsuite resume demo                 # bring a saved instance back
   ./scripts/devsuite destroy demo --force        # remove it for good
@@ -2371,6 +2750,15 @@ def add_lifecycle_flags(parser: argparse.ArgumentParser) -> None:
         ),
     )
     _ = parser.add_argument(
+        "--first-run",
+        action="store_true",
+        help=(
+            "start with no operator account so the first-run setup wizard owns the "
+            "instance; needs a database that has never been set up, and is remembered "
+            "in instance.json rather than passed on every run"
+        ),
+    )
+    _ = parser.add_argument(
         "-d", "--detach", action="store_true", help="run the supervisor in the background"
     )
 
@@ -2388,6 +2776,7 @@ def build_parser() -> argparse.ArgumentParser:
         force=False,
         detach=False,
         with_cpa=False,
+        first_run=False,
         port=None,
         sandbox_port=None,
         cpa_port=None,
