@@ -106,6 +106,8 @@ function boot(): Services {
     log.info(`marked ${interrupted} in-flight turn(s) interrupted after restart`);
   }
 
+  const bootstrap = announceBootstrapToken(db, config);
+
   // The operator account, from deployment configuration, on every boot: this is
   // the documented password-recovery path, so it must take effect on a restart
   // and not only on a first boot (§7, §6.2).
@@ -128,10 +130,13 @@ function boot(): Services {
          * and, because the bootstrap token is minted only while setup is
          * incomplete, no wizard either. Silence here is a locked-out operator.
          *
-         * So the failure is loud, and the adoption is reversed. A restart then
-         * re-attempts the seed, which is the whole recovery for a transient
-         * cause; for a persistent one the operator unsets the seed credentials
-         * and the wizard opens normally on the next boot.
+         * So the failure is loud, the adoption is reversed, and a bootstrap
+         * token is minted — `announceBootstrapToken` ran while the installation
+         * still looked complete and skipped it, and reopening the gate without
+         * one would leave every request redirected to a wizard nobody can enter:
+         * no token to claim with, and no educator to recover with. The wizard's
+         * account step reappears on its own, because `educatorSeeded` means
+         * "configuration produced an account" and this one produced none.
          *
          * The condition is the *state*, not whether this boot happened to be the
          * one that adopted. A process that exits between the adoption and this
@@ -153,16 +158,14 @@ function boot(): Services {
         if (!getFirstEducator(db) && reopenSetup(db, new Date())) {
           log.error(
             "first-run setup re-opened: this installation has no operator account.\n" +
-              "  Fix the cause above and restart Setun to re-attempt the seed, or unset\n" +
-              "  SETUN_EDUCATOR_USERNAME/SETUN_EDUCATOR_PASSWORD to create the account\n" +
-              "  through the first-run wizard instead.",
+              "  Claim the wizard with the bootstrap token below and create one there,\n" +
+              "  or fix the cause above and restart Setun to re-attempt the seed.",
           );
+          mintBootstrapToken(bootstrap, config);
         }
       },
     );
   }
-
-  const bootstrap = announceBootstrapToken(db, config);
 
   // No pupil seed. Phase 1 printed one access code at first boot so the loop was
   // verifiable before a provisioning UI existed; the panel provisions in batches
@@ -233,22 +236,36 @@ function boot(): Services {
  */
 function announceBootstrapToken(db: AppDatabase, config: ServerConfig): BootstrapTokenHolder {
   const bootstrap = new BootstrapTokenHolder();
+
+  // A token that outlives the process would be a token in a file nobody owns.
+  // Registered whether or not one is minted here: boot may mint into this holder
+  // later, when a failed educator seed hands the installation back to the wizard.
+  process.once("exit", () => {
+    bootstrap.clear();
+    removeBootstrapTokenFile(config.bootstrapTokenPath);
+  });
+
   if (isSetupComplete(db)) return bootstrap;
 
+  mintBootstrapToken(bootstrap, config);
+  return bootstrap;
+}
+
+/**
+ * Mint into an existing holder and put the token where an operator can read it.
+ *
+ * Separate from `announceBootstrapToken` because setup can reopen after boot has
+ * already decided not to mint, and the token has to land in the holder the rest
+ * of the process is reading — a second `BootstrapTokenHolder` would be a token
+ * nothing verifies against.
+ */
+function mintBootstrapToken(bootstrap: BootstrapTokenHolder, config: ServerConfig): void {
   const token = bootstrap.mint();
   log.info(bootstrapBanner({ token, appOrigin: config.appOrigin }));
 
   if (config.bootstrapTokenPath) {
     writeBootstrapTokenFile(config.bootstrapTokenPath, token.display);
   }
-
-  // A token that outlives the process would be a token in a file nobody owns.
-  process.once("exit", () => {
-    bootstrap.clear();
-    removeBootstrapTokenFile(config.bootstrapTokenPath);
-  });
-
-  return bootstrap;
 }
 
 function writeBootstrapTokenFile(path: string, token: string): void {

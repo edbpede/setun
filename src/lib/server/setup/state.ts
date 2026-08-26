@@ -142,9 +142,20 @@ export function resolveSetupProgress(
   const alias = byCreation(listAliases(db));
   const classroom = byCreation(listClassrooms(db));
 
+  const educatorExists = getFirstEducator(db) !== undefined;
+
   return {
-    educatorExists: getFirstEducator(db) !== undefined,
-    educatorSeeded: input.educatorSeeded,
+    educatorExists,
+    /**
+     * Configuration owns the account only when it actually produced one.
+     *
+     * Seeding is asynchronous and can fail, and boot hands such an installation
+     * back to the wizard. A wizard that still hid its account step there —
+     * because the *variables* are set — would be a wizard that can never finish:
+     * `canFinishSetup` wants an educator, and the only step that creates one
+     * would be both invisible and refused.
+     */
+    educatorSeeded: input.educatorSeeded && educatorExists,
     aliasId: alias?.id ?? null,
     classroomId: classroom?.id ?? null,
     studentCount: classroom ? listClassroomStudents(db, classroom.id).length : 0,

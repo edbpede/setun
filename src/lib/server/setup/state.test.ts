@@ -257,4 +257,18 @@ describe("resolveStep", () => {
     expect(visibleSteps(seeded)).not.toContain("educator");
     expect(resolveStep(seeded, "educator")).toBe("gateway");
   });
+
+  /**
+   * Boot hands an installation back to the wizard when the configured seed
+   * fails, and the account step has to come back with it. Hiding it on the
+   * strength of the *variables* would leave a wizard that cannot finish: nothing
+   * else creates the educator `canFinishSetup` insists on.
+   */
+  it("shows the account step again when the configured seed produced no account", () => {
+    const unseeded = resolveSetupProgress(db, { educatorSeeded: true });
+
+    expect(unseeded.educatorSeeded).toBe(false);
+    expect(visibleSteps(unseeded)).toContain("educator");
+    expect(resolveStep(unseeded, "educator")).toBe("educator");
+  });
 });
