@@ -2,7 +2,13 @@ import { beforeEach, describe, expect, it } from "bun:test";
 import type { AppDatabase } from "../db/client";
 import { createClassroom } from "../db/queries/classrooms";
 import { createEducator } from "../db/queries/educators";
-import { ensureInstance, readInstance, takeClaim } from "../db/queries/instance";
+import {
+  completeSetup,
+  ensureInstance,
+  readInstance,
+  reopenSetup,
+  takeClaim,
+} from "../db/queries/instance";
 import { createAlias } from "../db/queries/model-aliases";
 import { createStudent } from "../db/queries/students";
 import { createTestDatabase } from "../db/testing";
@@ -101,6 +107,42 @@ describe("adoptExistingInstall", () => {
     expect(adoptExistingInstall(db, { educatorConfigured: false, now: NOW })).toBe(false);
     expect(isSetupComplete(db)).toBe(false);
     expect(readInstance(db)?.setupStartedAt).toEqual(NOW);
+  });
+});
+
+/**
+ * Boot adopts on the strength of *configured* seed credentials, before the
+ * asynchronous seed has landed. `reopenSetup` is what makes that safe to do: a
+ * seed that fails takes its adoption back rather than leaving an installation
+ * recorded as complete with no operator account (PRD §6.2, §7).
+ */
+describe("reopenSetup", () => {
+  it("takes back an adoption whose seed never landed", () => {
+    expect(adoptExistingInstall(db, { educatorConfigured: true, now: NOW })).toBe(true);
+    expect(isSetupComplete(db)).toBe(true);
+
+    expect(reopenSetup(db, NOW)).toBe(true);
+    expect(isSetupComplete(db)).toBe(false);
+    // Still adoptable, and still claimable, on the next boot.
+    expect(readInstance(db)?.setupStartedAt).toBeNull();
+  });
+
+  it("refuses to reopen an installation whose wizard was actually claimed", () => {
+    ensureInstance(db);
+    takeClaim(db, {
+      proofDigest: "not-a-real-digest",
+      now: NOW,
+      staleBefore: new Date(NOW.getTime() - 1),
+    });
+    completeSetup(db, NOW);
+
+    expect(reopenSetup(db, NOW)).toBe(false);
+    expect(isSetupComplete(db)).toBe(true);
+  });
+
+  it("reports false on an installation that was never marked complete", () => {
+    ensureInstance(db);
+    expect(reopenSetup(db, NOW)).toBe(false);
   });
 });
 

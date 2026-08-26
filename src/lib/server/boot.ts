@@ -5,6 +5,7 @@ import { seedEducator } from "./auth/educator";
 import { credentialEnvironment, getConfig, type ServerConfig } from "./config";
 import { type AppDatabase, createDatabase } from "./db/client";
 import { applyMigrations } from "./db/migrate";
+import { reopenSetup } from "./db/queries/instance";
 import { markStreamingTurnsInterrupted } from "./db/queries/turns";
 import { GatewayAdapter } from "./gateway/adapter";
 import { backupJob } from "./jobs/backup";
@@ -95,7 +96,7 @@ function boot(): Services {
    * and a gate that waited for one would make the first request's answer depend
    * on a race it cannot see.
    */
-  adoptExistingInstall(db, {
+  const adopted = adoptExistingInstall(db, {
     educatorConfigured: config.educatorUsername !== undefined,
   });
 
@@ -116,6 +117,36 @@ function boot(): Services {
     void seedEducator(db, { username: educatorUsername, password: educatorPassword }).then(
       (result) => {
         if (result.seeded) log.info(`seeded educator account '${educatorUsername}'`);
+      },
+      (cause) => {
+        /**
+         * The adoption above ran on the *configuration* rather than on a row,
+         * precisely so the setup gate did not have to wait on this promise. That
+         * trade is only sound if a seed that never lands is taken back: an
+         * installation left marked complete with no educator row has no login —
+         * and, because the bootstrap token is minted only while setup is
+         * incomplete, no wizard either. Silence here is a locked-out operator.
+         *
+         * So the failure is loud, and the adoption is reversed. A restart then
+         * re-attempts the seed, which is the whole recovery for a transient
+         * cause; for a persistent one the operator unsets the seed credentials
+         * and the wizard opens normally on the next boot.
+         *
+         * A rejection handler rather than a bare `void`: an unhandled rejection
+         * would take the process down over a diagnosis it never printed.
+         */
+        log.error(`could not seed the configured educator account '${educatorUsername}'`, {
+          cause: describeCause(cause),
+        });
+
+        if (adopted && reopenSetup(db, new Date())) {
+          log.error(
+            "first-run setup re-opened: this installation has no operator account.\n" +
+              "  Fix the cause above and restart Setun to re-attempt the seed, or unset\n" +
+              "  SETUN_EDUCATOR_USERNAME/SETUN_EDUCATOR_PASSWORD to create the account\n" +
+              "  through the first-run wizard instead.",
+          );
+        }
       },
     );
   }

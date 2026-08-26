@@ -1,4 +1,4 @@
-import { and, eq, isNull, lt, or } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, lt, or } from "drizzle-orm";
 import type { AppDatabase } from "../client";
 import { INSTANCE_ID, type Instance, instance } from "../schema";
 
@@ -159,6 +159,36 @@ export function adoptSetup(db: AppDatabase, now: Date): boolean {
       and(
         eq(instance.id, INSTANCE_ID),
         isNull(instance.setupCompletedAt),
+        isNull(instance.setupStartedAt),
+      ),
+    )
+    .returning({ id: instance.id })
+    .all();
+
+  return rows.length === 1;
+}
+
+/**
+ * Undo an adoption that turned out to be premature.
+ *
+ * The mirror of `adoptSetup`, and conditional on the same `setupStartedAt IS
+ * NULL`, so it can never reopen an installation a browser has actually claimed
+ * or a wizard has actually finished. `setupCompletedAt IS NOT NULL` keeps the
+ * return value honest: true means this call reopened something.
+ *
+ * The one caller is boot's seed-failure path — an installation adopted on the
+ * strength of *configured* seed credentials whose seed then failed has no
+ * operator account, and recording it as complete would be recording something
+ * untrue.
+ */
+export function reopenSetup(db: AppDatabase, now: Date): boolean {
+  const rows = db
+    .update(instance)
+    .set({ setupCompletedAt: null, updatedAt: now })
+    .where(
+      and(
+        eq(instance.id, INSTANCE_ID),
+        isNotNull(instance.setupCompletedAt),
         isNull(instance.setupStartedAt),
       ),
     )
