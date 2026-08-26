@@ -1631,22 +1631,41 @@ def sign_in_rows(instance: Instance, ports: dict[str, int]) -> list[tuple[str, s
     return rows
 
 
-def read_bootstrap_token(instance: Instance, wait: float) -> str | None:
+@dataclass(frozen=True)
+class BootstrapToken:
+    """A token the application left on disk, and whether it is still worth typing."""
+
+    value: str
+    expired: bool
+
+
+def read_bootstrap_token(instance: Instance, wait: float) -> BootstrapToken | None:
     """
     The first-run token the application wrote, once it has written one.
 
     None means the application minted nothing, and the only reason it does that
     is a setup it already considers finished — so the caller reports a wizard
     this instance completed on an earlier run rather than a missing token.
+
+    A file that is past its fifteen minutes is reported as expired rather than
+    as absent, because the two mean opposite things to whoever reads the banner.
+    The application mints once, holds the token in memory, and evaluates expiry
+    there; the file is a second sink it unlinks at exit and on completion, and
+    at no point in between. So a stack left running past the deadline keeps a
+    file the setup claim now refuses, and an attach that printed it would be
+    handing over a credential that cannot work. The mtime is the mint:
+    `writeBootstrapTokenFile` removes the file and rewrites it every time.
     """
     deadline = time.monotonic() + wait
+    path = instance.bootstrap_token_path
     while True:
         try:
-            token = instance.bootstrap_token_path.read_text(encoding="utf-8").strip()
+            token = path.read_text(encoding="utf-8").strip()
+            age = time.time() - path.stat().st_mtime
         except OSError:
-            token = ""
+            token, age = "", 0.0
         if token:
-            return token
+            return BootstrapToken(token, age > BOOTSTRAP_TOKEN_TTL_SECONDS)
         if time.monotonic() >= deadline:
             return None
         time.sleep(0.2)
@@ -1664,14 +1683,22 @@ def announce_first_run(instance: Instance, ports: dict[str, int], wait: float) -
     rendering.
     """
     origin = f"http://localhost:{ports['app']}"
+    minutes = BOOTSTRAP_TOKEN_TTL_SECONDS // 60
     token = read_bootstrap_token(instance, wait)
     if token is None:
         made = OUT.dim("(the account the wizard created)")
         print(f"  {OUT.dim('sign in'.ljust(NAME_COLUMN))} {origin}{EDUCATOR_LOGIN_PATH} {made}")
-    else:
-        life = OUT.dim("(15 minutes; a restart mints a new one)")
+    elif token.expired:
+        # Naming it as lapsed rather than printing it: the value is still on
+        # disk, but `/setup` stopped accepting it, and only a restart mints
+        # another — the application does not re-mint on expiry.
+        lapsed = OUT.dim(f"(its {minutes} minutes are up — `devsuite restart` mints a new one)")
         print(f"  {OUT.dim('set up'.ljust(NAME_COLUMN))} {origin}{SETUP_PATH}")
-        print(f"  {OUT.dim('token'.ljust(NAME_COLUMN))} {OUT.bold(token)} {life}")
+        print(f"  {OUT.dim('token'.ljust(NAME_COLUMN))} {OUT.bold('lapsed')} {lapsed}")
+    else:
+        life = OUT.dim(f"({minutes} minutes; a restart mints a new one)")
+        print(f"  {OUT.dim('set up'.ljust(NAME_COLUMN))} {origin}{SETUP_PATH}")
+        print(f"  {OUT.dim('token'.ljust(NAME_COLUMN))} {OUT.bold(token.value)} {life}")
     _ = sys.stdout.flush()
 
 

@@ -125,7 +125,9 @@ environment variable or a line in `.env`; it says so when it does.
 The bootstrap token is lifted onto the suite's own banner, by pointing
 `SETUN_BOOTSTRAP_TOKEN_PATH` at the instance's `run/` directory. That is what makes `--detach`
 usable here: otherwise the token is printed only to a log file nobody is watching. It is valid
-fifteen minutes and a restart mints another.
+fifteen minutes and a restart mints another; the application evaluates that deadline in memory and
+leaves the file alone until it exits, so the suite dates the file and reports a token past its
+fifteen minutes as lapsed rather than printing one `/setup` would refuse.
 
 The flag needs a database that has never been through setup, because "setup started" and "setup
 completed" are recorded in the database itself; an instance that already has one is refused, with
