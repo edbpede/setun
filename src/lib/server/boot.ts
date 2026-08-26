@@ -5,6 +5,7 @@ import { seedEducator } from "./auth/educator";
 import { credentialEnvironment, getConfig, type ServerConfig } from "./config";
 import { type AppDatabase, createDatabase } from "./db/client";
 import { applyMigrations } from "./db/migrate";
+import { getFirstEducator } from "./db/queries/educators";
 import { reopenSetup } from "./db/queries/instance";
 import { markStreamingTurnsInterrupted } from "./db/queries/turns";
 import { GatewayAdapter } from "./gateway/adapter";
@@ -96,7 +97,7 @@ function boot(): Services {
    * and a gate that waited for one would make the first request's answer depend
    * on a race it cannot see.
    */
-  const adopted = adoptExistingInstall(db, {
+  adoptExistingInstall(db, {
     educatorConfigured: config.educatorUsername !== undefined,
   });
 
@@ -132,6 +133,16 @@ function boot(): Services {
          * cause; for a persistent one the operator unsets the seed credentials
          * and the wizard opens normally on the next boot.
          *
+         * The condition is the *state*, not whether this boot happened to be the
+         * one that adopted. A process that exits between the adoption and this
+         * rejection leaves a later boot with nothing to adopt — and a rollback
+         * that only fired on the adopting boot would never run again, which is
+         * the lockout made permanent. `reopenSetup` supplies the rest of the
+         * condition: it touches only an installation whose wizard was never
+         * started, so a real setup is never reopened. An educator row that does
+         * exist means the installation has an operator whatever this seed was
+         * doing, and reopening would be wrong.
+         *
          * A rejection handler rather than a bare `void`: an unhandled rejection
          * would take the process down over a diagnosis it never printed.
          */
@@ -139,7 +150,7 @@ function boot(): Services {
           cause: describeCause(cause),
         });
 
-        if (adopted && reopenSetup(db, new Date())) {
+        if (!getFirstEducator(db) && reopenSetup(db, new Date())) {
           log.error(
             "first-run setup re-opened: this installation has no operator account.\n" +
               "  Fix the cause above and restart Setun to re-attempt the seed, or unset\n" +

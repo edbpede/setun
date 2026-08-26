@@ -127,6 +127,21 @@ describe("reopenSetup", () => {
     expect(readInstance(db)?.setupStartedAt).toBeNull();
   });
 
+  /**
+   * The rollback cannot key on "did *this* boot adopt". A process that exits
+   * between the adoption and the seed's rejection leaves the next boot with
+   * nothing to adopt, and a rollback gated on having adopted would never run
+   * again — which is the lockout made permanent rather than repaired.
+   */
+  it("still reopens an adoption that a previous boot persisted", () => {
+    expect(adoptExistingInstall(db, { educatorConfigured: true, now: NOW })).toBe(true);
+    // The next boot: already complete, so there is nothing left to adopt.
+    expect(adoptExistingInstall(db, { educatorConfigured: true, now: NOW })).toBe(false);
+
+    expect(reopenSetup(db, NOW)).toBe(true);
+    expect(isSetupComplete(db)).toBe(false);
+  });
+
   it("refuses to reopen an installation whose wizard was actually claimed", () => {
     ensureInstance(db);
     takeClaim(db, {
