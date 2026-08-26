@@ -106,9 +106,25 @@ export async function seedEducator(
  */
 export async function establishEducator(
   db: AppDatabase,
-  input: { username: string; password: string },
-): Promise<Educator> {
+  input: {
+    username: string;
+    password: string;
+    /**
+     * Re-checked after the hash and before the write; null is returned when it
+     * says no.
+     *
+     * Hashing is the only slow step here, and it is slow on purpose. The caller
+     * decided this write was allowed *before* it — so on a route whose
+     * authorisation can be withdrawn mid-request, the decision is about state
+     * that may no longer hold by the time the row is written. Nothing between
+     * this check and the write awaits, so the two happen in one turn (§21).
+     */
+    stillAuthorised?: () => boolean;
+  },
+): Promise<Educator | null> {
   const passwordHash = await hashEducatorPassword(input.password);
+  if (input.stillAuthorised && !input.stillAuthorised()) return null;
+
   const existing = getFirstEducator(db);
 
   if (existing) {

@@ -67,6 +67,39 @@ describe("saveEducator", () => {
     expect(educator?.passwordHash).not.toContain("korrekt-hest-batteri");
   });
 
+  /**
+   * The claim can be seized by `recoverClaim` while this step is hashing, and
+   * the write *replaces* the operator credential — so a guard that only ran
+   * before the hash would let a revoked browser take the account with it.
+   */
+  it("writes nothing when the claim is withdrawn while the password is hashing", async () => {
+    await saveEducator(db, { username: "laerer", password: "korrekt-hest-batteri" });
+    const before = getFirstEducator(db);
+
+    const refused = await saveEducator(db, {
+      username: "overtager",
+      password: "et-andet-langt-kodeord",
+      stillAuthorised: () => false,
+    });
+
+    expect(refused).toBeNull();
+    expect(getFirstEducator(db)).toEqual(before);
+    expect(
+      (await attemptEducatorLogin(db, { username: "laerer", password: "korrekt-hest-batteri" })).ok,
+    ).toBe(true);
+  });
+
+  it("writes as usual when the claim still holds", async () => {
+    const educator = await saveEducator(db, {
+      username: "laerer",
+      password: "korrekt-hest-batteri",
+      stillAuthorised: () => true,
+    });
+
+    expect(educator?.username).toBe("laerer");
+    expect(getFirstEducator(db)?.username).toBe("laerer");
+  });
+
   it("edits the one account rather than adding a second when the step is re-run", async () => {
     await saveEducator(db, { username: "laerer", password: "korrekt-hest-batteri" });
     await saveEducator(db, { username: "underviser", password: "et-andet-langt-kodeord" });

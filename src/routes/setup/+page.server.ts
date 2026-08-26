@@ -123,18 +123,45 @@ function setClaimCookie(cookies: Cookies, url: URL, proof: string): void {
   });
 }
 
+interface ClaimedSetup {
+  readonly db: AppDatabase;
+  /** Kept so the claim can be re-asserted after the action has awaited. */
+  readonly proof: string;
+  readonly progress: SetupProgress;
+}
+
 /** Every step past the claim: re-verify, slide, and re-issue the cookie. */
-function claimedInstallation(
-  cookies: Cookies,
-  url: URL,
-): { db: AppDatabase; progress: SetupProgress } | null {
+function claimedInstallation(cookies: Cookies, url: URL): ClaimedSetup | null {
   const db = activeInstallation();
 
   const proof = readClaimProof(cookies);
   if (!verifyAndSlideClaim(db, proof) || !proof) return null;
 
   setClaimCookie(cookies, url, proof);
-  return { db, progress: currentProgress(db) };
+  return { db, proof, progress: currentProgress(db) };
+}
+
+/**
+ * Re-assert the claim after an action has awaited, and re-read progress.
+ *
+ * `claimedInstallation` runs before the body is parsed, before the gateway is
+ * probed, before a password is hashed. `recoverClaim` can `seizeClaim` during
+ * any of that, and `finish` can complete setup — so an action that mutated on
+ * the strength of the earlier check would be writing under an authority that had
+ * already moved to another browser. This is the check that decides, and it is
+ * the last thing before the write (§7, §21).
+ *
+ * The progress comes back with it rather than beside it: a step that re-checked
+ * the claim and then acted on a stale `aliasId` would have swapped one
+ * time-of-check bug for another.
+ *
+ * Returning null does not mean the request failed — it means it lost. The three
+ * Superforms steps still owe their form a response, which is why each caller
+ * refuses in its own shape rather than through a shared helper here.
+ */
+function stillClaimed(claim: ClaimedSetup): SetupProgress | null {
+  if (!verifyAndSlideClaim(claim.db, claim.proof)) return null;
+  return currentProgress(claim.db);
 }
 
 function currentProgress(db: AppDatabase): SetupProgress {
@@ -360,10 +387,17 @@ export const actions: Actions = {
     const form = await superValidate(request, educatorAdapter, { id: EDUCATOR_FORM_ID });
     if (!form.valid) return fail(400, { educatorForm: form });
 
-    await saveEducator(claim.db, {
+    if (!stillClaimed(claim)) return refuseEducatorStep(403, "claim_lost");
+
+    // Checked once more inside, after the hash: this is the one step whose write
+    // *replaces* the operator credential, so the window the hash opens is worth
+    // closing rather than narrowing.
+    const educator = await saveEducator(claim.db, {
       username: form.data.username,
       password: form.data.password,
+      stillAuthorised: () => stillClaimed(claim) !== null,
     });
+    if (!educator) return refuseEducatorStep(403, "claim_lost");
 
     redirect(303, "/setup?step=gateway");
   },
@@ -399,7 +433,10 @@ export const actions: Actions = {
     const form = await superValidate(request, aliasAdapter, { id: ALIAS_FORM_ID });
     if (!form.valid) return fail(400, { aliasForm: form });
 
-    saveAlias(claim.db, { progress: claim.progress, values: form.data });
+    const progress = stillClaimed(claim);
+    if (!progress) return refuseAliasStep(403, "claim_lost");
+
+    saveAlias(claim.db, { progress, values: form.data });
     redirect(303, "/setup?step=classroom");
   },
 
@@ -411,12 +448,13 @@ export const actions: Actions = {
     const form = await superValidate(request, classroomAdapter, { id: CLASSROOM_FORM_ID });
     if (!form.valid) return fail(400, { classroomForm: form });
 
-    const alias = claim.progress.aliasId
-      ? getAliasById(claim.db, claim.progress.aliasId)
-      : undefined;
+    const progress = stillClaimed(claim);
+    if (!progress) return refuseClassroomStep(403, "claim_lost");
+
+    const alias = progress.aliasId ? getAliasById(claim.db, progress.aliasId) : undefined;
 
     const result = saveClassroom(claim.db, {
-      progress: claim.progress,
+      progress,
       alias,
       values: form.data,
     });
@@ -444,13 +482,16 @@ export const actions: Actions = {
     const claim = claimedInstallation(cookies, url);
     if (!claim) return kitFail(403, CLAIM_LOST);
 
-    const classroom = claim.progress.classroomId
-      ? getClassroom(claim.db, claim.progress.classroomId)
-      : undefined;
-    if (!classroom) return kitFail(409, { error: "classroom_missing" });
-
     const parsed = v.safeParse(ProvisionSchema, { count: (await request.formData()).get("count") });
     if (!parsed.success) return kitFail(400, { error: "invalid" });
+
+    const progress = stillClaimed(claim);
+    if (!progress) return kitFail(403, CLAIM_LOST);
+
+    const classroom = progress.classroomId
+      ? getClassroom(claim.db, progress.classroomId)
+      : undefined;
+    if (!classroom) return kitFail(409, { error: "classroom_missing" });
 
     const provisioned = await provisionFirstStudents(claim.db, {
       classroom,

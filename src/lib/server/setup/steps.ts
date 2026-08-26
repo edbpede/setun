@@ -34,12 +34,27 @@ import { canFinishSetup, resolveSetupProgress, type SetupProgress } from "./stat
 export interface SetupEducatorInput {
   readonly username: string;
   readonly password: string;
+  /**
+   * Re-asserts the caller's claim after the password hash, immediately before
+   * the row is written. Null comes back when it no longer holds.
+   */
+  readonly stillAuthorised?: () => boolean;
 }
 
-/** Step 1. Skipped entirely when the account comes from deployment configuration. */
-export async function saveEducator(db: AppDatabase, input: SetupEducatorInput): Promise<Educator> {
+/**
+ * Step 1. Skipped entirely when the account comes from deployment configuration.
+ *
+ * Null when `stillAuthorised` refused: the claim moved to another browser while
+ * this request was hashing, and a revoked browser must not rewrite the operator
+ * credential (§7, §21).
+ */
+export async function saveEducator(
+  db: AppDatabase,
+  input: SetupEducatorInput,
+): Promise<Educator | null> {
   const existed = getFirstEducator(db) !== undefined;
   const educator = await establishEducator(db, input);
+  if (!educator) return null;
 
   // The operator's record that onboarding happened, and when. Identifiers and
   // outcome only: no password, no hash (§16, §21).
