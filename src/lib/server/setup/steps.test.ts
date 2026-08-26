@@ -264,4 +264,41 @@ describe("provisionFirstStudents", () => {
     }
     expect(stored).toHaveLength(3);
   });
+
+  /**
+   * The batch is written in one synchronous turn precisely so this is all or
+   * nothing: a claim seized while the codes were being hashed must leave no
+   * pupils behind (§7, §21).
+   */
+  it("writes no pupil at all when the claim is withdrawn while the codes are hashed", async () => {
+    const alias = saveAlias(db, { progress: progress(), values: ALIAS });
+    const saved = saveClassroom(db, { progress: progress(), alias, values: CLASSROOM });
+    if (!saved.ok) throw new Error("unreachable");
+
+    const provisioned = await provisionFirstStudents(db, {
+      classroom: saved.classroom,
+      pepper: "test-pepper-not-a-real-secret",
+      count: 3,
+      stillAuthorised: () => false,
+    });
+
+    expect(provisioned).toEqual([]);
+    expect(db.$client.query("SELECT id FROM student").all()).toEqual([]);
+  });
+
+  it("provisions the whole batch when the claim still holds", async () => {
+    const alias = saveAlias(db, { progress: progress(), values: ALIAS });
+    const saved = saveClassroom(db, { progress: progress(), alias, values: CLASSROOM });
+    if (!saved.ok) throw new Error("unreachable");
+
+    const provisioned = await provisionFirstStudents(db, {
+      classroom: saved.classroom,
+      pepper: "test-pepper-not-a-real-secret",
+      count: 3,
+      stillAuthorised: () => true,
+    });
+
+    expect(provisioned).toHaveLength(3);
+    expect(new Set(provisioned.map((row) => row.student.label)).size).toBe(3);
+  });
 });

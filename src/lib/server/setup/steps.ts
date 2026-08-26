@@ -156,12 +156,20 @@ export function saveClassroom(
  */
 export function provisionFirstStudents(
   db: AppDatabase,
-  input: { classroom: Classroom; pepper: string; count: number },
+  input: {
+    classroom: Classroom;
+    pepper: string;
+    count: number;
+    /** Re-asserts the caller's claim after the codes are hashed and before the
+     * batch is written; an empty array comes back when it no longer holds. */
+    stillAuthorised?: () => boolean;
+  },
 ): Promise<ProvisionedStudent[]> {
   return provisionStudents(db, {
     classroomId: input.classroom.id,
     pepper: input.pepper,
     count: input.count,
+    stillAuthorised: input.stillAuthorised,
     // "Speakable in class" depends on the language spoken there (§17).
     locale: input.classroom.interfaceLanguage,
   });

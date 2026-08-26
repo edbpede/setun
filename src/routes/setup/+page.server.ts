@@ -493,11 +493,15 @@ export const actions: Actions = {
       : undefined;
     if (!classroom) return kitFail(409, { error: "classroom_missing" });
 
+    // Checked once more inside, after the codes are hashed: the batch is written
+    // in one synchronous turn, so that check is the last thing that can stop it.
     const provisioned = await provisionFirstStudents(claim.db, {
       classroom,
       pepper: getConfig().studentCodePepper,
       count: parsed.output.count,
+      stillAuthorised: () => stillClaimed(claim) !== null,
     });
+    if (provisioned.length === 0) return kitFail(403, CLAIM_LOST);
 
     return {
       cards: provisioned.map(

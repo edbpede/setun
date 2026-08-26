@@ -34,16 +34,55 @@ export interface ProvisionedStudent {
  * Sequential rather than concurrent: uniqueness within the classroom is decided
  * against the labels already taken, and two parallel calls would read the same
  * set and could pick the same pair.
+ *
+ * Every code is hashed *before* any row is written, which is what makes the
+ * batch a single synchronous turn. A per-pupil `await` in the middle of the
+ * writes would let a caller's authorisation be withdrawn between two of them —
+ * and half a batch written under an authority that has since moved is exactly
+ * the hole `stillAuthorised` exists to close (§21).
  */
 export async function provisionStudents(
   db: AppDatabase,
-  input: { classroomId: string; pepper: string; count: number; locale?: WordlistLocale },
+  input: {
+    classroomId: string;
+    pepper: string;
+    count: number;
+    locale?: WordlistLocale;
+    /**
+     * Consulted once, after the hashing and before the first write. One check is
+     * enough precisely because the writes below never await: the batch is all or
+     * nothing. An empty array means it said no; `count` is at least one wherever
+     * this is called from.
+     */
+    stillAuthorised?: () => boolean;
+  },
 ): Promise<ProvisionedStudent[]> {
-  const provisioned: ProvisionedStudent[] = [];
+  const hashed: { code: GeneratedCode; digest: string }[] = [];
   for (let i = 0; i < input.count; i++) {
-    provisioned.push(await provisionStudent(db, input));
+    const code = generateCode();
+    hashed.push({ code, digest: await digestCode(code.normalised, input.pepper) });
   }
-  return provisioned;
+
+  if (input.stillAuthorised && !input.stillAuthorised()) return [];
+
+  // Read once and carried forward rather than re-read per pupil: within one turn
+  // nothing else can write, so the set is exact and the query is not repeated.
+  const taken = new Set(listClassroomStudents(db, input.classroomId).map((s) => s.label));
+
+  return hashed.map(({ code, digest }) => {
+    const label = generateLabel(input.locale ?? "da", taken);
+    taken.add(label);
+
+    return {
+      student: createStudent(db, {
+        classroomId: input.classroomId,
+        label,
+        credentialDigest: digest,
+        credentialHint: code.hint,
+      }),
+      code,
+    };
+  });
 }
 
 export async function provisionStudent(
