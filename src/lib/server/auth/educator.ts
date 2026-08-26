@@ -1,5 +1,11 @@
 import type { AppDatabase } from "../db/client";
-import { createEducator, findEducatorByUsername, getEducatorById } from "../db/queries/educators";
+import {
+  createEducator,
+  findEducatorByUsername,
+  getEducatorById,
+  getFirstEducator,
+  updateEducatorCredential,
+} from "../db/queries/educators";
 import { findSessionByDigest, touchSession } from "../db/queries/sessions";
 import type { Educator } from "../db/schema";
 import {
@@ -45,6 +51,18 @@ async function getDecoyHash(): Promise<string> {
   return decoyHash;
 }
 
+/**
+ * argon2id, as §7 requires.
+ *
+ * One function decides the algorithm, because there are now two paths that
+ * create the operator account — deployment configuration, and the first-run
+ * wizard — and an algorithm chosen twice is an algorithm that can be chosen
+ * differently.
+ */
+export function hashEducatorPassword(password: string): Promise<string> {
+  return Bun.password.hash(password, { algorithm: "argon2id" });
+}
+
 export interface SeedEducatorResult {
   readonly seeded: boolean;
   readonly educator: Educator;
@@ -71,8 +89,54 @@ export async function seedEducator(
     return { seeded: false, educator: existing };
   }
 
-  const passwordHash = await Bun.password.hash(input.password, { algorithm: "argon2id" });
+  const passwordHash = await hashEducatorPassword(input.password);
   return { seeded: true, educator: createEducator(db, { username: input.username, passwordHash }) };
+}
+
+/**
+ * Create or replace *the* operator account — the first-run wizard's first step
+ * (PRD §6.2, §7).
+ *
+ * Deliberately not `seedEducator`. That one keys on the username, which is right
+ * for deployment configuration: an operator who changes the configured name
+ * should get an account under it. Here the opposite is right — the wizard's
+ * account step is re-runnable, and an operator who goes back and corrects a typo
+ * in the username must end up with one account, not two. So an existing row is
+ * updated in place and only an empty table is inserted into (§7).
+ */
+export async function establishEducator(
+  db: AppDatabase,
+  input: {
+    username: string;
+    password: string;
+    /**
+     * Re-checked after the hash and before the write; null is returned when it
+     * says no.
+     *
+     * Hashing is the only slow step here, and it is slow on purpose. The caller
+     * decided this write was allowed *before* it — so on a route whose
+     * authorisation can be withdrawn mid-request, the decision is about state
+     * that may no longer hold by the time the row is written. Nothing between
+     * this check and the write awaits, so the two happen in one turn (§21).
+     */
+    stillAuthorised?: () => boolean;
+  },
+): Promise<Educator | null> {
+  const passwordHash = await hashEducatorPassword(input.password);
+  if (input.stillAuthorised && !input.stillAuthorised()) return null;
+
+  const existing = getFirstEducator(db);
+
+  if (existing) {
+    const updated = updateEducatorCredential(db, {
+      educatorId: existing.id,
+      username: input.username,
+      passwordHash,
+    });
+    if (updated) return updated;
+  }
+
+  return createEducator(db, { username: input.username, passwordHash });
 }
 
 export type EducatorLoginResult =

@@ -1,8 +1,8 @@
 # Setun — Implementation Plan
 
-**Derived from:** `docs/setun-prd.md` v0.6 (authoritative for all scope and behaviour)
+**Derived from:** `docs/setun-prd.md` v0.7 (authoritative for all scope and behaviour)
 **Status:** Active working document — implementation sessions tick checkboxes here as work lands
-**Structure:** Phase 0 (bootstrap) + Phases 1–5, mapping one-to-one onto PRD milestones M1–M5 (§23)
+**Structure:** Phase 0 (bootstrap) + Phases 1–6, mapping one-to-one onto PRD milestones M1–M6 (§23)
 
 This plan says *what to build in what order*. The PRD says *what it must do* — section references like (§10) point there. Where the PRD pins a default, Appendix A of the PRD is the value; nothing in this plan is open, optional, or "to be decided".
 
@@ -433,6 +433,89 @@ hooks = [
 
 ---
 
+## Phase 6 — First-run onboarding (M6)
+
+**Goal.** Make a cold Setun usable without editing deployment configuration first: a
+bootstrap-token-gated `/setup` wizard that takes an empty installation to a working classroom,
+a gate that redirects everything else until it finishes, and the scaffold — no UI — for the
+student first-login experience of §18.
+
+**Exit criterion.** A cold database with no seed variables set prints the banner on the first
+request, redirects every path to `/setup`, completes the wizard, and leaves the educator signed
+in to the panel; a cold database *with* seed variables set has no banner, no gate and no
+`/setup`, and every existing suite passes unchanged; an existing populated database is adopted
+at boot with one log line; a second browser during a live claim is refused `409` with a stated
+retry time; after completion `/setup` is `404`, the token is gone from memory and from its file,
+and the educator's session is a new one. `prek run --all-files`, `bun test`,
+`bun run test:component`, `bun run test:e2e`, `bun run check` and `bun run lint` are all green,
+and Danish and English are complete.
+
+**Ordering note.** 6.1 (schema, token, claim, state) precedes everything. 6.2 (gate) and 6.3
+(wizard) ride on it; 6.4 (docs) records the PRD amendment the phase depends on, and 6.5 leaves
+Phase 7 somewhere to land.
+
+**The one decision this phase changed.** PRD v0.6 §6.2 and §7 said the educator account is
+seeded from deployment configuration at first boot, and `config.ts` failed boot without it — a
+wizard that creates the account contradicts that. Resolved in the PRD's favour by amending the
+PRD to v0.7 rather than bypassing it: the seed credentials become optional and are a pair,
+re-seeding remains the documented password-recovery path, and a boot-time adoption rule keeps
+existing installations and the seeded e2e suites out of the gate entirely.
+
+### 6.1 The instance row, the token and the claim (§6.2, §7, §21)
+
+- [x] `instance` — a single-row table pinned to a fixed id by a `check` constraint: `setupStartedAt`, `setupCompletedAt`, `claimProofDigest`, `claimedAt`. Migration generated and committed
+- [x] `src/lib/server/auth/bootstrap.ts` — the token: `generateCode()` unchanged (120 bits, Crockford Base32, the same typo aliases), held in a `BootstrapTokenHolder` inside the `Services` object rather than in module-scope state, 15-minute TTL evaluated lazily, cleared on completion, on re-mint, on expiry and on process exit
+- [x] Minted in `boot()` only when setup is incomplete; one `log.info` banner with the token, the URL and the expiry warning — the single, argued exception to §21's no-credentials-in-logs rule, written into the module doc and the operator guide
+- [x] Optional second sink `SETUN_BOOTSTRAP_TOKEN_PATH`, mode `0600`, unlinked at completion; never the only sink and never a default
+- [x] `src/lib/server/setup/claim.ts` — the claim: a 256-bit proof minted with the same primitive `createSession` uses, stored as its SHA-256 digest, 10-minute TTL (deliberately shorter than the token's 15), slid on every guarded step, and a `claimedAt` in the future or beyond representable range treated as no claim
+- [x] Constant-time comparison on **both** secrets, via `src/lib/server/auth/constant-time.ts`; `isPlausibleCode` as the length-and-alphabet pre-filter so a huge field cannot force unbounded work
+- [x] `POST ?/claim` evaluation order as specified: held → claimed elsewhere (`409` + retry-at) → rate limited (`429`) → invalid token (`400`, one opaque code for empty, malformed, wrong and expired) → mint. `409` before `429` on purpose
+- [x] `POST ?/recover` — re-take a lost claim with the educator credential once an account exists, through `attemptEducatorLogin` so the timing floor and the uniform failure shape come for free; `409 no_educator` before one exists
+- [x] Rate limiting on both entry actions through the existing limiter, namespaced inside the `digest` scope (`setup:<sha256(token)>`, `setup-recover:<sha256(username)>`) so no schema change was needed
+- [x] A 250 ms timing floor on both, reusing `EDUCATOR_LOGIN_MINIMUM_DURATION_MS` rather than restating it
+- [x] `src/lib/server/setup/state.ts` — completion read, the boot-time adoption rule (never on an installation whose wizard has been claimed), the resume derivation, and the gate decision as a pure function
+- [x] `bun test`: token format and entropy, lazy expiry, constant-time compare, claim digest verification, TTL slide, future-timestamp rejection, the evaluation order, recovery, resume derivation, adoption rule, gate decision
+
+### 6.2 Configuration and the gate (§6.2, §21)
+
+- [x] `SETUN_EDUCATOR_SEED_USERNAME` / `SETUN_EDUCATOR_SEED_PASSWORD` optional and validated as a pair; a blank value counts as absent, so a partly-filled `.env` selects the wizard rather than failing
+- [x] `handleSetupGate` in `sequence(handleSession, handleSetupGate, handleLocale)` — after the session so `locals` is populated, before the locale hook so the wizard is localised; `App.Locals.setupComplete` typed and set once per request
+- [x] While incomplete, `303 → /setup` for everything except `/setup*`, `/_app/*`, `/favicon.ico`, `/robots.txt`, `/setun-mark.svg`; once complete the hook is transparent and `/setup`'s `load` calls `error(404)` — not `403`
+- [x] `Cache-Control: no-store` and `X-Robots-Tag: noindex` on the whole setup surface
+- [x] The gate reads completion and only completion; educator existence is consulted in exactly two places, the adoption rule and `recover`'s precondition
+- [x] A missing database file fails boot when `NODE_ENV` is `production`; development, tests and `:memory:` keep create-on-demand
+
+### 6.3 The wizard (§6.2, §7, §8, §9, §16, §17)
+
+- [x] `src/routes/setup/` — `load` plus actions for claim, recover, and steps 1–5 and finish; thin by §6.1, with the decisions in `$lib/server/setup`
+- [x] Step 1 educator account: argon2id, minimum 12 characters, confirmation field, one account edited in place rather than a second inserted; skipped entirely and refused server-side when env-seeded
+- [x] Step 2 gateway: a live `checkGatewayHealth` probe reporting two facts only, retry, and an explicit continue-anyway that the server re-probes and records
+- [x] Step 3 first model alias, reusing the panel's own `AliasSchema`; always designated the utility alias
+- [x] Step 4 first classroom — name, timezone, interface language, session policy — with the step-3 alias allowlisted for it and §16's no-DPA acknowledgement required and recorded
+- [x] Step 5 optional batch provisioning through the existing path, with printable credential cards; the one non-idempotent step, and the screen says so
+- [x] Finish: verify prerequisites → set `setupCompletedAt` → clear the claim and the token → delete any incoming session cookie, then issue a fresh educator session → `redirect(303, "/educator")`
+- [x] Every step re-verifies the claim and slides it; every action re-guards independently; `setupCompletedAt` is written by the finish action and by nothing else
+- [x] Resume position derived from persisted rows on every load, and every step idempotent against its own derivation predicate
+- [x] Danish and English messages complete
+- [x] Vitest Browser Mode: the claim form and the alias form
+- [x] Playwright `e2e/setup.e2e.ts` on a fourth `webServer` with its own port, its own cold database and the seed variables unset: the gate, a wrong token, the whole wizard, a second browser's `409`, the `404` afterwards, and a provisioned code signing a pupil in
+
+### 6.4 Documentation (§6.2)
+
+- [x] PRD amended to v0.7: §4, §6.2, §7, §18, §19, §23 and §24
+- [x] `docs/setun-operations.md`: the first-run procedure, the banner and why it is printed, the three token-loss cases, adoption on upgrade, the production database-file check, and the pin-to-one-worker caveat for anyone who scales past one container
+- [x] `.env.example` and `docker-compose.yml`: seed credentials optional, token path documented
+
+### 6.5 Student first-login — scaffold only (§16, §18)
+
+- [x] `student.onboardedAt`, nullable, written by nothing
+- [x] `src/lib/server/student/onboarding.ts` — intent, the §16 constraint, an exported step union and state shape, `TODO(phase-7)` markers, no callers
+- [x] `docs/setun-student-onboarding.md` — the intended flow, the privacy statement in full, and the open questions recorded rather than answered
+- [x] Four `TODO(phase-7)` anchors and nowhere else: the student login success path, the student dashboard load, `student.ts` beside the new column, and the onboarding module
+- [x] No routes, no UI, no behaviour change for students
+
+---
+
 ## Phase delivery flow
 
 **One phase = one branch = one PR**, regardless of phase size. A phase's PR merges into `main` only when the phase's exit criterion holds. Follow these steps throughout the work on every phase:
@@ -459,7 +542,7 @@ hooks = [
 
 - **Read the rules first.** Every implementation session reads `.agents/rules/svelte5-sveltekit-app.md` (and any rules files added later under `.agents/rules/`) at session start, before writing code.
 - **This file is the single source of progress truth.** Tick checkboxes in this document as work lands, on the phase branch alongside the work itself. A box is ticked only when its named tests pass.
-- **PRD wins.** `docs/setun-prd.md` v0.6 is final. Do not reopen decisions, add features, or change scope. A genuine contradiction between PRD and this plan is resolved in the PRD's favour and this plan is corrected.
+- **PRD wins.** `docs/setun-prd.md` v0.7 is final. Do not reopen decisions, add features, or change scope. A genuine contradiction between PRD and this plan is resolved in the PRD's favour and this plan is corrected.
 - **Conventional Commits**, enforced by the `conventional-pre-commit` hook on commit-msg.
 - **Branch workflow.** From Phase 0 onward, all work happens on the phase branches of the delivery flow above, merged into `main` via the phase PR — the `no-commit-to-branch` prek hook blocks direct commits to `main`. (History to date was committed directly to `main`; the hook changes that.)
 - **Verification.** `prek run --all-files` and the relevant test layer pass before any merge; CI's five gates pass on every PR.

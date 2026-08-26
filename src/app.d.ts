@@ -16,6 +16,14 @@ declare global {
       educator: import("$lib/server/db/schema").Educator | null;
       /** The presented session token, kept so logout can invalidate exactly this session. */
       sessionToken: string | null;
+      /**
+       * Whether first-run setup has finished (PRD §6.2).
+       *
+       * Set once per request by the setup gate in `hooks.server.ts`, so anything
+       * downstream that needs the flag reads it here rather than querying the
+       * instance row again per component.
+       */
+      setupComplete: boolean;
     }
 
     /**

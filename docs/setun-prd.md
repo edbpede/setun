@@ -1,6 +1,6 @@
 # Setun — Product Requirements Document
 
-**Version:** 0.6
+**Version:** 0.7
 **Status:** Ready for implementation planning — all open decisions resolved, defaults pinned
 **Licence:** AGPL-3.0
 **Target:** Classroom pilot, 5–20 students and one educator
@@ -38,7 +38,7 @@ Not an LMS, gradebook, or timetable system. No school-wide identity integration,
 
 **Student.** Logs in with an access code. Chats with permitted models, uses permitted tools and skills, builds and edits artifacts, generates images, manages their own conversations and creations, searches their own conversations, optionally sets a display name. Cannot see other students' data, alter classroom settings, reach the gateway directly, or use anything the educator has not enabled.
 
-**Educator.** Conventional authenticated account, seeded from deployment configuration at first boot. Creates classrooms, provisions and manages student credentials, opens and locks access, sets schedules, curates the model alias table and per-classroom allowlists, registers MCP servers and selects individual tools, sets tool permission modes, maintains the skill library (including uploads and registry imports), sets budgets and allowances, and views operational and aggregate usage data — never conversation contents.
+**Educator.** Conventional authenticated account, established at first run — from deployment configuration when it supplies one, and otherwise through the first-run setup wizard of §6.2. Creates classrooms, provisions and manages student credentials, opens and locks access, sets schedules, curates the model alias table and per-classroom allowlists, registers MCP servers and selects individual tools, sets tool permission modes, maintains the skill library (including uploads and registry imports), sets budgets and allowances, and views operational and aggregate usage data — never conversation contents.
 
 ---
 
@@ -124,7 +124,19 @@ sandbox/              # separate-origin artifact host: runner page, compiler wor
 
 Two DNS hostnames are required — the application origin and the sandbox origin — both terminating TLS at Caddy: automatic HTTPS via ACME where the host is publicly reachable, Caddy's internal CA on closed networks. The operator surface is exactly three files: the Compose file, one `.env`, and the MCP server configuration file (§11), plus mounted volumes for the SQLite database, file storage, and backups.
 
-Required environment variables, enumerated so nothing is discovered late: the student-code HMAC pepper; the educator seed credentials (consumed at first boot; re-seeding them and restarting is also the password-recovery path, §7); the CPA listener key shared between Setun and CPA; the two origin URLs; and any credentials the MCP configuration references by name. Absence of a required variable fails boot with a clear message rather than starting degraded.
+Required environment variables, enumerated so nothing is discovered late: the student-code HMAC pepper; the CPA listener key shared between Setun and CPA; the two origin URLs; and any credentials the MCP configuration references by name. Absence of a required variable fails boot with a clear message rather than starting degraded.
+
+**The educator seed credentials are optional, and are a pair** — set both, or neither. Set, they are applied at every boot, and re-seeding them and restarting is the password-recovery path of §7. Unset, the installation is completed through the first-run setup below. Half a pair fails boot, because it would silently select the wizard where an operator expected a seeded account.
+
+**First-run setup.** An installation with no operator account is unusable until one exists, and before one exists there is no credential to authenticate the person creating it. So the first boot of such an installation mints a **bootstrap token** — at least 120 bits from a cryptographically secure source, in the same Crockford Base32 format as an access code, held in memory only and valid for fifteen minutes — and prints it once to the operator console with the URL to open. Reading it proves access to the host, which is the only property that distinguishes the operator from a passer-by at that moment. This is a deliberate, argued exception to the rule that credentials are never logged (§21): the token lives fifteen minutes, authorises exactly one irreversible action, is worthless the moment setup completes, and the console is the only channel that can carry it. An optional second sink writes it to a file for an operator running detached; it is never the only sink, and it is deleted at completion.
+
+Until setup completes, every path other than the setup surface redirects to it. The wizard establishes the operator account, checks that the gateway answers, creates the first model alias — which is also the utility alias of §9 — creates the first classroom with that alias allowlisted, and optionally provisions a first batch of pupils. Completion is the single flag the gate reads: the account existing is not enough, because a panel with no model and no classroom cannot serve a lesson. Once complete, the setup surface returns `404` and the token is discarded.
+
+The wizard is claimed by exactly one browser at a time, recorded durably so a restart mid-setup does not lose it. A second browser is refused while a claim is live and told when it lapses. Once an operator account exists, the educator credential re-takes a lost claim without a restart.
+
+Installations that predate first-run setup are complete by definition, and are recorded as such at boot: an installation whose wizard has never been claimed and which already has an operator account — or seed credentials configured — is marked complete, once, with one log line. **In production a database file that does not exist fails boot** rather than being created, because with a setup gate in front an absent file is a dropped volume mount, and an empty database would present a configured installation as a cold start.
+
+**Single container is the deployment.** The bootstrap token is per process, so an installation scaled to several replicas must pin setup traffic to one of them.
 
 ---
 
@@ -142,7 +154,9 @@ Successful login establishes a normal session with an `HttpOnly`, `Secure`, `Sam
 
 Login is rate limited **in-application, SQLite-backed** — per IP and per credential digest, with progressive delay (thresholds in Appendix A) and uniform failure responses that never disclose whether a code exists. Caddy performs no rate limiting. Rotation and disabling both invalidate existing sessions immediately.
 
-Educator authentication is separate and conventional: a single account seeded from deployment configuration at first boot, password hashed with `Bun.password` (argon2id), with its own session namespace and a **sliding 7-day expiry**. There is no in-application password recovery — a forgotten educator password is reset by re-seeding the credential in deployment configuration and restarting, the same channel that created the account. OIDC may be added later without affecting student auth.
+Educator authentication is separate and conventional: a **single** account, password hashed with `Bun.password` (argon2id), with its own session namespace and a **sliding 7-day expiry**. The account is established at first run — seeded from deployment configuration when it supplies credentials, and otherwise collected by the first-run setup wizard of §6.2 behind the bootstrap token. The minimum password length is twelve characters; there are no composition rules, because length is the only requirement that meaningfully changes the work an attacker must do against an argon2id hash behind a rate limiter.
+
+There is **no in-application password recovery**, and the wizard does not add one: a forgotten educator password is reset by seeding the credential in deployment configuration and restarting, which applies on every boot precisely so that it works. The wizard's own credential form is reachable only while setup is incomplete, and the setup surface returns `404` afterwards. Setup's claim recovery is not a password reset — it asks for the password rather than replacing it. OIDC may be added later without affecting student auth.
 
 ---
 
@@ -334,6 +348,8 @@ Deliberately thin: account status, classroom open or closed with the next window
 
 Its purpose is partly transparency — everything the system knows about a student is visible to that student, and none of it is their real name.
 
+A **first-login introduction** — what Setun is, the §16 privacy statement in a pupil's own words, the optional display name, the interface language, and a short tour — is deferred (§24) and scaffolded only: the student record carries a completion marker that nothing writes yet, and the intended flow with its open questions is recorded in `docs/setun-student-onboarding.md`.
+
 ---
 
 ## 19. Data model
@@ -341,7 +357,7 @@ Its purpose is partly transparency — everything the system knows about a stude
 Tables, described in prose to keep implementation free:
 
 - **Classroom** — name, state, timezone, schedule, temporary windows, retention and creations policy, budgets and caps, session policy, tool permission mode, skill authoring policy, attachment policy, classroom instructions, interface language, feature flags.
-- **Student** — classroom reference (a student belongs to exactly one classroom), pseudonymous label (generated word pair), optional display name, per-student instructions, interface-language override, status, credential digest and hint, timestamps.
+- **Student** — classroom reference (a student belongs to exactly one classroom), pseudonymous label (generated word pair), optional display name, per-student instructions, interface-language override, status, credential digest and hint, first-login completion marker (§18), timestamps.
 - **Session** — owner (student or educator), expiry, invalidation marker.
 - **Educator** — conventional account record, password hash.
 - **Conversation** — owner, title, model alias, active leaf, timestamps.
@@ -353,7 +369,8 @@ Tables, described in prose to keep implementation free:
 - **Skill** — origin (panel-authored, uploaded, imported, student), owner, body, resources, enablement state, approval state, reserved executable marker.
 - **ModelAlias** — friendly name, gateway model identifier, dialect, availability, data-protection flag, image-input and image-generation capability flags, optional per-million-token input and output prices (USD), utility designation.
 - **UsageEvent** — classroom, student (null for internal utility work, which counts against the classroom cap only), model alias, input and output tokens recorded separately, tool calls, a flag marking gateway-reported versus estimated figures (§10; generated images record their fixed token-equivalent, §15), timestamp; the source of allowance and cap accounting. Rows are retained indefinitely — volume is trivial at pilot scale.
-- **LoginAttempt** — rate-limiting state per IP and credential digest.
+- **LoginAttempt** — rate-limiting state per IP and credential digest. First-run setup shares this table rather than adding a scope: its keys are namespaced inside the credential-digest scope.
+- **Instance** — a single row describing the installation itself: when first-run setup was claimed, when it completed, and the digest of the claim proof with the instant it was last renewed. The completion timestamp is the one flag the setup gate reads (§6.2). The row is pinned to a fixed identifier by a database constraint, so a second one is an error rather than a second opinion.
 
 Allowlists are join tables between Classroom and ModelAlias, McpTool, and Skill respectively; the Skill allowlist additionally supports per-student rows, and per-student attachment overrides follow the same pattern.
 
@@ -425,11 +442,13 @@ End-to-end coverage with Playwright for three flows: a student logging in, chatt
 
 Pilot-ready at the end of M5.
 
+**M6 — First run.** The setup gate, the bootstrap token, the claim, and the wizard that takes a cold installation to a working classroom: operator account, gateway check, first model alias, first classroom, optional first batch of pupils. Optional educator seed credentials, boot-time adoption of installations that predate the wizard, and a production database-file check. Also lands the scaffold — one nullable column, one documented module, no UI — for the student first-login experience of §18.
+
 ---
 
 ## 24. Deferred
 
-Assignments and lesson presets. Artifact export as a downloadable project. PDF and office-document attachments. Currency-accurate billing (the pilot shows estimates only). Expiring lesson-scoped accounts. QR credential login. An educational model-information panel. Side-by-side model comparison — cheap once the agent loop exists, and strong teaching material. Prompt and context inspection. Executable skills with a code sandbox. Per-server automatic elicitation answers. MCP long-running task extensions. Artifact outbound network as a classroom permission. Additional locales beyond Danish and English. OIDC for educators.
+Assignments and lesson presets. Artifact export as a downloadable project. PDF and office-document attachments. Currency-accurate billing (the pilot shows estimates only). Expiring lesson-scoped accounts. QR credential login. An educational model-information panel. Side-by-side model comparison — cheap once the agent loop exists, and strong teaching material. Prompt and context inspection. Executable skills with a code sandbox. Per-server automatic elicitation answers. MCP long-running task extensions. Artifact outbound network as a classroom permission. Additional locales beyond Danish and English. OIDC for educators. Multi-educator accounts and multi-tenancy. The **student first-login introduction** — the welcome, the privacy statement of §16, the optional display name, the language confirmation and the short tour — scaffolded but not built; see `docs/setun-student-onboarding.md`.
 
 ---
 

@@ -36,6 +36,13 @@
       "when": 1787643245521,
       "tag": "0004_phase_5_console",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1787689044144,
+      "tag": "0005_phase_6_onboarding",
+      "breakpoints": true
     }
   ]
 }

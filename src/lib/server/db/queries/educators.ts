@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import type { AppDatabase } from "../client";
 import { type Educator, educator } from "../schema";
 
@@ -37,4 +37,36 @@ export function findEducatorByUsername(db: AppDatabase, username: string): Educa
 
 export function getEducatorById(db: AppDatabase, educatorId: string): Educator | undefined {
   return db.select().from(educator).where(eq(educator.id, educatorId)).get();
+}
+
+/**
+ * The operator account, for the paths that need "the" educator rather than a
+ * named one: the first-run wizard's resume derivation, and the session it issues
+ * when setup finishes (PRD §6.2, §7).
+ *
+ * Ordered rather than merely first-found, so two boots agree on which row that
+ * is if a re-seed under a changed username ever left a second one behind.
+ */
+export function getFirstEducator(db: AppDatabase): Educator | undefined {
+  return db.select().from(educator).orderBy(asc(educator.createdAt)).get();
+}
+
+/**
+ * Replace an existing account's username and hash, in place.
+ *
+ * Distinct from `createEducator`, which keys on the username and would insert a
+ * *second* account if the wizard's operator went back a step and changed it.
+ * Setun has one educator account (§7); editing the row is what keeps that true.
+ */
+export function updateEducatorCredential(
+  db: AppDatabase,
+  input: { educatorId: string; username: string; passwordHash: string },
+): Educator | undefined {
+  const [row] = db
+    .update(educator)
+    .set({ username: input.username, passwordHash: input.passwordHash, updatedAt: new Date() })
+    .where(eq(educator.id, input.educatorId))
+    .returning()
+    .all();
+  return row;
 }

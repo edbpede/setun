@@ -61,13 +61,23 @@ export function hashSessionToken(token: string): string {
   return new Bun.CryptoHasher("sha256").update(token).digest("hex");
 }
 
+/**
+ * A fresh 256-bit token, base64url encoded.
+ *
+ * Exported because the first-run setup claim needs a bearer secret with exactly
+ * these properties — high entropy, stored only as a digest, carried only in a
+ * cookie — and a second implementation of "mint a random token" is a second
+ * chance to pick the wrong byte count (§7, §21).
+ */
+export function mintSessionToken(): string {
+  return Buffer.from(crypto.getRandomValues(new Uint8Array(TOKEN_BYTES))).toString("base64url");
+}
+
 export function createSession(
   db: AppDatabase,
   input: { ownerKind: SessionOwnerKind; ownerId: string; now?: Date },
 ): IssuedSession {
-  const token = Buffer.from(crypto.getRandomValues(new Uint8Array(TOKEN_BYTES))).toString(
-    "base64url",
-  );
+  const token = mintSessionToken();
   const now = input.now ?? new Date();
   const expiresAt = new Date(now.getTime() + ttlDaysFor(input.ownerKind) * MS_PER_DAY);
 

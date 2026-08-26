@@ -101,6 +101,11 @@ there. When they are not, the suite mints development values *per instance* and 
 that instance's own `instance.json`; it never writes to `.env`. A generated educator signs in as
 `educator` / `educator`.
 
+Because a dev instance always has seed credentials, it never sees the first-run setup wizard —
+an installation with a seeded account is complete by definition (PRD §6.2). To exercise the
+wizard, run the build with the two `SETUN_EDUCATOR_SEED_*` variables unset against an empty
+database; the token appears in the server's own output.
+
 ### Log levels
 
 `--log-level silent|error|warn|info|debug|trace`, default `info`. `-v` is `debug`, `-vv` is
@@ -192,13 +197,19 @@ the Compose file, one `.env`, and the MCP configuration file; CPA's own `cpa/con
 the gateway operator's file, where provider accounts are enrolled on the host (PRD §9).
 
 ```sh
-cp .env.example .env            # fill every variable; boot fails loudly on a missing one
+cp .env.example .env            # fill every required value; boot fails loudly on a missing one
 cp mcp.example.json mcp.json    # the tool servers this installation offers (PRD §11)
 docker compose up -d
 ```
 
-**Operating a real installation — DNS and TLS, provider enrolment, educator password recovery,
-the backup restore procedure, and the pinned gateway upgrade — is documented in
+The educator seed credentials are **optional**. Left blank, the first boot prints a one-time
+setup token to the container log and sends every request to `/setup`, where a wizard creates the
+account, checks the gateway, and makes the first model alias and classroom. Filled in, the
+account is seeded at every boot instead — which is also how a forgotten password is reset,
+because there is none inside the application (PRD §6.2, §7).
+
+**Operating a real installation — first run, DNS and TLS, provider enrolment, educator password
+recovery, the backup restore procedure, and the pinned gateway upgrade — is documented in
 [`docs/setun-operations.md`](docs/setun-operations.md).**
 
 `mcp.json` is where MCP servers are defined: an endpoint is a security decision, so it lives
