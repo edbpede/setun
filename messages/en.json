@@ -147,7 +147,7 @@
   "educator_allowlist_disallow": "Remove",
   "educator_allowlist_empty": "No models yet. Add one under Models first.",
   "educator_allowlist_title": "Models this class may use",
-  "educator_apply_preset": "Fill the fields",
+  "educator_apply_preset": "Apply preset and save",
   "educator_attachment_count_label": "Files per message",
   "educator_attachment_image_cap_label": "Largest image (MB)",
   "educator_attachment_text_cap_label": "Largest text file (KB)",

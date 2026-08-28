@@ -25,7 +25,19 @@ interface Props {
 let { data }: Props = $props();
 
 // svelte-ignore state_referenced_locally
-const { form, errors, enhance, submitting } = superForm(data, { id: "tool-policy" });
+const { form, errors, enhance, submitting } = superForm(data, {
+  id: "tool-policy",
+  /**
+   * An edit form, so it must not reset (PRD §8).
+   *
+   * Superforms resets to the data it was initialised with after a successful
+   * submit unless told otherwise, which on a settings form means the teacher
+   * types a new value, presses Save, and watches the field snap back to the old
+   * one. The write had in fact succeeded; only the screen disagreed, and the
+   * natural reading is that saving does not work.
+   */
+  resetForm: false,
+});
 
 const MB = 1024 * 1024;
 const KB = 1024;
