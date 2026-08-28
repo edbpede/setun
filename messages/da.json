@@ -460,6 +460,7 @@
   "student_skills_link": "Mine evner",
   "student_skills_title": "Mine evner",
   "validation_gateway_model_required": "Skriv modellens id hos gatewayen.",
+  "validation_gateway_model_unknown": "Gatewayen har ingen model med det navn. Den har: {models}",
   "validation_name_required": "Skriv et navn.",
   "validation_password_too_short": "Brug mindst 12 tegn.",
   "validation_passwords_differ": "De to adgangskoder er ikke ens.",

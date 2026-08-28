@@ -4,6 +4,7 @@ import { fail, setError, superValidate } from "sveltekit-superforms";
 import { valibot } from "sveltekit-superforms/adapters";
 import * as v from "valibot";
 import type { CredentialCard } from "$lib/credentials";
+import * as m from "$lib/paraglide/messages";
 import {
   EDUCATOR_SESSION_COOKIE_NAME,
   EDUCATOR_SESSION_TTL_DAYS,
@@ -20,7 +21,7 @@ import { getConfig } from "$lib/server/config";
 import type { AppDatabase } from "$lib/server/db/client";
 import { getClassroom } from "$lib/server/db/queries/classrooms";
 import { getAliasById } from "$lib/server/db/queries/model-aliases";
-import { checkGatewayHealth } from "$lib/server/gateway/health";
+import { baseModelId, checkGatewayHealth, listGatewayModelIds } from "$lib/server/gateway/health";
 import { log } from "$lib/server/logging";
 import {
   claimSetup,
@@ -432,6 +433,31 @@ export const actions: Actions = {
 
     const form = await superValidate(request, aliasAdapter, { id: ALIAS_FORM_ID });
     if (!form.valid) return fail(400, { aliasForm: form });
+
+    /**
+     * Check the identifier against the gateway before saving it (§9).
+     *
+     * Step 2 has just listed the models this gateway serves, and a typo here
+     * produces an installation whose only alias — and therefore its utility
+     * alias too — points at nothing, with no sign of it until the first pupil
+     * sends the first message. The wizard's own summary would still report the
+     * model "ready".
+     *
+     * A gateway that does not answer does not block setup: it may simply be
+     * starting, and refusing to let an operator finish would be worse than the
+     * typo this guards against.
+     */
+    const served = await listGatewayModelIds(getGatewayAdapter());
+    if (served !== null && !served.includes(baseModelId(form.data.gatewayModelId))) {
+      setError(
+        form,
+        "gatewayModelId",
+        m.validation_gateway_model_unknown({
+          models: served.join(", "),
+        }),
+      );
+      return fail(400, { aliasForm: form });
+    }
 
     const progress = stillClaimed(claim);
     if (!progress) return refuseAliasStep(403, "claim_lost");

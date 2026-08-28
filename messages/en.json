@@ -460,6 +460,7 @@
   "student_skills_link": "My skills",
   "student_skills_title": "My skills",
   "validation_gateway_model_required": "Enter the gateway model identifier.",
+  "validation_gateway_model_unknown": "The gateway does not serve a model called that. It serves: {models}",
   "validation_name_required": "Enter a name.",
   "validation_password_too_short": "Use at least 12 characters.",
   "validation_passwords_differ": "The two passwords are not the same.",
