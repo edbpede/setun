@@ -119,6 +119,30 @@ const handleLocale: Handle = ({ event, resolve }) => {
   const request = preferred ? withLocaleCookie(event.request, preferred) : event.request;
   event.request = request;
 
+  /**
+   * Tell the browser which locale won, whenever the pupil's preference differs
+   * from the cookie it sent (PRD §8, §18).
+   *
+   * Rewriting the request cookie above settles the *server* render, and only
+   * that. Paraglide's client reads the real `document.cookie`, so a browser
+   * still carrying an older value re-resolves to it on hydration and swaps the
+   * page back — the pupil sees `lang="da"` on a page rendered entirely in
+   * English, and the classroom's language setting and their own override both
+   * look inert while in fact both were applied. The default is `en`, so a
+   * Danish classroom is the case that breaks.
+   *
+   * Not `HttpOnly`: Paraglide's client has to read it, which is the whole point.
+   * It carries a locale and nothing else.
+   */
+  if (preferred && event.cookies.get(cookieName) !== preferred) {
+    event.cookies.set(cookieName, preferred, {
+      path: "/",
+      httpOnly: false,
+      sameSite: "lax",
+      maxAge: 60 * 60 * 24 * 365,
+    });
+  }
+
   return paraglideMiddleware(request, ({ request: localised, locale }) => {
     event.request = localised;
 

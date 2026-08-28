@@ -1,4 +1,5 @@
 import * as v from "valibot";
+import * as m from "$lib/paraglide/messages";
 import { BUDGET_PRESET_NAMES } from "../agent/budgets";
 import {
   CLASSROOM_STATES,
@@ -37,7 +38,15 @@ import { OPEN_DURATIONS } from "./schedule";
 const MINUTES_PER_DAY = 24 * 60;
 
 /** A trimmed, non-empty string of bounded length. */
-const label = (max: number) => v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(max));
+/**
+ * A required single-line name.
+ *
+ * The empty case carries an authored message: unlabelled, Valibot reports
+ * "Invalid length: Expected >=1 but received 0", which is a developer's
+ * diagnostic and was reaching teachers and operators verbatim.
+ */
+const label = (max: number) =>
+  v.pipe(v.string(), v.trim(), v.minLength(1, m.validation_name_required()), v.maxLength(max));
 
 /**
  * Free text an educator may clear.
@@ -65,7 +74,10 @@ const flag = v.optional(v.boolean(), false);
  * Nullable rather than zero: "optional per-million-token prices" (§9), and a
  * price of zero would be priced as free rather than unpriced.
  */
-const optionalPrice = v.nullable(v.pipe(v.number(), v.minValue(0), v.maxValue(10_000)), null);
+const optionalPrice = v.nullable(
+  v.pipe(v.number(), v.minValue(0, m.validation_price_negative()), v.maxValue(10_000)),
+  null,
+);
 
 /**
  * An IANA zone, checked against the platform's own database.
@@ -313,7 +325,15 @@ export const AliasSchema = v.object({
   /** The friendly name — the only part of an alias a pupil ever sees (§9). */
   name: label(60),
   /** The identifier CPA knows. Never sent to a student's browser (§9, §21). */
-  gatewayModelId: label(200),
+  // Named outright rather than through `label()`: these are the two fields an
+  // educator actually leaves blank, and "Invalid length: Expected >=1" is not a
+  // sentence anyone should be shown.
+  gatewayModelId: v.pipe(
+    v.string(),
+    v.trim(),
+    v.minLength(1, m.validation_gateway_model_required()),
+    v.maxLength(200),
+  ),
   dialect: v.picklist(GATEWAY_DIALECTS),
   available: flag,
   dataProtection: flag,
