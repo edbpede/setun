@@ -86,7 +86,15 @@ const action =
 
   <!-- Open or closed, with the next window in the classroom's own timezone (§8, §18). -->
   <section class="flex flex-col gap-2">
-    <h2 class="text-sm font-medium text-foreground">{m.classroom_closed_title()}</h2>
+    <!--
+      A neutral heading: the state is the paragraph below it, and this section is
+      shown whether the classroom is open or closed. It used to reuse
+      `classroom_closed_title`, so a pupil whose classroom was open read
+      "Classroom closed" with the word "Open" directly beneath it.
+      `ClassroomClosed.svelte` still uses that message, correctly — it only ever
+      renders when the classroom is in fact closed.
+    -->
+    <h2 class="text-sm font-medium text-foreground">{m.classroom_status_title()}</h2>
     <p class="text-sm text-foreground">
       {#if data.status.open}
         {m.educator_state_open()}

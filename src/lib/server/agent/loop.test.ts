@@ -101,6 +101,59 @@ describe("runTurn termination", () => {
     expect(events.some((e) => e.type === "error")).toBe(false);
   });
 
+  it("still accounts for the tokens when the signal fires mid-stream", async () => {
+    /**
+     * The regression this guards (PRD §10): a cancelled read leaves the stream
+     * loop by throwing, so the trailing `resolveUsage` was skipped and an
+     * aborted turn recorded no usage at all — the gateway had generated and
+     * billed the text, and neither the pupil's allowance nor the classroom cap
+     * moved. "Usage is never counted as zero" has to hold here above all,
+     * because a pupil can abort as often as they like.
+     */
+    /**
+     * The stream delivers text and is then cancelled, which is what the read
+     * sees when a pupil presses Stop: an `AbortError` out of the body, after
+     * deltas and before the gateway reports usage. Driving it from the response
+     * rather than the signal is deliberate — the fetch stub only inspects the
+     * signal when the request is made, so a signal fired later would let the
+     * turn finish normally and test nothing.
+     */
+    const { adapter } = adapterOver(
+      () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(stream) {
+              const frame = JSON.stringify({
+                choices: [{ delta: { content: "Et loop gentager noget" } }],
+              });
+              stream.enqueue(new TextEncoder().encode(`data: ${frame}\n\n`));
+            },
+            // Erroring here rather than in `start` lets the delta be read first,
+            // so the cancellation lands mid-turn instead of before it began.
+            pull(stream) {
+              stream.error(Object.assign(new Error("aborted"), { name: "AbortError" }));
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+    );
+
+    const events = await collect(runTurn({ adapter, dialect: "openai", model: "m", path }));
+
+    expect(events.at(-1)).toEqual({ type: "done", reason: "aborted" });
+
+    const usage = events.filter((event) => event.type === "usage");
+    expect(usage).toHaveLength(1);
+    const [only] = usage;
+    if (only?.type !== "usage") throw new Error("expected a usage event");
+    // Estimated, because the gateway never got to report: the figures below are
+    // whatever the text produced so far costs, and the point is that they are
+    // not zero.
+    expect(only.estimated).toBe(true);
+    expect(only.inputTokens).toBeGreaterThan(0);
+    expect(only.outputTokens).toBeGreaterThan(0);
+  });
+
   it("terminates with an error event and reason error when the gateway fails", async () => {
     const { adapter } = adapterOver(() => new Response("upstream boom", { status: 502 }));
 

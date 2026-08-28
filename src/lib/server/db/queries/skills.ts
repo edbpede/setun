@@ -194,12 +194,36 @@ export function grantSkill(
   db: AppDatabase,
   input: { classroomId: string; skillId: string; studentId?: string | null },
 ): void {
+  const studentId = input.studentId ?? null;
+
+  /**
+   * The class-wide grant is checked by hand, because the unique index cannot
+   * see it.
+   *
+   * `classroom_skill_unique` covers (classroomId, skillId, studentId), and a
+   * class-wide grant leaves `studentId` NULL. SQLite treats NULLs as distinct
+   * in a unique index, so the constraint never fires and `onConflictDoNothing`
+   * has nothing to do nothing about — every press of the class-wide control
+   * inserted another identical row. Per-pupil grants are unaffected and stay on
+   * the index.
+   */
+  if (studentId === null) {
+    const existing = db
+      .select({ id: classroomSkill.id })
+      .from(classroomSkill)
+      .where(
+        and(
+          eq(classroomSkill.classroomId, input.classroomId),
+          eq(classroomSkill.skillId, input.skillId),
+          isNull(classroomSkill.studentId),
+        ),
+      )
+      .get();
+    if (existing) return;
+  }
+
   db.insert(classroomSkill)
-    .values({
-      classroomId: input.classroomId,
-      skillId: input.skillId,
-      studentId: input.studentId ?? null,
-    })
+    .values({ classroomId: input.classroomId, skillId: input.skillId, studentId })
     .onConflictDoNothing()
     .run();
 }

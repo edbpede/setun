@@ -67,40 +67,67 @@ export class OpenAiDialect implements GatewayDialectAdapter {
     /** Tool calls arrive in fragments across chunks, keyed by their index. */
     const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
 
-    for await (const event of parseSseStream(GatewayClient.requireBody(response))) {
-      if (event.data === DONE_SENTINEL) break;
+    /**
+     * From here the provider has accepted the request: the post above returned
+     * a response, so the prompt is already being billed whatever happens next.
+     * A cancelled read or a broken stream leaves this loop by *throwing*, which
+     * skipped the usage below entirely — so a pupil who pressed Stop while the
+     * model was still thinking, before a single event arrived, was accounted as
+     * having spent nothing. "Usage is never counted as zero" (§10) has to hold
+     * from acceptance onwards, not from the first delta onwards.
+     *
+     * The guard belongs here rather than in the agent loop, which cannot see
+     * this boundary: above it a refused, unreachable or unauthorised request
+     * genuinely cost nothing, and charging a pupil for one would be worse than
+     * the gap it closed.
+     */
+    try {
+      for await (const event of parseSseStream(GatewayClient.requireBody(response))) {
+        if (event.data === DONE_SENTINEL) break;
 
-      let chunk: ChatCompletionChunk;
-      try {
-        chunk = JSON.parse(event.data) as ChatCompletionChunk;
-      } catch {
-        // A malformed chunk is an upstream fault, not something to pass through.
-        throw new GatewayError("unavailable", "malformed chunk in upstream stream");
+        let chunk: ChatCompletionChunk;
+        try {
+          chunk = JSON.parse(event.data) as ChatCompletionChunk;
+        } catch {
+          // A malformed chunk is an upstream fault, not something to pass through.
+          throw new GatewayError("unavailable", "malformed chunk in upstream stream");
+        }
+
+        if (chunk.usage) {
+          reported = {
+            inputTokens: chunk.usage.prompt_tokens,
+            outputTokens: chunk.usage.completion_tokens,
+          };
+        }
+
+        const delta = chunk.choices?.[0]?.delta;
+
+        if (delta?.content) {
+          completion += delta.content;
+          yield { type: "text-delta", text: delta.content };
+        }
+
+        for (const fragment of delta?.tool_calls ?? []) {
+          const index = fragment.index ?? 0;
+          const existing = toolCalls.get(index) ?? { id: "", name: "", arguments: "" };
+          toolCalls.set(index, {
+            id: fragment.id ?? existing.id,
+            name: fragment.function?.name ?? existing.name,
+            arguments: existing.arguments + (fragment.function?.arguments ?? ""),
+          });
+        }
       }
-
-      if (chunk.usage) {
-        reported = {
-          inputTokens: chunk.usage.prompt_tokens,
-          outputTokens: chunk.usage.completion_tokens,
-        };
-      }
-
-      const delta = chunk.choices?.[0]?.delta;
-
-      if (delta?.content) {
-        completion += delta.content;
-        yield { type: "text-delta", text: delta.content };
-      }
-
-      for (const fragment of delta?.tool_calls ?? []) {
-        const index = fragment.index ?? 0;
-        const existing = toolCalls.get(index) ?? { id: "", name: "", arguments: "" };
-        toolCalls.set(index, {
-          id: fragment.id ?? existing.id,
-          name: fragment.function?.name ?? existing.name,
-          arguments: existing.arguments + (fragment.function?.arguments ?? ""),
-        });
-      }
+    } catch (cause) {
+      // Whatever was read before the failure, priced and handed on; the abort or
+      // the fault then carries on to the agent loop, which decides how the turn
+      // ended. Yielded from here so the trailing figure below stays the only one
+      // a completed stream produces.
+      yield resolveUsage({
+        reported,
+        promptText: promptTextOf(request.messages),
+        completionText: completion,
+      });
+      throw cause;
     }
 
     // Emitted once complete: a half-assembled argument string is not a call the

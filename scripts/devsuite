@@ -405,6 +405,7 @@ class RunState(TypedDict, total=False):
     started_at: str
     log_level: str
     with_cpa: bool
+    production: bool
     compose_project: str
     services: dict[str, ServiceState]
     # The educator the running children were spawned with, and whether its
@@ -830,6 +831,9 @@ def child_environment(
             "SETUN_APP_ORIGIN": app_origin,
             "SETUN_SANDBOX_ORIGIN": sandbox_origin,
             "ORIGIN": app_origin,
+            # adapter-node reads its listen port from PORT. Vite takes --port on
+            # the command line and ignores this, so it is safe to set for both.
+            "PORT": str(ports["app"]),
             "SETUN_SANDBOX_PORT": str(ports["sandbox"]),
             # The app runs on the host here, so it reaches CPA on a published
             # port rather than over Compose's internal network.
@@ -976,7 +980,12 @@ class Service:
     health: str = "starting"
 
 
-def app_service(level: str, port: int) -> Service:
+def app_service(level: str, port: int, *, built: bool) -> Service:
+    if built:
+        # The adapter-node output, exactly as a deployment runs it. It takes its
+        # port and origin from the environment rather than the command line.
+        return Service(name="app", argv=["bun", "run", "start"], port=port)
+
     return Service(
         name="app",
         argv=["bun", "run", "dev", "--port", str(port), "--logLevel", VITE_LEVEL[level]],
@@ -985,11 +994,29 @@ def app_service(level: str, port: int) -> Service:
 
 
 def sandbox_service(level: str, port: int) -> Service:
-    # The sandbox reads its port from SETUN_SANDBOX_PORT (sandbox/vite.config.ts
-    # binds it with strictPort), so only the level is passed on the command line.
+    """
+    The sandbox is always served from its build, never from Vite's dev server.
+
+    Not a performance choice — the dev server cannot serve a working sandbox at
+    all. The runner document is sandboxed without `allow-same-origin`, so its
+    origin is opaque, and a document with an opaque origin may not fetch a
+    subresource from an `http://` origin on the local network. Vite's dev server
+    serves unbundled ES modules, which is nothing but such subresources: the
+    runner's own module, and every module it imports. None of them load, the
+    runner never posts `ready`, and the artifact panel waits on a build that
+    cannot start.
+
+    The build inlines the runner into `index.html` for the same reason, which
+    leaves the pinned runtimes as the only files the origin still serves. So the
+    built sandbox works and the dev-server sandbox cannot, and there is no
+    version of this worth offering as a choice.
+
+    The sandbox reads its port from SETUN_SANDBOX_PORT (sandbox/vite.config.ts
+    binds it with strictPort), so only the level is passed on the command line.
+    """
     return Service(
         name="sandbox",
-        argv=["bun", "run", "dev:sandbox", "--logLevel", VITE_LEVEL[level]],
+        argv=["bun", "run", "preview:sandbox", "--logLevel", VITE_LEVEL[level]],
         port=port,
     )
 
@@ -1272,6 +1299,7 @@ class Supervisor:
         ports: dict[str, int],
         level: str,
         with_cpa: bool,
+        production: bool,
         environment: dict[str, str],
         lock: InstanceLock,
     ) -> None:
@@ -1279,6 +1307,7 @@ class Supervisor:
         self.ports: dict[str, int] = ports
         self.level: str = level
         self.with_cpa: bool = with_cpa
+        self.production: bool = production
         self.environment: dict[str, str] = environment
         self.renderer: Renderer = Renderer(OUT, level)
         self.queue: Queue[Line] = Queue()
@@ -1384,10 +1413,43 @@ class Supervisor:
                 raise RuntimeError("cpa failed to start")
             self.spawn(cpa_service(self.instance.compose_project, self.ports["cpa"]))
 
-        self.spawn(app_service(self.level, self.ports["app"]))
+        self.build_artifacts()
+
+        self.spawn(app_service(self.level, self.ports["app"], built=self.production))
         self.spawn(sandbox_service(self.level, self.ports["sandbox"]))
 
         self.write_state()
+
+    def build_artifacts(self) -> None:
+        """
+        Build whatever this run serves from a build, before anything is spawned.
+
+        The sandbox is always built (see `sandbox_service`); the application is
+        built only for `--production`. Both are the repository's own package
+        scripts, so there is still one place that knows how to build each.
+
+        Synchronous and fail-loud on purpose: a stale `build-sandbox/` serves an
+        old runner that looks fine and behaves like the last build, which is the
+        most confusing failure this suite could produce.
+        """
+        steps = [("sandbox", "build:sandbox")]
+        if self.production:
+            steps.insert(0, ("app", "build"))
+
+        for name, script in steps:
+            self.emit("suite", f"building {name} (bun run {script})")
+            result = subprocess.run(
+                ["bun", "run", script],
+                cwd=REPO,
+                env=self.environment,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout).strip()
+                tail = "\n".join(detail.splitlines()[-20:])
+                self.emit("suite", f"error: `bun run {script}` failed\n{tail}")
+                raise RuntimeError(f"{name} build failed")
 
     def write_state(self) -> None:
         state: RunState = {
@@ -1397,6 +1459,7 @@ class Supervisor:
             "started_at": now_iso(),
             "log_level": self.level,
             "with_cpa": self.with_cpa,
+            "production": self.production,
             "compose_project": self.instance.compose_project,
             "services": {
                 service.name: {
@@ -1577,13 +1640,21 @@ def relative(path: Path) -> str:
         return str(path)
 
 
-def banner(instance: Instance, ports: dict[str, int], level: str, with_cpa: bool, ctrl_c: str) -> None:
+def banner(
+    instance: Instance,
+    ports: dict[str, int],
+    level: str,
+    with_cpa: bool,
+    production: bool,
+    ctrl_c: str,
+) -> None:
     rule = OUT.dim("─" * 66)
     mode = OUT.bold(instance.mode)
     print(rule)
     print(f"  {OUT.bold('Setun dev suite')}  {OUT.dim('·')}  instance {OUT.bold(instance.name)} ({mode})  {OUT.dim('·')}  log level {OUT.bold(level)}")
-    print(f"  {OUT.paint('app'.ljust(NAME_COLUMN), SERVICE_COLOUR['app'])} http://localhost:{ports['app']}")
-    print(f"  {OUT.paint('sandbox'.ljust(NAME_COLUMN), SERVICE_COLOUR['sandbox'])} http://localhost:{ports['sandbox']}")
+    build = OUT.bold("production build") if production else OUT.dim("dev server")
+    print(f"  {OUT.paint('app'.ljust(NAME_COLUMN), SERVICE_COLOUR['app'])} http://localhost:{ports['app']} {OUT.dim('·')} {build}")
+    print(f"  {OUT.paint('sandbox'.ljust(NAME_COLUMN), SERVICE_COLOUR['sandbox'])} http://localhost:{ports['sandbox']} {OUT.dim('·')} {OUT.dim('built (always)')}")
     if with_cpa:
         print(f"  {OUT.paint('cpa'.ljust(NAME_COLUMN), SERVICE_COLOUR['cpa'])} http://127.0.0.1:{ports['cpa']} {OUT.dim('(container)')}")
     for label, value in sign_in_rows(instance, ports):
@@ -1764,6 +1835,7 @@ class Options(Protocol):
     sandbox_port: int | None
     cpa_port: int | None
     with_cpa: bool
+    production: bool
     first_run: bool
     detach: bool
     force: bool
@@ -1927,6 +1999,7 @@ def attach_to_running(options: Options, instance: Instance) -> int:
         ports,
         state.get("log_level", chosen_level(options)),
         "cpa" in (state.get("services") or {}),
+        bool(state.get("production", False)),
         "detaches; the stack keeps running",
     )
     if config.get("first_run"):
@@ -2028,16 +2101,26 @@ def command_start(options: Options) -> int:
 
     if options.detach:
         return _start_detached(
-            instance, ports, level, options.with_cpa, environment, lock, first_run
+            instance,
+            ports,
+            level,
+            options.with_cpa,
+            options.production,
+            environment,
+            lock,
+            first_run,
         )
 
-    supervisor = Supervisor(instance, ports, level, options.with_cpa, environment, lock)
+    supervisor = Supervisor(
+        instance, ports, level, options.with_cpa, options.production, environment, lock
+    )
 
     banner(
         instance,
         ports,
         level,
         options.with_cpa,
+        options.production,
         "stops the stack" + (" and destroys it" if instance.mode == "ephemeral" else ""),
     )
 
@@ -2078,6 +2161,7 @@ def _start_detached(
     ports: dict[str, int],
     level: str,
     with_cpa: bool,
+    production: bool,
     environment: dict[str, str],
     lock: InstanceLock,
     first_run: bool = False,
@@ -2110,7 +2194,9 @@ def _start_detached(
                     f"{relative(instance.logs / 'supervisor.out')} has what the supervisor did."
                 ),
             )
-        banner(instance, ports, level, with_cpa, "n/a — detached; `devsuite stop` ends it")
+        banner(
+            instance, ports, level, with_cpa, production, "n/a — detached; `devsuite stop` ends it"
+        )
         if first_run:
             # The child reported healthy, so its first request has been served
             # and the token is already on disk. This is the only place a
@@ -2133,7 +2219,9 @@ def _start_detached(
 
     status = 1
     try:
-        supervisor = Supervisor(instance, ports, level, with_cpa, environment, lock)
+        supervisor = Supervisor(
+            instance, ports, level, with_cpa, production, environment, lock
+        )
         try:
             supervisor.start_stack()
             healthy = supervisor.await_health()
@@ -2747,6 +2835,17 @@ def add_lifecycle_flags(parser: argparse.ArgumentParser) -> None:
         help=(
             "also run the CLIProxyAPI container (needs a Docker engine and "
             "cpa/config.yaml); pass it on each run, it is not remembered"
+        ),
+    )
+    _ = parser.add_argument(
+        "--production",
+        action="store_true",
+        help=(
+            "run the application the way a deployment does: `bun run build` and the "
+            "adapter-node server, instead of the Vite dev server. Slower to start and "
+            "no hot reload, and the only way to reproduce behaviour that differs "
+            "between a dev server and a build. The artifact sandbox is always built, "
+            "with or without this flag"
         ),
     )
     _ = parser.add_argument(

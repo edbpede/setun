@@ -14,7 +14,22 @@ import type { PageProps } from "./$types";
  * The gateway identifier is editable here and appears nowhere else in the
  * product — students only ever see the friendly name (§9, §21).
  */
-let { data }: PageProps = $props();
+let { data, form: actionResult }: PageProps = $props();
+
+/**
+ * The refusal that belongs to one row, if the last action produced one.
+ *
+ * The per-row update and delete forms are plain `use:enhance` — they are not
+ * bound to the create form's Superforms instance — so a failure returned for
+ * them has nowhere to render unless the row looks for it by id. Without this a
+ * rejected save left the typed values in place and said nothing, which reads
+ * exactly like a save that worked.
+ */
+function rowMessage(aliasId: string): string | null {
+  const result = actionResult as { aliasId?: unknown; message?: unknown } | null;
+  if (!result || result.aliasId !== aliasId) return null;
+  return typeof result.message === "string" ? result.message : null;
+}
 
 // Superforms captures the initial page data and then keeps itself in sync by
 // subscribing to page updates internally, so the compiler's warning about a
@@ -33,13 +48,19 @@ const field = "h-9 rounded-md border border-input bg-background px-3 text-sm tex
 const check = "flex items-center gap-2 text-sm text-foreground";
 </script>
 
+<svelte:head><title>{m.educator_aliases_title()} · {m.educator_panel_title()}</title></svelte:head>
+
 <div class="flex flex-col gap-8">
   <section class="flex flex-col gap-3">
     <h1 class="text-base font-semibold text-foreground">{m.educator_aliases_title()}</h1>
 
     <ul class="flex flex-col divide-y divide-border border-y border-border">
       {#each data.aliases as alias (alias.id)}
+        {@const refusal = rowMessage(alias.id)}
         <li class="flex flex-col gap-2 py-3">
+          {#if refusal}
+            <p role="alert" class="text-xs text-destructive">{refusal}</p>
+          {/if}
           <form
             method="POST"
             action="?/update"

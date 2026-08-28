@@ -1,10 +1,12 @@
 import { fail as kitFail } from "@sveltejs/kit";
-import { fail, superValidate } from "sveltekit-superforms";
+import { fail, setError, superValidate } from "sveltekit-superforms";
 import { valibot } from "sveltekit-superforms/adapters";
 import * as v from "valibot";
+import * as m from "$lib/paraglide/messages";
 import { requireEducatorPage } from "$lib/server/auth/guards";
 import { getDb } from "$lib/server/boot";
 import { AliasSchema } from "$lib/server/classroom/schemas";
+import { isForeignKeyViolation, isUniqueViolation } from "$lib/server/db/constraints";
 import {
   createAlias,
   deleteAlias,
@@ -13,6 +15,14 @@ import {
   updateAlias,
 } from "$lib/server/db/queries/model-aliases";
 import type { Actions, PageServerLoad } from "./$types";
+
+/** The first message Superforms recorded, whichever field it belongs to. */
+function firstMessage(errors: Record<string, unknown>): string | null {
+  for (const value of Object.values(errors)) {
+    if (Array.isArray(value) && typeof value[0] === "string") return value[0];
+  }
+  return null;
+}
 
 /**
  * Model alias management (PRD §9, §17).
@@ -49,8 +59,16 @@ export const actions: Actions = {
     const form = await superValidate(request, adapter);
     if (!form.valid) return fail(400, { form });
 
-    const alias = createAlias(getDb(), { ...form.data, isUtility: false });
-    if (form.data.isUtility) designateUtilityAlias(getDb(), alias.id);
+    // `model_alias.name` is unique, and reusing a name is an ordinary mistake
+    // rather than a fault: without this it escaped as an unhandled constraint
+    // error, so the educator got a 500 and the page showed nothing at all.
+    try {
+      const alias = createAlias(getDb(), { ...form.data, isUtility: false });
+      if (form.data.isUtility) designateUtilityAlias(getDb(), alias.id);
+    } catch (cause) {
+      if (isUniqueViolation(cause)) return setError(form, "name", m.educator_alias_name_taken());
+      throw cause;
+    }
 
     return { form };
   },
@@ -65,13 +83,31 @@ export const actions: Actions = {
     if (!id.success) return kitFail(400, { invalid: true });
 
     const form = await superValidate(body, adapter);
-    if (!form.valid) return fail(400, { form });
+    if (!form.valid) {
+      // The row forms are plain `use:enhance`, not bound to the create form's
+      // Superforms instance, so returning `{ form }` here would put the errors
+      // somewhere nothing renders. Name the row and the first message instead.
+      return kitFail(400, {
+        aliasId: id.output.aliasId,
+        message: firstMessage(form.errors) ?? m.educator_alias_save_failed(),
+      });
+    }
 
-    updateAlias(getDb(), {
-      aliasId: id.output.aliasId,
-      values: { ...form.data, isUtility: false },
-    });
-    if (form.data.isUtility) designateUtilityAlias(getDb(), id.output.aliasId);
+    try {
+      updateAlias(getDb(), {
+        aliasId: id.output.aliasId,
+        values: { ...form.data, isUtility: false },
+      });
+      if (form.data.isUtility) designateUtilityAlias(getDb(), id.output.aliasId);
+    } catch (cause) {
+      if (isUniqueViolation(cause)) {
+        return kitFail(400, {
+          aliasId: id.output.aliasId,
+          message: m.educator_alias_name_taken(),
+        });
+      }
+      throw cause;
+    }
 
     return { form };
   },
@@ -82,7 +118,19 @@ export const actions: Actions = {
     const aliasId = await aliasIdFrom(request);
     if (!aliasId) return kitFail(400, { invalid: true });
 
-    deleteAlias(getDb(), aliasId);
+    // `usage_event.modelAliasId` references this row with no cascade, on
+    // purpose: an alias a pupil has used cannot be removed without discarding
+    // the accounting that names it. Retiring a model is the normal case, so it
+    // gets a sentence rather than a 500.
+    try {
+      deleteAlias(getDb(), aliasId);
+    } catch (cause) {
+      if (isForeignKeyViolation(cause)) {
+        return kitFail(409, { aliasId, message: m.educator_alias_in_use() });
+      }
+      throw cause;
+    }
+
     return { deleted: true };
   },
 };

@@ -328,49 +328,67 @@ async function* runStep(args: {
   let provisional = 0;
   let stopped: TurnEndReason | null = null;
 
-  for await (const event of input.adapter.streamChat(input.dialect, {
-    model: input.model,
-    messages,
-    ...(args.definitions.length > 0 ? { tools: args.definitions } : {}),
-    signal: args.signal,
-  })) {
-    reachedUpstream = true;
+  try {
+    for await (const event of input.adapter.streamChat(input.dialect, {
+      model: input.model,
+      messages,
+      ...(args.definitions.length > 0 ? { tools: args.definitions } : {}),
+      signal: args.signal,
+    })) {
+      reachedUpstream = true;
 
-    if (event.type === "text-delta") {
-      text += event.text;
-      // A provisional figure while the step is in flight, so the token cap can
-      // bind mid-stream; the gateway's own number supersedes it below.
-      const estimate = estimateTokens(text);
-      budget.recordProvisionalTokens(estimate - provisional);
-      provisional = estimate;
-    }
-    if (event.type === "usage") {
-      sawUsage = true;
-      budget.settleStepTokens(event.inputTokens + event.outputTokens);
-    }
-    if (event.type === "tool-call-started") {
-      toolCalls.push({
-        id: event.toolCallId,
-        name: event.toolName,
-        arguments: typeof event.arguments === "string" ? event.arguments : "{}",
-      });
-      // Held back until the permission mode has been applied: a student in
-      // strict mode must see the request, not the announcement (§11).
-      continue;
-    }
+      if (event.type === "text-delta") {
+        text += event.text;
+        // A provisional figure while the step is in flight, so the token cap can
+        // bind mid-stream; the gateway's own number supersedes it below.
+        const estimate = estimateTokens(text);
+        budget.recordProvisionalTokens(estimate - provisional);
+        provisional = estimate;
+      }
+      if (event.type === "usage") {
+        sawUsage = true;
+        budget.settleStepTokens(event.inputTokens + event.outputTokens);
+      }
+      if (event.type === "tool-call-started") {
+        toolCalls.push({
+          id: event.toolCallId,
+          name: event.toolName,
+          arguments: typeof event.arguments === "string" ? event.arguments : "{}",
+        });
+        // Held back until the permission mode has been applied: a student in
+        // strict mode must see the request, not the announcement (§11).
+        continue;
+      }
 
-    yield event;
+      yield event;
 
-    // The clean boundary §10 asks for: the event just yielded is durable, the
-    // student keeps every word that reached them, and nothing further is read.
-    if (budget.exceeded(now()) !== null) {
-      stopped = "budget";
-      break;
+      // The clean boundary §10 asks for: the event just yielded is durable, the
+      // student keeps every word that reached them, and nothing further is read.
+      if (budget.exceeded(now()) !== null) {
+        stopped = "budget";
+        break;
+      }
     }
+  } catch (cause) {
+    /**
+     * A cancelled read leaves this loop by *throwing*, not by breaking, so the
+     * trailing usage below is never reached — which is how an aborted turn came
+     * to be recorded as costing nothing at all. The tokens were spent: the
+     * gateway generated them and the pupil read them. Account for what was
+     * produced before the cancellation, then let the abort carry on to
+     * `runTurn`, which is where it decides the turn ended `aborted`.
+     *
+     * A budget stop breaks out normally and settles below; only this path was
+     * losing the figure.
+     */
+    if (!sawUsage && reachedUpstream) {
+      yield resolveUsage({ promptText: promptTextOf(messages), completionText: text });
+    }
+    throw cause;
   }
 
-  // An abort or a budget stop cuts the dialect off before it reports usage, and
-  // those tokens were still spent: usage is never counted as zero (§10).
+  // A budget stop cuts the dialect off before it reports usage, and those tokens
+  // were still spent: usage is never counted as zero (§10).
   if (!sawUsage && reachedUpstream) {
     yield resolveUsage({ promptText: promptTextOf(messages), completionText: text });
   }

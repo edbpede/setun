@@ -1,4 +1,5 @@
 import * as v from "valibot";
+import * as m from "$lib/paraglide/messages";
 import { ianaTimezone } from "../classroom/schemas";
 import { INTERFACE_LANGUAGES, SESSION_POLICIES } from "../db/schema";
 
@@ -58,15 +59,21 @@ export const EDUCATOR_PASSWORD_MIN_LENGTH = 12;
  */
 export const SetupEducatorSchema = v.pipe(
   v.object({
-    username: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(200)),
-    password: v.pipe(v.string(), v.minLength(EDUCATOR_PASSWORD_MIN_LENGTH), v.maxLength(1_000)),
+    username: v.pipe(
+      v.string(),
+      v.trim(),
+      v.minLength(1, m.validation_username_required()),
+      v.maxLength(200),
+    ),
+    password: v.pipe(
+      v.string(),
+      v.minLength(EDUCATOR_PASSWORD_MIN_LENGTH, m.validation_password_too_short()),
+      v.maxLength(1_000),
+    ),
     confirmPassword: v.pipe(v.string(), v.maxLength(1_000)),
   }),
   v.forward(
-    v.check(
-      (input) => input.password === input.confirmPassword,
-      "The two passwords are not the same",
-    ),
+    v.check((input) => input.password === input.confirmPassword, m.validation_passwords_differ()),
     ["confirmPassword"],
   ),
 );

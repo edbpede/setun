@@ -5,6 +5,20 @@ import { clearLoginWindow } from "./support/login-window";
 import { ARTIFACT_MARKER } from "./support/stub-gateway";
 
 /**
+ * Pupil-facing strings, in the classroom's own language (PRD §8, §18).
+ *
+ * This suite creates its classroom through the panel, so it takes the default
+ * `interfaceLanguage` — Danish — and a pupil in it sees Danish. The educator
+ * half stays on the base locale, which is what the panel renders here. Asserting
+ * both in the same language would only be possible by making one of them wrong.
+ */
+const PUPIL_LOCALE = { locale: "da" } as const;
+
+// The login page is deliberately not in that list: nobody is signed in yet, so
+// there is no classroom to take a language from and it renders the base locale.
+
+
+/**
  * The §25 walkthrough, as one continuous run (plan Phase 5 exit criterion).
  *
  * "An educator opens the panel and presses **Open classroom**. Students open
@@ -103,29 +117,29 @@ test("the definition of done, start to finish (§25)", async ({ page, browser })
   await expect(pupil.getByLabel(/e-?mail/i)).toHaveCount(0);
 
   // --- …and asks for an interactive page ---
-  await pupil.getByRole("button", { name: m.chat_new_conversation() }).first().click();
+  await pupil.getByRole("button", { name: m.chat_new_conversation({}, PUPIL_LOCALE) }).first().click();
   await expect(pupil).toHaveURL(/\?c=/);
   const conversationId = new URL(pupil.url()).searchParams.get("c") ?? "";
   await pupil
-    .getByRole("textbox", { name: m.chat_composer_label() })
+    .getByRole("textbox", { name: m.chat_composer_label({}, PUPIL_LOCALE) })
     .fill(`${ARTIFACT_MARKER} lav en side der viser hvordan lag sender information videre`);
-  await pupil.getByRole("button", { name: m.chat_send() }).click();
+  await pupil.getByRole("button", { name: m.chat_send({}, PUPIL_LOCALE) }).click();
 
   // --- …and gets one they can read, change and break ---
   await pupil.getByRole("button", { name: /Build \(1\)|Byg \(1\)/ }).click({ timeout: 30_000 });
 
   const stage = pupil
-    .frameLocator(`iframe[title="${m.artifact_frame_title()}"]`)
+    .frameLocator(`iframe[title="${m.artifact_frame_title({}, PUPIL_LOCALE)}"]`)
     .frameLocator("#stage");
   await expect(stage.locator("#knap")).toHaveText("Klik her", { timeout: 30_000 });
 
   // The generated page runs on the sandbox origin, not the application's (§14).
   const frameSource = await pupil
-    .locator(`iframe[title="${m.artifact_frame_title()}"]`)
+    .locator(`iframe[title="${m.artifact_frame_title({}, PUPIL_LOCALE)}"]`)
     .getAttribute("src");
   expect(frameSource).toContain(new URL(process.env.SETUN_SANDBOX_ORIGIN ?? "http://localhost:4174").host);
 
-  await pupil.getByRole("button", { name: m.artifact_close() }).click();
+  await pupil.getByRole("button", { name: m.artifact_close({}, PUPIL_LOCALE) }).click();
 
   // --- The educator presses Lock classroom ---
   await page.goto(classroomUrl);

@@ -40,3 +40,44 @@ export async function checkGatewayHealth(
     clearTimeout(timer);
   }
 }
+
+/**
+ * The model identifiers the gateway serves, or null when it is not answering.
+ *
+ * Separate from `checkGatewayHealth`, which deliberately reduces the answer to
+ * "reachable, and how many" because that is all an educator needs. The setup
+ * wizard needs the identifiers themselves, so it can tell an operator that the
+ * one they typed is not among them — a typo there produces an installation whose
+ * only model points at nothing, and whose utility model does too.
+ *
+ * Null rather than an empty array on failure, so a caller can tell "the gateway
+ * says it serves nothing" from "the gateway did not answer" and decline to
+ * block on the second.
+ */
+export async function listGatewayModelIds(
+  adapter: GatewayAdapter,
+  timeoutMs: number = HEALTH_TIMEOUT_MS,
+): Promise<string[] | null> {
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), timeoutMs);
+
+  try {
+    const models = await adapter.listModels("openai", abort.signal);
+    return models.map((model) => model.id);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * The identifier without its reasoning-effort suffix.
+ *
+ * `gpt-5.6-luna(high)` is CLIProxyAPI's syntax: the gateway strips the
+ * parenthesised part before routing, so the name it lists is the bare one and a
+ * literal comparison would reject every alias that sets an effort.
+ */
+export function baseModelId(gatewayModelId: string): string {
+  return gatewayModelId.replace(/\([^)]*\)\s*$/, "").trim();
+}

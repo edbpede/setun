@@ -4,6 +4,7 @@ import {
   createClassroom,
   listClassrooms,
   setClassroomState,
+  updateClassroomSettings,
 } from "../../src/lib/server/db/queries/classrooms";
 import {
   createAlias,
@@ -42,9 +43,23 @@ if (!databasePath || !pepper) {
 // before the application does — and beside other helpers doing the same.
 const db = await openE2eDatabase(databasePath);
 
-const classroom =
-  listClassrooms(db).find((candidate) => candidate.name === classroomName) ??
-  createClassroom(db, { name: classroomName });
+const existing = listClassrooms(db).find((candidate) => candidate.name === classroomName);
+const classroom = existing ?? createClassroom(db, { name: classroomName });
+
+/**
+ * The suites assert against English strings, so the classroom says English.
+ *
+ * `classroom.interfaceLanguage` defaults to `da`, and a pupil's interface
+ * follows their classroom (PRD §8, §18) — so a seeded classroom left on the
+ * default renders Danish, while `m.*()` in the test process resolves through
+ * the base locale and looks for English. Saying it outright keeps every suite
+ * testing behaviour rather than translation, and keeps the locale itself
+ * testable on its own terms rather than by accident everywhere.
+ */
+updateClassroomSettings(db, {
+  classroomId: classroom.id,
+  settings: { interfaceLanguage: "en" },
+});
 
 /**
  * The alias every suite chats through, made by whichever helper reaches the
