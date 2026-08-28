@@ -74,70 +74,101 @@ export class AnthropicDialect implements GatewayDialectAdapter {
     /** Tool blocks stream their input as JSON fragments, keyed by block index. */
     const toolBlocks = new Map<number, { id: string; name: string; arguments: string }>();
 
-    for await (const event of parseSseStream(GatewayClient.requireBody(response))) {
-      let payload: MessageStreamEvent;
-      try {
-        payload = JSON.parse(event.data) as MessageStreamEvent;
-      } catch {
-        throw new GatewayError("unavailable", "malformed chunk in upstream stream");
-      }
-
-      const type = payload.type ?? event.event;
-      const index = payload.index ?? 0;
-
-      switch (type) {
-        case "message_start": {
-          inputTokens = payload.message?.usage?.input_tokens ?? inputTokens;
-          outputTokens = payload.message?.usage?.output_tokens ?? outputTokens;
-          break;
+    /**
+     * From here the provider has accepted the request: the post above returned
+     * a response, so the prompt is already being billed whatever happens next.
+     * A cancelled read or a broken stream leaves this loop by *throwing*, which
+     * skipped the usage below entirely — so a pupil who pressed Stop while the
+     * model was still thinking, before a single event arrived, was accounted as
+     * having spent nothing. "Usage is never counted as zero" (§10) has to hold
+     * from acceptance onwards, not from the first delta onwards.
+     *
+     * The guard belongs here rather than in the agent loop, which cannot see
+     * this boundary: above it a refused, unreachable or unauthorised request
+     * genuinely cost nothing, and charging a pupil for one would be worse than
+     * the gap it closed.
+     */
+    try {
+      for await (const event of parseSseStream(GatewayClient.requireBody(response))) {
+        let payload: MessageStreamEvent;
+        try {
+          payload = JSON.parse(event.data) as MessageStreamEvent;
+        } catch {
+          throw new GatewayError("unavailable", "malformed chunk in upstream stream");
         }
-        case "content_block_delta": {
-          if (payload.delta?.partial_json !== undefined) {
-            const existing = toolBlocks.get(index);
-            if (existing) {
-              toolBlocks.set(index, {
-                ...existing,
-                arguments: existing.arguments + payload.delta.partial_json,
-              });
+
+        const type = payload.type ?? event.event;
+        const index = payload.index ?? 0;
+
+        switch (type) {
+          case "message_start": {
+            inputTokens = payload.message?.usage?.input_tokens ?? inputTokens;
+            outputTokens = payload.message?.usage?.output_tokens ?? outputTokens;
+            break;
+          }
+          case "content_block_delta": {
+            if (payload.delta?.partial_json !== undefined) {
+              const existing = toolBlocks.get(index);
+              if (existing) {
+                toolBlocks.set(index, {
+                  ...existing,
+                  arguments: existing.arguments + payload.delta.partial_json,
+                });
+              }
+              break;
+            }
+
+            const text = payload.delta?.text;
+            if (text) {
+              completion += text;
+              yield { type: "text-delta", text };
             }
             break;
           }
+          case "content_block_start": {
+            if (payload.content_block?.type === "tool_use") {
+              toolBlocks.set(index, {
+                id: payload.content_block.id ?? crypto.randomUUID(),
+                name: payload.content_block.name ?? "",
+                arguments: "",
+              });
+              break;
+            }
 
-          const text = payload.delta?.text;
-          if (text) {
-            completion += text;
-            yield { type: "text-delta", text };
-          }
-          break;
-        }
-        case "content_block_start": {
-          if (payload.content_block?.type === "tool_use") {
-            toolBlocks.set(index, {
-              id: payload.content_block.id ?? crypto.randomUUID(),
-              name: payload.content_block.name ?? "",
-              arguments: "",
-            });
+            // A text block can open with text already in it.
+            const text = payload.content_block?.text;
+            if (text) {
+              completion += text;
+              yield { type: "text-delta", text };
+            }
             break;
           }
-
-          // A text block can open with text already in it.
-          const text = payload.content_block?.text;
-          if (text) {
-            completion += text;
-            yield { type: "text-delta", text };
+          case "message_delta": {
+            outputTokens = payload.usage?.output_tokens ?? outputTokens;
+            break;
           }
-          break;
+          case "error": {
+            throw new GatewayError(
+              "unavailable",
+              payload.error?.message ?? "upstream stream error",
+            );
+          }
+          default:
+            break;
         }
-        case "message_delta": {
-          outputTokens = payload.usage?.output_tokens ?? outputTokens;
-          break;
-        }
-        case "error": {
-          throw new GatewayError("unavailable", payload.error?.message ?? "upstream stream error");
-        }
-        default:
-          break;
       }
+    } catch (cause) {
+      // Whatever the stream reported or produced before the failure, priced and
+      // handed on; the abort or the fault then carries on to the agent loop,
+      // which decides how the turn ended. This dialect reports its input tokens
+      // in `message_start`, so an early cancellation usually keeps the real
+      // figure rather than an estimate.
+      yield resolveUsage({
+        reported: { inputTokens, outputTokens },
+        promptText: promptTextOf(request.messages),
+        completionText: completion,
+      });
+      throw cause;
     }
 
     for (const block of toolBlocks.values()) {

@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { GatewayAdapter } from "./adapter";
 import { GatewayError } from "./errors";
 import type { GatewayEvent } from "./events";
-import { streamingResponse, stubFetch } from "./testing";
+import { sseBody, streamingResponse, stubFetch } from "./testing";
 
 /**
  * Dialect event normalisation, usage extraction and error mapping
@@ -47,12 +47,15 @@ const OPENAI_STREAM = [
   "[DONE]",
 ];
 
+/** The opening record of an Anthropic stream, which carries the billed input count. */
+const ANTHROPIC_MESSAGE_START = {
+  event: "message_start",
+  data: JSON.stringify({ type: "message_start", message: { usage: { input_tokens: 31 } } }),
+};
+
 /** A recorded Anthropic-native Messages stream. */
 const ANTHROPIC_STREAM = [
-  {
-    event: "message_start",
-    data: JSON.stringify({ type: "message_start", message: { usage: { input_tokens: 31 } } }),
-  },
+  ANTHROPIC_MESSAGE_START,
   {
     event: "content_block_start",
     data: JSON.stringify({
@@ -74,6 +77,47 @@ const ANTHROPIC_STREAM = [
   },
   { event: "message_stop", data: JSON.stringify({ type: "message_stop" }) },
 ];
+
+/**
+ * Collect what a stream yields before it fails, alongside the failure.
+ *
+ * A dialect that prices a cancelled read has to be judged on what it emitted on
+ * the way out, which `collect` discards by rethrowing.
+ */
+async function collectUntilThrow(
+  events: AsyncGenerator<GatewayEvent>,
+): Promise<{ events: GatewayEvent[]; error: unknown }> {
+  const out: GatewayEvent[] = [];
+  try {
+    for await (const event of events) out.push(event);
+  } catch (error) {
+    return { events: out, error };
+  }
+  throw new Error("expected the stream to fail");
+}
+
+/**
+ * A 200 whose body fails before it delivers anything — the provider accepted the
+ * request and started work, and the read was cancelled during the wait.
+ */
+function acceptedThenCancelled(records: (string | { event: string; data: string })[]): Response {
+  const encoder = new TextEncoder();
+  const frames = records.map((record) => sseBody([record]));
+
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(stream) {
+        for (const frame of frames) stream.enqueue(encoder.encode(frame));
+      },
+      // Erroring on the pull rather than at the start lets the prepared records
+      // be read first, so a test can place the cancellation exactly.
+      pull(stream) {
+        stream.error(Object.assign(new Error("aborted"), { name: "AbortError" }));
+      },
+    }),
+    { headers: { "content-type": "text/event-stream" } },
+  );
+}
 
 describe("both dialects normalise to one event stream", () => {
   it("emits identical text deltas regardless of dialect", async () => {
@@ -304,5 +348,71 @@ describe("error mapping", () => {
     await expect(collect(adapter.streamChat("openai", request))).rejects.toMatchObject({
       code: "unavailable",
     });
+  });
+});
+
+describe("a cancelled read is still priced from the moment upstream accepted", () => {
+  /**
+   * The regression (PRD §10): a pupil who pressed Stop while the model was still
+   * thinking — accepted request, no event yet — left the read throwing before
+   * any usage was emitted, so the turn was accounted as free. The prompt was
+   * billed the moment upstream took the request, and a pupil may press Stop as
+   * often as they like.
+   */
+  it("prices a pre-event abort in the openai dialect", async () => {
+    const { adapter } = adapterOver(() => acceptedThenCancelled([]));
+
+    const { events, error } = await collectUntilThrow(adapter.streamChat("openai", request));
+
+    expect((error as Error).name).toBe("AbortError");
+    const usage = events.filter((event) => event.type === "usage");
+    expect(usage).toHaveLength(1);
+    const [only] = usage;
+    if (only?.type !== "usage") throw new Error("expected a usage event");
+    expect(only.estimated).toBe(true);
+    // The prompt was sent and billed; nothing was generated for the pupil to be
+    // charged output for.
+    expect(only.inputTokens).toBeGreaterThan(0);
+    expect(only.outputTokens).toBe(0);
+  });
+
+  it("keeps the reported input figure on a pre-event abort in the anthropic dialect", async () => {
+    // `message_start` carries the real input count, so this dialect knows the
+    // billed figure before it has produced a word.
+    const { adapter } = adapterOver(() => acceptedThenCancelled([ANTHROPIC_MESSAGE_START]));
+
+    const { events, error } = await collectUntilThrow(adapter.streamChat("anthropic", request));
+
+    expect((error as Error).name).toBe("AbortError");
+    const usage = events.filter((event) => event.type === "usage");
+    expect(usage).toHaveLength(1);
+    const [only] = usage;
+    if (only?.type !== "usage") throw new Error("expected a usage event");
+    expect(only.inputTokens).toBe(31);
+  });
+
+  it("emits exactly one usage event when the abort lands mid-stream", async () => {
+    const { adapter } = adapterOver(() =>
+      acceptedThenCancelled([JSON.stringify({ choices: [{ delta: { content: "Hej" } }] })]),
+    );
+
+    const { events } = await collectUntilThrow(adapter.streamChat("openai", request));
+
+    expect(events.filter((event) => event.type === "usage")).toHaveLength(1);
+  });
+
+  it("prices nothing when upstream never accepted the request", async () => {
+    // A refused or unreachable request cost the pupil nothing, and charging one
+    // would be a worse fault than the gap the pricing above closed.
+    for (const responder of [
+      () => new Response("no such model", { status: 404 }),
+      () => {
+        throw new TypeError("connect ECONNREFUSED 172.20.0.3:8317");
+      },
+    ]) {
+      const { adapter } = adapterOver(responder);
+      const { events } = await collectUntilThrow(adapter.streamChat("openai", request));
+      expect(events).toEqual([]);
+    }
   });
 });
