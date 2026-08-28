@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "bun --bun vite dev",
     "build": "bun --bun vite build && bun run build:sandbox",
-    "build:sandbox": "bun --bun vite build --config sandbox/vite.config.ts",
+    "build:sandbox": "bun --bun vite build --config sandbox/vite.config.ts && SETUN_SANDBOX_BUILD_TARGET=runtimes bun --bun vite build --config sandbox/vite.config.ts",
     "dev:sandbox": "bun --bun vite dev --config sandbox/vite.config.ts",
     "preview:sandbox": "bun --bun vite preview --config sandbox/vite.config.ts",
     "preview": "bun --bun vite preview",

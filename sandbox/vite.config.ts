@@ -41,6 +41,18 @@ const runtimeInputs = Object.fromEntries(
   RUNTIMES.map((name) => [`runtimes/${name}`, `${root}src/runtimes/${name}.ts`]),
 );
 
+/**
+ * The sandbox is built in two passes (see `build:sandbox`).
+ *
+ * The runner has to end up as a single self-contained script inlined into
+ * `index.html`, which means `inlineDynamicImports` — and Rollup only allows that
+ * for a build with exactly one input. The pinned runtimes are eleven separate
+ * entries by design, because an artifact's import map names them individually.
+ * One pass cannot be both, so each pass builds what it needs and the runtimes
+ * pass is told not to empty the directory the runner pass just filled.
+ */
+const target = process.env.SETUN_SANDBOX_BUILD_TARGET === "runtimes" ? "runtimes" : "runner";
+
 /** Matches the Caddy site block; overridden for the end-to-end run. */
 const port = Number(process.env.SETUN_SANDBOX_PORT ?? 5174);
 const host = `localhost:${port}`;
@@ -115,15 +127,27 @@ export default defineConfig({
     // Outside `build/`: adapter-node empties that directory on every application
     // build, and the two builds are independent by design (§6).
     outDir: `${repository}build-sandbox`,
-    emptyOutDir: true,
+    // Only the first pass clears the directory; the second adds to it.
+    emptyOutDir: target === "runner",
     target: "es2022",
+    // Vite's preload helper rewrites dynamic imports to reference a
+    // `__VITE_PRELOAD__` constant it substitutes when it emits the chunk. The
+    // runner is inlined into the HTML rather than emitted, so that substitution
+    // never happens and the constant reaches the browser undefined — the
+    // compiler worker then dies on `__VITE_PRELOAD__ is not defined` the first
+    // time a pupil opens a non-static artifact. Nothing here benefits from
+    // preloading anyway: after inlining there is only one script.
+    modulePreload: false,
     rollupOptions: {
       // Without this the runtime entries are tree-shaken down to their side
       // effects: nothing in this build imports them, because what imports them
       // is an artifact's import map at runtime.
       preserveEntrySignatures: "strict",
-      input: { index: `${root}index.html`, ...runtimeInputs },
+      input: target === "runtimes" ? { ...runtimeInputs } : { index: `${root}index.html` },
       output: {
+        // One chunk, so the compiler worker travels inside the inlined runner
+        // instead of behind a fetch an opaque origin is not allowed to make.
+        inlineDynamicImports: target === "runner",
         entryFileNames: (chunk) =>
           chunk.name.startsWith("runtimes/") ? "[name].js" : "assets/[name]-[hash].js",
         chunkFileNames: "assets/[name]-[hash].js",
@@ -150,6 +174,76 @@ export default defineConfig({
           if (match) request.url = `/src/runtimes/${match[1]}.ts`;
           next();
         });
+      },
+    },
+    {
+      name: "setun-sandbox-inline-runner",
+      /**
+       * Inline the runner into `index.html` instead of linking it (PRD §13, §14).
+       *
+       * The runner document is sandboxed without `allow-same-origin`, so its
+       * origin is opaque — and a document with an opaque origin may not load a
+       * subresource from an `http://` origin on the local network. Chrome
+       * enforces this from 150; the request is never sent, so there is no CORS
+       * error, no CSP violation and nothing in any log. A linked
+       * `<script type="module" src="/assets/…">` therefore never executes, the
+       * runner never posts `ready`, and every artifact panel waits forever on a
+       * build that cannot start.
+       *
+       * The same constraint is already handled one layer down: the compiler
+       * worker is inlined and constructed from a blob because "a cross-origin
+       * worker script is refused outright from an opaque origin". The runner
+       * needs the identical treatment for the identical reason — it was simply
+       * never hit, because Playwright's bundled Chromium does not enforce the
+       * restriction and the end-to-end suite passes against a linked script.
+       *
+       * Inlining also removes the last network hop between the frame loading and
+       * the bridge being live, so `ready` cannot race the application's first
+       * `render`.
+       */
+      enforce: "post",
+      apply: "build",
+      generateBundle(_options, bundle) {
+        const html = Object.values(bundle).find(
+          (item) => item.type === "asset" && item.fileName === "index.html",
+        );
+        if (html?.type !== "asset") return;
+
+        const entry = Object.values(bundle).find(
+          (item) => item.type === "chunk" && item.isEntry && item.name === "index",
+        );
+        if (entry?.type !== "chunk") return;
+
+        const linked = new RegExp(
+          `<script[^>]*src="[^"]*${entry.fileName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"[^>]*></script>`,
+        );
+        const source = typeof html.source === "string" ? html.source : html.source.toString();
+        if (!linked.test(source)) {
+          this.warn(`runner chunk ${entry.fileName} is not linked from index.html; not inlined`);
+          return;
+        }
+
+        const code = entry.code
+          /**
+           * Vite wraps every dynamic import in its preload helper and passes a
+           * `__VITE_PRELOAD__` placeholder it substitutes as it writes the
+           * chunk. This chunk is never written — it becomes part of the
+           * document — so the placeholder would survive into the browser and
+           * throw `__VITE_PRELOAD__ is not defined` the first time a pupil
+           * opens a non-static artifact. `inlineDynamicImports` has already put
+           * the imported module in this same bundle, so there is nothing left
+           * to preload and an empty dependency list is the honest value.
+           */
+          .replace(/__VITE_PRELOAD__/g, "void 0")
+          // `</script>` inside the bundle would close this tag early; nothing
+          // else needs escaping, because the content is JavaScript in a module
+          // script.
+          .replace(/<\/script>/gi, String.raw`<\/script>`);
+        html.source = source.replace(linked, `<script type="module">\n${code}\n</script>`);
+
+        // The chunk is now part of the document; leaving it on disk would invite
+        // the same unfetchable request back in via a stale reference.
+        delete bundle[entry.fileName];
       },
     },
   ],
