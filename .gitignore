@@ -54,3 +54,7 @@ __pycache__/
 # The development database and file storage. Attachments and generated images
 # land here, and they are a pupil's own work (PRD §16, §21).
 /data
+
+# Dogfood run output (docs/e2e-dogfood-prompts). Screenshots, dev logs, database
+# copies, credential cards and access codes — raw local evidence, never committed.
+/dogfood-output
