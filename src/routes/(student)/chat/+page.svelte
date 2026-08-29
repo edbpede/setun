@@ -155,6 +155,12 @@ $effect(() => {
 /** Active fetch controller — cancelled when the student presses Stop. */
 let consumeController: AbortController | null = null;
 
+// Stop was pressed before the response delivered the turn id. We cannot abort a
+// turn we cannot name — and the turn is already running on the server the moment
+// the POST handler starts it — so we do not cancel the fetch yet: we record the
+// intent and issue the abort the instant the id header arrives.
+let abortRequested = false;
+
 /** Read an SSE endpoint into the streaming-turn container. */
 async function consume(url: string, init: RequestInit): Promise<void> {
   consumeController = new AbortController();
@@ -184,7 +190,23 @@ async function consume(url: string, init: RequestInit): Promise<void> {
 
     // Extract the real turn ID so abort can target it (replaces the "pending" placeholder).
     const headerTurnId = response.headers.get("x-setun-turn-id");
-    if (headerTurnId) conversation.turn.turnId = headerTurnId;
+    if (headerTurnId) {
+      conversation.turn.turnId = headerTurnId;
+      // Stop was pressed while the id was still "pending": now that we can name
+      // the turn, tell the server to stop it and drop the local stream. Without
+      // this the detached server turn would run to completion and the
+      // invalidateAll below would resume it.
+      if (abortRequested) {
+        abortRequested = false;
+        // Await the abort before returning: the finally below runs
+        // invalidateAll, and if the server had not yet marked the turn stopped
+        // the reload would report it as resumable and the resume effect would
+        // reconnect to the very turn we just stopped.
+        await fetch(`/api/turns/${headerTurnId}/abort`, { method: "POST" });
+        consumeController?.abort();
+        return;
+      }
+    }
 
     for await (const { seq, event } of readEventStream(response, consumeController.signal)) {
       conversation.turn.apply(event, seq);
@@ -222,6 +244,7 @@ async function send(): Promise<void> {
       mediaType: file.mediaType,
     })),
   );
+  abortRequested = false;
   conversation.turn.begin("pending");
 
   await consume("/api/messages", {
@@ -319,14 +342,22 @@ async function generateImage(): Promise<void> {
 }
 
 async function abort(): Promise<void> {
-  // Cancel the client-side fetch immediately — this covers the race window
-  // before the response header delivers the real turn ID.
-  consumeController?.abort();
-
   const turnId = conversation.turn.turnId;
-  if (!turnId || turnId === "pending") return;
 
-  await fetch(`/api/turns/${turnId}/abort`, { method: "POST" });
+  // The id has arrived: tell the server to stop, then drop the local stream.
+  if (turnId && turnId !== "pending") {
+    abortRequested = false;
+    consumeController?.abort();
+    await fetch(`/api/turns/${turnId}/abort`, { method: "POST" });
+    return;
+  }
+
+  // Still "pending" — the response header has not delivered the turn id yet
+  // (the server is preparing the turn, e.g. resolving tools). Record the intent
+  // and let the fetch continue; `consume` fires the abort the moment the id
+  // header lands. Cancelling the fetch here would lose the header and orphan a
+  // turn that is already running server-side — the bug this replaces.
+  abortRequested = true;
 }
 </script>
 
