@@ -16,7 +16,6 @@ let { data }: PageProps = $props();
 <div class="flex max-w-4xl flex-col gap-8">
   <AvailabilityControls
     availability={data.overview.availability}
-    state={data.overview.state}
     timezone={data.overview.timezone}
   />
 

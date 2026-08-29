@@ -1,5 +1,6 @@
 <script lang="ts">
 import { enhance } from "$app/forms";
+import { classroomStateLabel } from "$lib/classroom/state-label";
 import * as m from "$lib/paraglide/messages";
 import { getLocale } from "$lib/paraglide/runtime";
 import type { ClassroomOverview } from "$lib/server/classroom/overview";
@@ -34,13 +35,7 @@ const clock = $derived(
   }),
 );
 
-const stateLabel = $derived.by(() => {
-  if (overview.state === "locked") return m.educator_state_locked();
-  if (overview.state === "open") return m.educator_state_open();
-  return overview.availability.open
-    ? m.educator_state_scheduled_open()
-    : m.educator_state_scheduled_closed();
-});
+const stateLabel = $derived(classroomStateLabel(overview.availability));
 
 const window = $derived.by(() => {
   if (overview.availability.open && overview.availability.opensUntil) {
