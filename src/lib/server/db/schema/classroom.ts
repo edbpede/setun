@@ -1,4 +1,5 @@
 import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import type { AttachmentMediaType } from "../../../attachments";
 import { createdAt, primaryId, updatedAt } from "./helpers";
 
 /**
@@ -127,7 +128,7 @@ export const classroom = sqliteTable("classroom", {
   attachmentsEnabled: integer({ mode: "boolean" }).notNull().default(true),
   /** Educator-controlled allowed types; Appendix A defaults (§10). Enforced in Phase 3.11. */
   attachmentTypes: text({ mode: "json" })
-    .$type<string[]>()
+    .$type<AttachmentMediaType[]>()
     .notNull()
     .default(["image/png", "image/jpeg", "image/webp", "text/plain"]),
   /** Appendix A: images <= 5 MB, text/code <= 256 KB, at most 5 per message (§10). */

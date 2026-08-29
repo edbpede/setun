@@ -219,7 +219,7 @@ const smallButton =
           </div>
 
           {#if confirmMismatch === student.id}
-            <p class="text-xs text-destructive" role="status">
+            <p class="text-xs text-destructive" role="alert">
               {m.educator_student_delete_mismatch()}
             </p>
           {/if}

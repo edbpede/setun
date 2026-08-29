@@ -76,6 +76,7 @@ export const load: PageServerLoad = ({ locals, url }) => {
   // the buffer rather than losing the answer (§10).
   const activeTurn = findActiveTurn(db, student.id);
   const classroom = getClassroom(db, student.classroomId);
+  const aliases = listClassroomAliases(db, student.classroomId);
 
   return {
     student: {
@@ -91,8 +92,12 @@ export const load: PageServerLoad = ({ locals, url }) => {
     messages,
     resumeTurnId: activeTurn?.conversationId === active?.id ? (activeTurn?.id ?? null) : null,
     // Only what this classroom is allowed to use — students never see an alias
-    // their educator has not allowlisted (§8, §9).
-    hasModel: listClassroomAliases(db, student.classroomId).length > 0,
+    // their educator has not allowlisted, and never the gateway identifier
+    // behind it (§8, §9, §21).
+    aliases: aliases.map((alias) => ({ id: alias.id, name: alias.name })),
+    hasModel: aliases.length > 0,
+    /** Which model answered in this conversation; null before there is one. */
+    modelAliasId: active?.modelAliasId ?? null,
     // Presentation only: the upload endpoint refuses on its own policy read, and
     // hiding a control is never access control (§8, §10, §21).
     attachmentsEnabled: student.attachmentsEnabled ?? classroom?.attachmentsEnabled ?? false,
@@ -136,8 +141,17 @@ export const load: PageServerLoad = ({ locals, url }) => {
 };
 
 export const actions: Actions = {
-  /** Start a conversation. A form action so it works without JavaScript. */
-  create: async ({ locals }) => {
+  /**
+   * Start a new conversation — by clearing the active one, not by creating a row.
+   *
+   * The conversation is minted on the first send (§10), so this leaves the pupil
+   * with an empty composer and, while nothing is bound yet, a choice of model.
+   * Creating an empty conversation here would spend that choice before they made
+   * it, and leave a row behind for every pupil who opened the page and left.
+   *
+   * Still a form action, so it works without JavaScript.
+   */
+  create: async ({ request, locals }) => {
     const student = requireStudentPage(locals);
     const db = getDb();
 
@@ -145,8 +159,16 @@ export const actions: Actions = {
     const availability = classroomAvailability(db, student.classroomId);
     if (!availability?.open) redirect(303, "/chat");
 
-    const alias = listClassroomAliases(db, student.classroomId)[0];
-    if (!alias) redirect(303, "/chat");
+    const allowed = listClassroomAliases(db, student.classroomId);
+    if (allowed.length === 0) redirect(303, "/chat");
+
+    // The model the pupil picked, when they picked one. An alias is bound to a
+    // conversation the moment it is created and every message in one was
+    // answered by that model, so this is where the choice belongs (§9). Anything
+    // the classroom has not allowlisted falls back to the first alias it has:
+    // hiding a control is never access control, and neither is trusting one (§8).
+    const requested = (await request.formData()).get("modelAliasId");
+    const alias = allowed.find((candidate) => candidate.id === requested) ?? allowed[0];
 
     const conversation = createConversation(db, {
       studentId: student.id,

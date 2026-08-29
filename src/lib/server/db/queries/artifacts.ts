@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull, max, sql } from "drizzle-orm";
+import { and, count, desc, eq, inArray, isNull, max, sql } from "drizzle-orm";
 import type { ArtifactLanguage, VersionAuthor } from "../../../artifacts/types";
 import type { AppDatabase } from "../client";
 import { type Artifact, type ArtifactVersion, artifact, artifactVersion } from "../schema";
@@ -244,5 +244,22 @@ export function countArtifactVersions(db: AppDatabase, artifactId: string): numb
       .from(artifactVersion)
       .where(eq(artifactVersion.artifactId, artifactId))
       .get()?.count ?? 0
+  );
+}
+
+/**
+ * How many creations a set of pupils holds between them.
+ *
+ * A count, for the confirmation that precedes deleting a classroom (§16).
+ */
+export function countArtifacts(db: AppDatabase, studentIds: readonly string[]): number {
+  if (studentIds.length === 0) return 0;
+
+  return (
+    db
+      .select({ total: count() })
+      .from(artifact)
+      .where(inArray(artifact.studentId, [...studentIds]))
+      .get()?.total ?? 0
   );
 }

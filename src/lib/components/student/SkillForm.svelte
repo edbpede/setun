@@ -1,6 +1,7 @@
 <script lang="ts">
 import { type SuperValidated, superForm } from "sveltekit-superforms";
 import type * as v from "valibot";
+import FieldError from "$lib/components/ui/FieldError.svelte";
 import * as m from "$lib/paraglide/messages";
 import type { SkillSchema } from "$lib/server/classroom/schemas";
 
@@ -44,21 +45,19 @@ const field = "rounded-md border border-input bg-background px-3 py-2 text-sm te
   <label class="flex flex-col gap-1">
     <span class="text-xs text-muted-foreground">{m.student_skill_name_label()}</span>
     <input name="name" bind:value={$form.name} class="h-11 {field}" />
-    {#if $errors.name}<span class="text-xs text-destructive">{$errors.name}</span>{/if}
+    <FieldError message={$errors.name} />
   </label>
 
   <label class="flex flex-col gap-1">
     <span class="text-xs text-muted-foreground">{m.student_skill_description_label()}</span>
     <input name="description" bind:value={$form.description} class="h-11 {field}" />
-    {#if $errors.description}
-      <span class="text-xs text-destructive">{$errors.description}</span>
-    {/if}
+    <FieldError message={$errors.description} />
   </label>
 
   <label class="flex flex-col gap-1">
     <span class="text-xs text-muted-foreground">{m.student_skill_body_label()}</span>
     <textarea name="body" rows="7" bind:value={$form.body} class={field}></textarea>
-    {#if $errors.body}<span class="text-xs text-destructive">{$errors.body}</span>{/if}
+    <FieldError message={$errors.body} />
   </label>
 
   <div class="flex gap-2">

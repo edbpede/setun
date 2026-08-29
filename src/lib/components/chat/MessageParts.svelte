@@ -1,5 +1,6 @@
 <script lang="ts">
 import { toolLabel } from "$lib/chat/tool-labels";
+import { turnNoticeText } from "$lib/chat/turn-notices";
 import * as m from "$lib/paraglide/messages";
 import type { MessagePart } from "$lib/server/db/schema";
 import MarkdownMessage from "./MarkdownMessage.svelte";
@@ -93,6 +94,14 @@ const failed = $derived(
         })}
       </span>
     </span>
+  {:else if part.type === "turn-notice"}
+    <!--
+      Why the answer stops here: Stop pressed, a per-turn cap reached, a question
+      nobody answered. Persisted as a part rather than held in the live turn, so
+      it is still there after a reload — a sentence that simply ends, with nothing
+      to say it was cut short, is the thing this replaces (§10, §11).
+    -->
+    <p class="mt-2 text-xs text-muted-foreground">{turnNoticeText(part.notice)}</p>
   {:else if part.type === "attachment"}
     <span
       class="my-0.5 inline-flex max-w-full items-center gap-1.5 rounded-md border border-border bg-secondary px-2 py-1 text-xs"

@@ -2,6 +2,7 @@
 import { type SuperValidated, superForm } from "sveltekit-superforms";
 import type * as v from "valibot";
 import { enhance as formEnhance } from "$app/forms";
+import FieldError from "$lib/components/ui/FieldError.svelte";
 import * as m from "$lib/paraglide/messages";
 import type { BudgetsSchema } from "$lib/server/classroom/schemas";
 
@@ -107,9 +108,7 @@ const field = "h-9 rounded-md border border-input bg-background px-3 text-sm tex
     <label class="flex flex-col gap-1">
       <span class="text-xs text-muted-foreground">{m.educator_per_turn_steps_label()}</span>
       <input name="perTurnStepCap" type="number" bind:value={$form.perTurnStepCap} class={field} />
-      {#if $errors.perTurnStepCap}
-        <span class="text-xs text-destructive">{$errors.perTurnStepCap}</span>
-      {/if}
+      <FieldError message={$errors.perTurnStepCap} />
     </label>
 
     <label class="flex flex-col gap-1">
@@ -120,9 +119,7 @@ const field = "h-9 rounded-md border border-input bg-background px-3 text-sm tex
         bind:value={$form.perTurnWallClockSeconds}
         class={field}
       />
-      {#if $errors.perTurnWallClockSeconds}
-        <span class="text-xs text-destructive">{$errors.perTurnWallClockSeconds}</span>
-      {/if}
+      <FieldError message={$errors.perTurnWallClockSeconds} />
     </label>
 
     <label class="flex flex-col gap-1">
@@ -133,9 +130,7 @@ const field = "h-9 rounded-md border border-input bg-background px-3 text-sm tex
         bind:value={$form.perTurnTokenCap}
         class={field}
       />
-      {#if $errors.perTurnTokenCap}
-        <span class="text-xs text-destructive">{$errors.perTurnTokenCap}</span>
-      {/if}
+      <FieldError message={$errors.perTurnTokenCap} />
     </label>
 
     <label class="flex flex-col gap-1">
@@ -146,9 +141,7 @@ const field = "h-9 rounded-md border border-input bg-background px-3 text-sm tex
         bind:value={$form.perStudentDailyTokens}
         class={field}
       />
-      {#if $errors.perStudentDailyTokens}
-        <span class="text-xs text-destructive">{$errors.perStudentDailyTokens}</span>
-      {/if}
+      <FieldError message={$errors.perStudentDailyTokens} />
     </label>
 
     <label class="flex flex-col gap-1">
@@ -159,9 +152,7 @@ const field = "h-9 rounded-md border border-input bg-background px-3 text-sm tex
         bind:value={$form.perClassroomDailyTokens}
         class={field}
       />
-      {#if $errors.perClassroomDailyTokens}
-        <span class="text-xs text-destructive">{$errors.perClassroomDailyTokens}</span>
-      {/if}
+      <FieldError message={$errors.perClassroomDailyTokens} />
     </label>
 
     <label class="flex flex-col gap-1">
@@ -173,9 +164,7 @@ const field = "h-9 rounded-md border border-input bg-background px-3 text-sm tex
         bind:value={$form.costExchangeRate}
         class={field}
       />
-      {#if $errors.costExchangeRate}
-        <span class="text-xs text-destructive">{$errors.costExchangeRate}</span>
-      {/if}
+      <FieldError message={$errors.costExchangeRate} />
     </label>
 
     <div class="sm:col-span-2 lg:col-span-3">

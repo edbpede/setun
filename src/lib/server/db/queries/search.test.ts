@@ -89,11 +89,42 @@ describe("searchConversations", () => {
       parts: [{ type: "text", text: "hvordan får man ø-tegnet frem" }],
     });
 
-    // å folds to a in the tokenizer: "far" finds "får".
-    expect(searchConversations(db, { studentId: student.id, query: "far" })).toHaveLength(1);
-    // æ/ø fold in the application: "oe" finds "ø", and the special letter finds itself.
+    // æ/ø/å fold in the application: "oe" finds "ø", and the special letter finds itself.
     expect(searchConversations(db, { studentId: student.id, query: "oe-tegnet" })).toHaveLength(1);
     expect(searchConversations(db, { studentId: student.id, query: "ø-tegnet" })).toHaveLength(1);
+    expect(searchConversations(db, { studentId: student.id, query: "faar" })).toHaveLength(1);
+    expect(searchConversations(db, { studentId: student.id, query: "får" })).toHaveLength(1);
+  });
+
+  it("folds å across the spelling divide, so Århus finds Aarhus", () => {
+    const { db, student, conversation } = withConversation();
+    appendMessage(db, {
+      conversationId: conversation.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "hvor mange bor der i Aarhus" }],
+    });
+
+    // The reported defect: the tokenizer stripped å to a, so "Århus" tokenised as
+    // "arhus" and could never reach an index holding "aarhus".
+    expect(searchConversations(db, { studentId: student.id, query: "Århus" })).toHaveLength(1);
+    expect(searchConversations(db, { studentId: student.id, query: "Aarhus" })).toHaveLength(1);
+
+    // …and the other direction, with the special letter in the indexed text.
+    const other = withConversation();
+    appendMessage(other.db, {
+      conversationId: other.conversation.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "hvor mange bor der i Århus" }],
+    });
+    expect(
+      searchConversations(other.db, { studentId: other.student.id, query: "Aarhus" }),
+    ).toHaveLength(1);
+
+    // The excerpt keeps the real spelling, not the folded one.
+    const hits = searchConversations(db, { studentId: student.id, query: "Århus" });
+    expect(hits[0].excerpt).toContain("Aarhus");
   });
 
   it("folds æ across the spelling divide, and keeps a clean excerpt", () => {

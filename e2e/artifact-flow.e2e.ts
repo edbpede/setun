@@ -54,6 +54,11 @@ async function signIn(page: Page, code: string): Promise<void> {
 /** Ask the stub for an artifact and wait until the answer has landed. */
 async function askForArtifact(page: Page): Promise<void> {
   await page.getByRole("button", { name: m.chat_new_conversation() }).first().click();
+  // Wait for the conversation to exist before typing into the composer. The
+  // composer is present from the first visit now — the conversation is minted on
+  // the first send — so its appearance is no longer the implicit wait it used to
+  // be, and a draft typed before this navigation lands is discarded by it.
+  await expect(page).toHaveURL(/\?c=/);
   await page.getByRole("textbox", { name: m.chat_composer_label() }).fill(
     `${ARTIFACT_MARKER} lav en klikker`,
   );

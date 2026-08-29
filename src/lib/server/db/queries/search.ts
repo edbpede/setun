@@ -25,23 +25,33 @@ export const SEARCH_TOKENIZER = "unicode61 remove_diacritics 2";
 /**
  * Fold the Danish letters the tokenizer cannot (PRD §18, Appendix A).
  *
- * `unicode61 remove_diacritics 2` folds combining marks — å→a, so "far" finds
- * "får" — but æ and ø are atomic Unicode letters with no decomposition, so the
- * tokenizer leaves them and "saetning" never found "sætning". Danish readers
- * type ae/oe on keyboards without the special letters; folding them here, on
- * both the indexed text and the query, makes the two spellings one token.
+ * `unicode61 remove_diacritics 2` folds combining marks, but æ and ø are atomic
+ * Unicode letters with no decomposition, so the tokenizer leaves them and
+ * "saetning" never found "sætning". Danish readers type ae/oe/aa on keyboards
+ * without the special letters; folding them here, on both the indexed text and
+ * the query, makes the two spellings one token.
  *
- * å is deliberately left to the tokenizer: folding it to aa would break the å→a
- * equivalence the tokenizer already provides (and its test). Applied to a second
- * indexed column so the original text survives for clean snippets, this is the
- * TypeScript twin of the SQL fold in migration 0006.
+ * å is folded to aa for the same reason, even though the tokenizer already folds
+ * it to a. Those are different foldings: "Århus" tokenised as "arhus" and
+ * "Aarhus" as "aarhus" meant neither spelling of a very common Danish place name
+ * could find the other. aa is how å is written where the letter is unavailable,
+ * exactly as ae and oe are for æ and ø.
+ *
+ * The cost is the far/får equivalence the tokenizer's diacritic stripping gave
+ * for free, dropped deliberately: those are different Danish words, and matching
+ * them was diacritic stripping rather than orthography.
+ *
+ * Applied to a second indexed column so the original text survives for clean
+ * snippets, this is the TypeScript twin of the SQL fold in migrations 0006/0007.
  */
 export function foldDanish(text: string): string {
   return text
     .replaceAll("æ", "ae")
     .replaceAll("Æ", "AE")
     .replaceAll("ø", "oe")
-    .replaceAll("Ø", "OE");
+    .replaceAll("Ø", "OE")
+    .replaceAll("å", "aa")
+    .replaceAll("Å", "AA");
 }
 
 export const SEARCH_TABLE = "search_index";

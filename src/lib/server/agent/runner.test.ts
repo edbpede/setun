@@ -6,6 +6,7 @@ import { createTurn, getTurn } from "../db/queries/turns";
 import { createTestDatabase, seedTestFixtures } from "../db/testing";
 import { GatewayAdapter } from "../gateway/adapter";
 import { streamingResponse, stubFetch } from "../gateway/testing";
+import { BUDGET_PRESETS } from "./budgets";
 import { assertNoTurnInFlight, getActiveTurn, TurnInFlightError } from "./concurrency";
 import { executeTurn } from "./runner";
 import { streamTurnEvents } from "./stream";
@@ -92,6 +93,99 @@ describe("executeTurn", () => {
       "usage",
       "done",
     ]);
+  });
+
+  /**
+   * A pilot classroom logged nothing about the turns it served (§16, §21).
+   *
+   * The assertion that matters is the second one: §16 permits identifiers,
+   * aliases, latency, status and token counts, and permits nothing a pupil or a
+   * model wrote. A line built by interpolation rather than from named fields is
+   * how a prompt reaches an operator's terminal.
+   */
+  it("logs one structured line per turn, carrying no content", async () => {
+    const lines: unknown[] = [];
+    const original = console.info;
+    console.info = (...parts: unknown[]) => lines.push(parts[0]);
+
+    try {
+      const scaffold = startedTurn();
+      await executeTurn(
+        runInput(
+          scaffold,
+          adapterOver(() => streamingResponse(OK_STREAM)),
+        ),
+      );
+
+      const turnLine = lines.find(
+        (line): line is Record<string, unknown> =>
+          typeof line === "object" && line !== null && "event" in line && line.event === "turn",
+      );
+
+      expect(turnLine).toBeDefined();
+      expect(turnLine?.status).toBe("completed");
+      expect(turnLine?.modelAlias).toBe(fixtures.alias.name);
+      expect(turnLine?.inputTokens).toBe(11);
+      expect(turnLine?.outputTokens).toBe(3);
+      expect(typeof turnLine?.durationMs).toBe("number");
+
+      // Nothing the pupil typed and nothing the model answered.
+      const serialised = JSON.stringify(turnLine);
+      expect(serialised).not.toContain("Forklar loops");
+      expect(serialised).not.toContain("Et loop");
+      // Nor the gateway identifier behind the alias, which is deployment
+      // configuration rather than a fact about this turn.
+      expect(serialised).not.toContain(fixtures.alias.gatewayModelId);
+    } finally {
+      console.info = original;
+    }
+  });
+
+  it("leaves no notice on a turn the model simply finished", async () => {
+    const scaffold = startedTurn();
+    await executeTurn(
+      runInput(
+        scaffold,
+        adapterOver(() => streamingResponse(OK_STREAM)),
+      ),
+    );
+
+    const assistant = listConversationMessages(db, scaffold.conversation.id).find(
+      (message) => message.role === "assistant",
+    );
+
+    expect(assistant?.parts.some((part) => part.type === "turn-notice")).toBe(false);
+  });
+
+  /**
+   * A turn cut short left the pupil with a sentence that simply ended.
+   *
+   * The live container carried the reason, but it is cleared the instant the
+   * persisted message replaces the streaming one, and nothing was written to the
+   * message — so there was no sign before a reload and none after it (§10).
+   */
+  it("persists why a turn was cut short, so the sign survives a reload", async () => {
+    const scaffold = startedTurn();
+
+    await executeTurn({
+      ...runInput(
+        scaffold,
+        adapterOver(() => streamingResponse(OK_STREAM)),
+      ),
+      // A cap small enough that the first chunk exhausts it: the loop stops at a
+      // clean boundary and the partial answer is kept (§10).
+      budgets: { ...BUDGET_PRESETS.standard, perTurnTokenCap: 1 },
+    });
+
+    const assistant = listConversationMessages(db, scaffold.conversation.id).find(
+      (message) => message.role === "assistant",
+    );
+
+    expect(assistant?.parts.at(-1)).toEqual({ type: "turn-notice", notice: "budget" });
+    // The words that reached the pupil are still there — the notice is added to
+    // the answer, never in place of it.
+    expect(assistant?.parts.some((part) => part.type === "text")).toBe(true);
+    expect(getTurn(db, scaffold.turn.id)?.status).toBe("completed");
   });
 
   it("persists the assistant message, its usage and the active leaf", async () => {

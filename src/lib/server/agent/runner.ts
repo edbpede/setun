@@ -5,7 +5,7 @@ import { attachImageToMessage } from "../db/queries/images";
 import { appendMessage, recordMessageUsage } from "../db/queries/messages";
 import { finishTurn } from "../db/queries/turns";
 import { recordUsageEvent } from "../db/queries/usage";
-import type { Message, MessagePart, ModelAlias, PermissionMode } from "../db/schema";
+import type { Message, MessagePart, ModelAlias, PermissionMode, TurnNotice } from "../db/schema";
 import type { GatewayAdapter } from "../gateway/adapter";
 import type { GatewayEvent } from "../gateway/events";
 import { describeCause, log } from "../logging";
@@ -69,6 +69,7 @@ export async function executeTurn(input: ExecuteTurnInput): Promise<void> {
   const { db, turnId } = input;
   const signal = liveTurns.register(turnId);
   const buffer = new TurnBuffer(db, turnId);
+  const startedAt = performance.now();
 
   const parts: MessagePart[] = [];
   const imageIds: string[] = [];
@@ -101,7 +102,15 @@ export async function executeTurn(input: ExecuteTurnInput): Promise<void> {
     })) {
       collect({ event, parts, imageIds, usage, asked });
 
-      if (event.type === "done") status = terminalStatusFor(event);
+      if (event.type === "done") {
+        status = terminalStatusFor(event);
+        // The reason travels with the message, not only down the wire. The
+        // client's live copy is cleared the instant the persisted message
+        // replaces the streaming one, so a pupil whose turn was stopped or
+        // capped had nothing left to read — then, or on the next visit (§10).
+        const notice = noticeFor(event);
+        if (notice) parts.push({ type: "turn-notice", notice });
+      }
 
       // Persist first, then publish: a tailing subscriber must never see an
       // event that a resuming reader could miss (§10).
@@ -110,6 +119,7 @@ export async function executeTurn(input: ExecuteTurnInput): Promise<void> {
     }
 
     persistOutcome({ ...input, parts, imageIds, usage, status });
+    logTurn(input, { status, usage, startedAt });
   } catch (cause) {
     // The loop converts failures into events, so reaching here means the
     // persistence path itself failed. Terminate the turn rather than leaving a
@@ -118,6 +128,7 @@ export async function executeTurn(input: ExecuteTurnInput): Promise<void> {
     buffer.append({ type: "done", reason: "error" });
     finishTurn(db, { turnId, status: "failed" });
     log.error("turn execution failed", { turnId, cause: describeCause(cause) });
+    logTurn(input, { status: "failed", usage, startedAt });
   } finally {
     liveTurns.end(turnId);
   }
@@ -211,6 +222,57 @@ function collect(args: {
     default:
       break;
   }
+}
+
+/**
+ * One line per turn, at `info` (PRD §16, §21).
+ *
+ * A pilot classroom at the default level logged nothing about the thirty-nine
+ * completions it served: an operator could see errors and the boot banner, and
+ * had no way to tell a working stack from an idle one, or a slow model from a
+ * slow network.
+ *
+ * §16 names exactly what may be here — "internal identifiers, request
+ * identifiers, model aliases, latency, status, and token counts" — and this is
+ * that list and nothing else. No prompt, no answer, no tool argument, no tool
+ * result, no filename: a turn's content never reaches a log at any level, and
+ * the way to keep that true is for the line to be built from named fields rather
+ * than from anything the turn produced.
+ */
+function logTurn(
+  input: ExecuteTurnInput,
+  outcome: { status: string; usage: TurnUsage; startedAt: number },
+): void {
+  log.info({
+    event: "turn",
+    turnId: input.turnId,
+    conversationId: input.conversationId,
+    studentId: input.studentId,
+    classroomId: input.classroomId,
+    // The alias, which is what §16 permits — never the gateway model identifier
+    // behind it, which is deployment configuration rather than a turn's fact.
+    modelAlias: input.alias.name,
+    modelAliasId: input.alias.id,
+    status: outcome.status,
+    durationMs: Math.round(performance.now() - outcome.startedAt),
+    inputTokens: outcome.usage.inputTokens,
+    outputTokens: outcome.usage.outputTokens,
+    toolCalls: outcome.usage.toolCalls,
+    // True when Setun estimated the figures because the gateway never reported.
+    usageEstimated: outcome.usage.estimated,
+  });
+}
+
+/**
+ * The sign a pupil should be left with, or null when the turn simply finished.
+ *
+ * `stop` is the model reaching its own end and has nothing to announce. Every
+ * other reason cut the answer short of where it was going, and the pupil is
+ * owed an explanation they can act on — press send again, wait for tomorrow's
+ * allowance, answer the question next time (§10, §11, §21).
+ */
+function noticeFor(event: Extract<GatewayEvent, { type: "done" }>): TurnNotice | null {
+  return event.reason === "stop" ? null : event.reason;
 }
 
 function terminalStatusFor(event: Extract<GatewayEvent, { type: "done" }>) {

@@ -1,6 +1,7 @@
 <script lang="ts">
 import { superForm } from "sveltekit-superforms";
 import { enhance as formEnhance } from "$app/forms";
+import FieldError from "$lib/components/ui/FieldError.svelte";
 import * as m from "$lib/paraglide/messages";
 import type { PageProps } from "./$types";
 
@@ -56,22 +57,20 @@ let showing = $state<string | null>(null);
         <label class="flex flex-col gap-1">
           <span class="text-xs text-muted-foreground">{m.educator_skill_name_label()}</span>
           <input name="name" bind:value={$fields.name} class="h-9 {field}" />
-          {#if $errors.name}<span class="text-xs text-destructive">{$errors.name}</span>{/if}
+          <FieldError message={$errors.name} />
         </label>
 
         <label class="flex flex-col gap-1">
           <span class="text-xs text-muted-foreground">{m.educator_skill_description_label()}</span>
           <input name="description" bind:value={$fields.description} class="h-9 {field}" />
-          {#if $errors.description}
-            <span class="text-xs text-destructive">{$errors.description}</span>
-          {/if}
+          <FieldError message={$errors.description} />
         </label>
       </div>
 
       <label class="flex flex-col gap-1">
         <span class="text-xs text-muted-foreground">{m.educator_skill_body_label()}</span>
         <textarea name="body" rows="6" bind:value={$fields.body} class={field}></textarea>
-        {#if $errors.body}<span class="text-xs text-destructive">{$errors.body}</span>{/if}
+        <FieldError message={$errors.body} />
       </label>
 
       <button
@@ -99,7 +98,7 @@ let showing = $state<string | null>(null);
       <button type="submit" class={button}>{m.educator_skill_upload()}</button>
     </form>
     {#if uploadFailed}
-      <p class="text-xs text-destructive" role="status">{m.educator_skill_upload_failed()}</p>
+      <p class="text-xs text-destructive" role="alert">{m.educator_skill_upload_failed()}</p>
     {/if}
   </section>
 

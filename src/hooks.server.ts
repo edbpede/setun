@@ -217,9 +217,45 @@ function withLocaleCookie(request: Request, locale: string): Request {
   return new Request(request, { headers });
 }
 
+/**
+ * One line per request, at `info` (PRD §16, §21).
+ *
+ * A pilot classroom running at the default level produced 1.4 KB of log across
+ * thirty-nine completions, five concurrent pupils and three exhausted budgets:
+ * five error blocks and the boot banner. Nothing said a request had been served,
+ * refused, or how long it took, so an operator asking "is it working" had only
+ * the absence of errors to go on, and an operator asking "why is it slow" had
+ * nothing at all.
+ *
+ * §16 names what may be here — "internal identifiers, request identifiers, model
+ * aliases, latency, status, and token counts" — and this carries only those.
+ *
+ * The *route id* rather than the URL, deliberately. A path is an internal
+ * identifier and safe, but a query string is not: `/api/search?q=` carries what
+ * a pupil typed, and a log line built from `url.pathname + url.search` would
+ * write a pupil's search into the operator's terminal. Taking the matched route
+ * makes that impossible rather than merely avoided.
+ */
+const handleRequestLog: Handle = async ({ event, resolve }) => {
+  const startedAt = performance.now();
+  const response = await resolve(event);
+
+  log.info({
+    event: "request",
+    method: event.request.method,
+    // Null for a request that matched no route — a 404, which is worth seeing.
+    route: event.route.id,
+    status: response.status,
+    durationMs: Math.round(performance.now() - startedAt),
+  });
+
+  return response;
+};
+
 // Outermost, so it sees the response every later hook produced.
 export const handle: Handle = sequence(
   handleSecurityHeaders,
+  handleRequestLog,
   handleSession,
   handleSetupGate,
   handleLocale,

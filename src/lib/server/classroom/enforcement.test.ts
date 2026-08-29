@@ -59,6 +59,29 @@ describe("availability enforcement (§8, §22)", () => {
     if (!result.allowed) expect(result.reason).toBe("classroom-locked");
   });
 
+  /**
+   * The dogfood run could not settle this by hand: the panel's shortest opening
+   * is 30 minutes, and waiting one out was beyond the run's wall clock. Written
+   * against the column directly instead, so it stays settled.
+   *
+   * `state` is left reading `open` on purpose. That is precisely the stale value
+   * the panel used to render as "Open" — enforcement must not read it either.
+   */
+  it("refuses once a timed open-now override has lapsed, while the column still says open", () => {
+    const now = new Date();
+    setClassroomState(db, {
+      classroomId: classroom.id,
+      state: "open",
+      until: new Date(now.getTime() - 8 * 60 * 60 * 1000),
+      now,
+    });
+
+    const result = check(now);
+
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) expect(result.reason).toBe("outside-schedule");
+  });
+
   it("refuses outside a scheduled window", () => {
     // Return to schedule following with no windows — always closed.
     setClassroomState(db, { classroomId: classroom.id, state: "scheduled" });

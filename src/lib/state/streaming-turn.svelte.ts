@@ -1,4 +1,4 @@
-import type { MessagePart } from "$lib/server/db/schema";
+import type { MessagePart, TurnNotice as PersistedTurnNotice } from "$lib/server/db/schema";
 import type { ElicitationFieldSpec, GatewayEvent } from "$lib/server/gateway/events";
 
 /**
@@ -19,8 +19,14 @@ import type { ElicitationFieldSpec, GatewayEvent } from "$lib/server/gateway/eve
  * contract on both sides of the wire.
  */
 
-/** Why the last turn ended, when it ended in a way worth telling the student. */
-export type TurnNotice = "aborted" | "interrupted" | "error" | "budget" | "unanswered" | null;
+/**
+ * Why the last turn ended, when it ended in a way worth telling the student.
+ *
+ * The server's own union, so the live notice and the one persisted on the
+ * message cannot name different sets of reasons. Null while the turn is running
+ * or when it simply finished.
+ */
+export type TurnNotice = PersistedTurnNotice | null;
 
 /** A tool call waiting on the student's yes or no (§11). */
 export interface PendingPermission {
@@ -192,13 +198,11 @@ export class StreamingTurn {
         this.#streaming = false;
         this.permission = null;
         this.elicitation = null;
-        if (event.reason === "aborted") this.notice = "aborted";
-        else if (event.reason === "interrupted") this.notice = "interrupted";
-        else if (event.reason === "error") this.notice = "error";
-        else if (event.reason === "unanswered") this.notice = "unanswered";
-        // A per-turn cap stopped the turn at a clean boundary. The partial
-        // answer stays on screen and the notice is friendly, never an error (§10).
-        else if (event.reason === "budget") this.notice = "budget";
+        // `stop` is the model reaching its own end and announces nothing. Every
+        // other reason cut the answer short, including a per-turn cap, which
+        // stops at a clean boundary and keeps the partial answer on screen — a
+        // friendly notice, never an error (§10).
+        this.notice = event.reason === "stop" ? null : event.reason;
         break;
 
       default:

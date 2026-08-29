@@ -1,6 +1,8 @@
 <script lang="ts">
 import { superForm } from "sveltekit-superforms";
-import { enhance } from "$app/forms";
+import { applyAction, enhance } from "$app/forms";
+import { invalidateAll } from "$app/navigation";
+import FieldError from "$lib/components/ui/FieldError.svelte";
 import * as m from "$lib/paraglide/messages";
 import type { PageProps } from "./$types";
 
@@ -25,6 +27,27 @@ let { data, form: actionResult }: PageProps = $props();
  * rejected save left the typed values in place and said nothing, which reads
  * exactly like a save that worked.
  */
+/**
+ * Submit a row without emptying it.
+ *
+ * SvelteKit's default `enhance` calls `form.reset()` on a successful action, and
+ * a reset restores every control to its `value` *attribute* — which Svelte never
+ * writes for `value={…}`, because it sets the property. So saving a row blanked
+ * its name and gateway identifier on screen while the database kept the real
+ * values, and `required` then blocked every subsequent save silently: no
+ * message, no request, nothing to distinguish it from a save that worked.
+ *
+ * A row is an editor showing current state, not a blank form to be emptied, so
+ * it does not reset. `invalidateAll` re-reads the row from the database, which
+ * is what should have been on screen all along.
+ */
+function submitRow() {
+  return async ({ result }: { result: import("@sveltejs/kit").ActionResult }) => {
+    await applyAction(result);
+    if (result.type === "success") await invalidateAll();
+  };
+}
+
 function rowMessage(aliasId: string): string | null {
   const result = actionResult as { aliasId?: unknown; message?: unknown } | null;
   if (!result || result.aliasId !== aliasId) return null;
@@ -64,7 +87,7 @@ const check = "flex items-center gap-2 text-sm text-foreground";
           <form
             method="POST"
             action="?/update"
-            use:enhance
+            use:enhance={submitRow}
             class="grid gap-2 sm:grid-cols-[1fr_1fr_auto]"
           >
             <input type="hidden" name="aliasId" value={alias.id} />
@@ -184,15 +207,13 @@ const check = "flex items-center gap-2 text-sm text-foreground";
       <label class="flex flex-col gap-1.5">
         <span class="text-sm font-medium text-foreground">{m.educator_alias_name_label()}</span>
         <input name="name" bind:value={$form.name} class={field} required />
-        {#if $errors.name}<span class="text-xs text-destructive">{$errors.name}</span>{/if}
+        <FieldError message={$errors.name} />
       </label>
 
       <label class="flex flex-col gap-1.5">
         <span class="text-sm font-medium text-foreground">{m.educator_alias_gateway_label()}</span>
         <input name="gatewayModelId" bind:value={$form.gatewayModelId} class={field} required />
-        {#if $errors.gatewayModelId}
-          <span class="text-xs text-destructive">{$errors.gatewayModelId}</span>
-        {/if}
+        <FieldError message={$errors.gatewayModelId} />
       </label>
 
       <label class="flex flex-col gap-1.5">

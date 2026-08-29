@@ -25,6 +25,8 @@ export const load: LayoutServerLoad = ({ params }) => {
       name: classroom.name,
       timezone: classroom.timezone,
       state: classroom.state,
+      /** The language spoken in this room — what its pupils are addressed in (§17). */
+      interfaceLanguage: classroom.interfaceLanguage,
     },
     availability: resolveAvailability(classroom),
   };

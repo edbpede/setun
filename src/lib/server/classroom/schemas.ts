@@ -1,4 +1,5 @@
 import * as v from "valibot";
+import { ATTACHMENT_MEDIA_TYPES } from "$lib/attachments";
 import * as m from "$lib/paraglide/messages";
 import { BUDGET_PRESET_NAMES } from "../agent/budgets";
 import {
@@ -66,6 +67,24 @@ export function blankToNull(value: string): string | null {
 const whole = (min: number, max: number) =>
   v.pipe(v.number(), v.integer(), v.minValue(min), v.maxValue(max));
 
+/**
+ * A whole number, or nothing at all.
+ *
+ * An empty number input does not arrive as null — it arrives as NaN, which
+ * `v.number()` accepts and every bound then rejects with valibot's own wording.
+ * Folding it to null here is what makes "leave it empty" a real answer rather
+ * than a validation error nobody can read (§21).
+ */
+const optionalWhole = (min: number, max: number) =>
+  v.pipe(
+    v.nullable(v.number(), null),
+    v.transform((value) => (value !== null && Number.isFinite(value) ? value : null)),
+    v.check(
+      (value) => value === null || (Number.isInteger(value) && value >= min && value <= max),
+      m.validation_retention_range(),
+    ),
+  );
+
 const flag = v.optional(v.boolean(), false);
 
 /**
@@ -75,7 +94,15 @@ const flag = v.optional(v.boolean(), false);
  * price of zero would be priced as free rather than unpriced.
  */
 const optionalPrice = v.nullable(
-  v.pipe(v.number(), v.minValue(0, m.validation_price_negative()), v.maxValue(10_000)),
+  v.pipe(
+    // Named, like `gatewayModelId` above and for the same reason: a blank or
+    // mistyped price arrives as NaN, and "Invalid type: Expected number but
+    // received NaN" is not a sentence anyone should be shown (§21).
+    v.number(m.validation_price_not_a_number()),
+    v.check((value) => Number.isFinite(value), m.validation_price_not_a_number()),
+    v.minValue(0, m.validation_price_negative()),
+    v.maxValue(10_000, m.validation_price_too_large()),
+  ),
   null,
 );
 
@@ -187,6 +214,16 @@ export const ClassroomPolicySchema = v.object({
   sessionPolicy: v.picklist(SESSION_POLICIES),
   sessionSlidingDays: whole(1, 365),
   conversationRetentionDays: whole(1, 3_650),
+  /**
+   * How long a pupil's creations are kept, or null to keep them until deleted.
+   *
+   * Nullable where conversation retention is not, because §16 makes creations a
+   * portfolio: "creations outlive the conversations that produced them", and a
+   * school that wants to hand a pupil their year's work needs the option of no
+   * expiry at all. Null is the default and stays reachable from the form as an
+   * empty field — a number is a policy, and a blank is the absence of one.
+   */
+  creationRetentionDays: optionalWhole(1, 3_650),
 });
 
 /**
@@ -201,6 +238,24 @@ export const ToolPolicySchema = v.object({
   permissionMode: v.picklist(PERMISSION_MODES),
   skillAuthoringPolicy: v.picklist(SKILL_AUTHORING_POLICIES),
   attachmentsEnabled: flag,
+  /**
+   * Which file types a class may attach (§10).
+   *
+   * The column was described as educator-controlled from the start and had no
+   * control at all, so every classroom ran on the Appendix A default whatever it
+   * needed — a class working with pictures could not turn GIFs on, and one that
+   * wanted text only could not turn images off.
+   *
+   * A checkbox per type from a fixed list rather than free text: the allowlist is
+   * matched against what the sniffer decides the bytes *are*, so a type it cannot
+   * produce would never match, and free text would let an educator believe they
+   * had allowed something the pipeline has no handling for.
+   *
+   * An empty list is a valid answer and means the same as attachments off; it is
+   * not treated as "no restriction", which is the failure a permissive default
+   * would make silent.
+   */
+  attachmentTypes: v.optional(v.array(v.picklist(ATTACHMENT_MEDIA_TYPES)), []),
   /** Appendix A: images <= 5 MB, text/code <= 256 KB, at most 5 per message. */
   attachmentImageMaxBytes: whole(1_024, 64 * 1024 * 1024),
   attachmentTextMaxBytes: whole(256, 8 * 1024 * 1024),

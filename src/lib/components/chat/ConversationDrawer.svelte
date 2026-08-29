@@ -25,9 +25,28 @@ interface Props {
   activeId: string | null;
   open: boolean;
   onclose: () => void;
+  /** Absent while the drawer is used somewhere deletion does not belong. */
+  ondelete?: (conversationId: string) => void;
 }
 
-let { conversations, activeId, open, onclose }: Props = $props();
+let { conversations, activeId, open, onclose, ondelete }: Props = $props();
+
+/**
+ * The row whose delete control is awaiting confirmation (§16).
+ *
+ * Deleting a conversation removes its messages, turns and buffered events for
+ * good, so it asks first. Inline rather than `window.confirm`, which cannot be
+ * translated and which a pupil dismisses without reading; and lighter than the
+ * type-the-label friction the educator's pupil deletion uses, because this is a
+ * pupil deleting their own work and only their own.
+ */
+let confirming = $state<string | null>(null);
+
+// A conversation that has gone — deleted, or the drawer reopened on a new list —
+// must not leave its confirmation armed against whatever now sits in that row.
+$effect(() => {
+  if (confirming && !conversations.some((c) => c.id === confirming)) confirming = null;
+});
 </script>
 
 <svelte:window onkeydown={(event) => open && event.key === "Escape" && onclose()} />
@@ -57,18 +76,51 @@ let { conversations, activeId, open, onclose }: Props = $props();
 
     <nav class="flex min-h-0 flex-1 flex-col overflow-y-auto">
       {#each conversations as conversation (conversation.id)}
+        {@const title = conversation.title ?? m.chat_untitled_conversation()}
         <!-- Touch-sized rows, not compact ones: the target device is a touchscreen (§20). -->
-        <a
-          href="/chat?c={conversation.id}"
-          class="flex min-h-11 items-center rounded-md px-2 text-sm hover:bg-secondary"
+        <div class="group/row flex min-h-11 items-center gap-1 rounded-md pe-1"
           class:bg-secondary={conversation.id === activeId}
-          class:font-medium={conversation.id === activeId}
-          aria-current={conversation.id === activeId ? "page" : undefined}
         >
-          <span class="truncate text-foreground">
-            {conversation.title ?? m.chat_untitled_conversation()}
-          </span>
-        </a>
+          <a
+            href="/chat?c={conversation.id}"
+            class="flex min-h-11 flex-1 items-center rounded-md px-2 text-sm hover:bg-secondary"
+            class:font-medium={conversation.id === activeId}
+            aria-current={conversation.id === activeId ? "page" : undefined}
+          >
+            <span class="truncate text-foreground">{title}</span>
+          </a>
+
+          {#if ondelete}
+            {#if confirming === conversation.id}
+              <button
+                type="button"
+                onclick={() => {
+                  confirming = null;
+                  ondelete?.(conversation.id);
+                }}
+                class="min-h-11 shrink-0 rounded-md px-2 text-xs font-medium text-destructive hover:bg-destructive hover:text-destructive-foreground"
+              >
+                {m.chat_delete_conversation_confirm()}
+              </button>
+              <button
+                type="button"
+                onclick={() => (confirming = null)}
+                class="min-h-11 shrink-0 rounded-md px-2 text-xs text-muted-foreground hover:text-foreground"
+              >
+                {m.chat_delete_conversation_cancel()}
+              </button>
+            {:else}
+              <button
+                type="button"
+                onclick={() => (confirming = conversation.id)}
+                aria-label={m.chat_delete_conversation_aria({ title })}
+                class="min-h-11 shrink-0 rounded-md px-2 text-xs text-muted-foreground opacity-0 hover:text-destructive focus-visible:opacity-100 group-hover/row:opacity-100"
+              >
+                {m.chat_delete_conversation()}
+              </button>
+            {/if}
+          {/if}
+        </div>
       {:else}
         <p class="px-2 py-1.5 text-xs text-muted-foreground">{m.chat_empty_heading()}</p>
       {/each}

@@ -1,10 +1,10 @@
 import type { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "bun:test";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { AppDatabase } from "../db/client";
 import { createClassroom } from "../db/queries/classrooms";
 import { getStudentById } from "../db/queries/students";
-import { student as studentTable } from "../db/schema";
+import { loginAttempt, student as studentTable } from "../db/schema";
 import { createTestDatabase } from "../db/testing";
 import { generateCode } from "./codes";
 import { attemptStudentLogin, LOGIN_MINIMUM_DURATION_MS } from "./login";
@@ -109,11 +109,47 @@ describe("attemptStudentLogin", () => {
     ];
 
     // Nothing in the result distinguishes "no such code" from "code exists but
-    // is disabled" — the route has no branch to leak (§7, §21).
+    // is disabled" — the route has no branch to leak (§7, §21). The failure
+    // reason is part of the shape and must be identical across all four: it
+    // separates a refused *address* from a refused credential, never one
+    // credential outcome from another.
     for (const outcome of outcomes) {
-      expect(outcome).toEqual({ ok: false });
-      expect(Object.keys(outcome)).toEqual(["ok"]);
+      expect(outcome).toEqual({ ok: false, failure: "rejected" });
+      expect(Object.keys(outcome).sort()).toEqual(["failure", "ok"]);
     }
+  });
+
+  it("names an exhausted per-IP budget as such, and records that it fired", async () => {
+    const { code } = await provision();
+
+    // Fill the address's window with attempts that never touch this digest, so
+    // the credential is beyond reproach when the ceiling refuses it.
+    for (let i = 0; i < IP_ATTEMPT_LIMIT; i++) {
+      recordAttempt(db, { ip: IP, digest: `unrelated-${i}`, successful: false });
+    }
+
+    const result = await attemptStudentLogin(db, { code: code.normalised, ip: IP, pepper: PEPPER });
+
+    expect(result).toEqual({ ok: false, failure: "rate-limited" });
+
+    // The refusal is on the record…
+    const refused = db
+      .select()
+      .from(loginAttempt)
+      .where(eq(loginAttempt.scope, "ip-refused"))
+      .all();
+    expect(refused).toHaveLength(1);
+    expect(refused[0].key).toBe(IP);
+
+    // …and did not extend the window that produced it. Counting a refusal as an
+    // attempt would keep a fifteen-minute lockout topped up indefinitely for as
+    // long as a client kept knocking.
+    const counted = db
+      .select()
+      .from(loginAttempt)
+      .where(and(eq(loginAttempt.scope, "ip"), eq(loginAttempt.key, IP)))
+      .all();
+    expect(counted).toHaveLength(IP_ATTEMPT_LIMIT);
   });
 
   it("holds every attempt to the same minimum duration, hit or miss", async () => {

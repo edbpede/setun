@@ -1,6 +1,7 @@
 <script lang="ts">
 import { type SuperValidated, superForm } from "sveltekit-superforms";
 import type * as v from "valibot";
+import FieldError from "$lib/components/ui/FieldError.svelte";
 import * as m from "$lib/paraglide/messages";
 import type { SetupEducatorSchema } from "$lib/server/setup/schemas";
 import { setupFieldError } from "./labels";
@@ -51,7 +52,7 @@ const field = "h-10 rounded-md border border-input bg-background px-3 text-sm te
 
   <form method="POST" action="?/educator" use:enhance class="flex flex-col gap-3">
     {#if setupFieldError($errors._errors)}
-      <p class="text-sm text-destructive" role="alert">{setupFieldError($errors._errors)}</p>
+      <FieldError message={setupFieldError($errors._errors)} size="sm" />
     {/if}
 
     <label class="flex flex-col gap-1.5">
@@ -63,7 +64,7 @@ const field = "h-10 rounded-md border border-input bg-background px-3 text-sm te
         bind:value={$form.username}
         class={field}
       />
-      {#if $errors.username}<span class="text-xs text-destructive">{$errors.username}</span>{/if}
+      <FieldError message={$errors.username} />
     </label>
 
     <div class="flex flex-col gap-1.5">
@@ -81,7 +82,7 @@ const field = "h-10 rounded-md border border-input bg-background px-3 text-sm te
       <span id={hintId} class="text-xs text-muted-foreground">
         {m.setup_educator_password_hint({ min: minLength })}
       </span>
-      {#if $errors.password}<span class="text-xs text-destructive">{$errors.password}</span>{/if}
+      <FieldError message={$errors.password} />
     </div>
 
     <label class="flex flex-col gap-1.5">
@@ -93,9 +94,7 @@ const field = "h-10 rounded-md border border-input bg-background px-3 text-sm te
         bind:value={$form.confirmPassword}
         class={field}
       />
-      {#if $errors.confirmPassword}
-        <span class="text-xs text-destructive">{$errors.confirmPassword}</span>
-      {/if}
+      <FieldError message={$errors.confirmPassword} />
     </label>
 
     <button

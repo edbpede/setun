@@ -1,6 +1,8 @@
 <script lang="ts">
 import { type SuperValidated, superForm } from "sveltekit-superforms";
 import type * as v from "valibot";
+import { ATTACHMENT_MEDIA_TYPES, type AttachmentMediaType } from "$lib/attachments";
+import FieldError from "$lib/components/ui/FieldError.svelte";
 import * as m from "$lib/paraglide/messages";
 import type { ToolPolicySchema } from "$lib/server/classroom/schemas";
 
@@ -38,6 +40,19 @@ const { form, errors, enhance, submitting } = superForm(data, {
    */
   resetForm: false,
 });
+
+/**
+ * One sentence per media type, keyed by the server's own union — so a format
+ * added to the sniffer without a label here fails `svelte-check` rather than
+ * showing an educator a raw MIME type (§21).
+ */
+const ATTACHMENT_TYPE_LABELS: Record<AttachmentMediaType, () => string> = {
+  "image/png": m.educator_attachment_type_image_png,
+  "image/jpeg": m.educator_attachment_type_image_jpeg,
+  "image/webp": m.educator_attachment_type_image_webp,
+  "image/gif": m.educator_attachment_type_image_gif,
+  "text/plain": m.educator_attachment_type_text_plain,
+};
 
 const MB = 1024 * 1024;
 const KB = 1024;
@@ -91,6 +106,36 @@ const field = "rounded-md border border-input bg-background px-3 py-2 text-sm te
       <span class="text-sm text-foreground">{m.educator_attachments_enabled_label()}</span>
     </label>
 
+    <!--
+      Which types, from the fixed set the sniffer can recognise (§10). A type it
+      cannot produce would be an allowlist entry that never matches, so this is
+      checkboxes rather than free text: an educator cannot be led to believe they
+      have allowed something the pipeline has no handling for.
+    -->
+    <fieldset class="flex flex-col gap-1.5">
+      <legend class="text-xs text-muted-foreground">{m.educator_attachment_types_label()}</legend>
+      <div class="flex flex-wrap gap-x-5 gap-y-1.5">
+        {#each ATTACHMENT_MEDIA_TYPES as mediaType (mediaType)}
+          <label class="flex items-center gap-2">
+            <input
+              type="checkbox"
+              name="attachmentTypes"
+              value={mediaType}
+              checked={$form.attachmentTypes.includes(mediaType)}
+              onchange={(event) => {
+                $form.attachmentTypes = event.currentTarget.checked
+                  ? [...$form.attachmentTypes, mediaType]
+                  : $form.attachmentTypes.filter((type) => type !== mediaType);
+              }}
+              class="size-4"
+            />
+            <span class="text-sm text-foreground">{ATTACHMENT_TYPE_LABELS[mediaType]()}</span>
+          </label>
+        {/each}
+      </div>
+      <FieldError message={$errors.attachmentTypes?._errors} />
+    </fieldset>
+
     <div class="grid gap-3 sm:grid-cols-3">
       <label class="flex flex-col gap-1">
         <span class="text-xs text-muted-foreground">{m.educator_attachment_image_cap_label()}</span>
@@ -104,9 +149,7 @@ const field = "rounded-md border border-input bg-background px-3 py-2 text-sm te
           class="h-9 {field}"
         />
         <input type="hidden" name="attachmentImageMaxBytes" value={$form.attachmentImageMaxBytes} />
-        {#if $errors.attachmentImageMaxBytes}
-          <span class="text-xs text-destructive">{$errors.attachmentImageMaxBytes}</span>
-        {/if}
+        <FieldError message={$errors.attachmentImageMaxBytes} />
       </label>
 
       <label class="flex flex-col gap-1">
@@ -121,9 +164,7 @@ const field = "rounded-md border border-input bg-background px-3 py-2 text-sm te
           class="h-9 {field}"
         />
         <input type="hidden" name="attachmentTextMaxBytes" value={$form.attachmentTextMaxBytes} />
-        {#if $errors.attachmentTextMaxBytes}
-          <span class="text-xs text-destructive">{$errors.attachmentTextMaxBytes}</span>
-        {/if}
+        <FieldError message={$errors.attachmentTextMaxBytes} />
       </label>
 
       <label class="flex flex-col gap-1">
@@ -134,9 +175,7 @@ const field = "rounded-md border border-input bg-background px-3 py-2 text-sm te
           bind:value={$form.attachmentMaxPerMessage}
           class="h-9 {field}"
         />
-        {#if $errors.attachmentMaxPerMessage}
-          <span class="text-xs text-destructive">{$errors.attachmentMaxPerMessage}</span>
-        {/if}
+        <FieldError message={$errors.attachmentMaxPerMessage} />
       </label>
     </div>
 
@@ -148,9 +187,7 @@ const field = "rounded-md border border-input bg-background px-3 py-2 text-sm te
         bind:value={$form.imageTokenEquivalent}
         class="h-9 {field}"
       />
-      {#if $errors.imageTokenEquivalent}
-        <span class="text-xs text-destructive">{$errors.imageTokenEquivalent}</span>
-      {/if}
+      <FieldError message={$errors.imageTokenEquivalent} />
     </label>
 
     <button

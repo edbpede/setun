@@ -2,16 +2,17 @@ import type { AppDatabase } from "../db/client";
 import { findStudentByDigest } from "../db/queries/students";
 import type { Student } from "../db/schema";
 import { digestCode } from "./codes";
-import { checkRateLimit, recordAttempt } from "./rate-limit";
+import { checkRateLimit, recordAttempt, recordRefusedAttempt } from "./rate-limit";
 import { createSession, type IssuedSession } from "./sessions";
 
 /**
  * The student login decision (PRD §7).
  *
- * Every failure — unknown code, disabled student, throttled digest, exhausted IP
- * — produces the same outcome shape, so nothing about the response discloses
- * whether a code exists (§7, §21). The route turns that single outcome into one
- * message; it has no branch to leak.
+ * Every *credential* failure — unknown code, disabled student, throttled digest
+ * — produces the same outcome, so nothing about the response discloses whether a
+ * code exists (§7, §21). An exhausted per-IP budget is reported separately: it
+ * is a property of the address, not of any credential, so naming it leaks
+ * nothing and saves a class from hunting for a typo in a code that is correct.
  *
  * Timing is levelled the same way: the digest is computed before any lookup, so
  * a miss and a hit do the same HMAC work, and the whole attempt is held to a
@@ -27,11 +28,27 @@ import { createSession, type IssuedSession } from "./sessions";
  */
 export const LOGIN_MINIMUM_DURATION_MS = 250;
 
+/**
+ * Why a sign-in did not happen.
+ *
+ * `rejected` covers every credential outcome — unknown code, disabled pupil, a
+ * digest still serving its progressive delay — and they are deliberately one
+ * value: nothing in the response may disclose whether a code exists (§7, §21).
+ *
+ * `rate-limited` is a property of the address rather than of the credential, so
+ * naming it discloses nothing about any code. Telling a pupil their code is
+ * wrong when it is right, and their next twenty attempts will be refused too, is
+ * how a class loses a lesson to a message that sent them looking in the wrong
+ * place.
+ */
+export type LoginFailure = "rejected" | "rate-limited";
+
 export type LoginResult =
   | { readonly ok: true; readonly student: Student; readonly session: IssuedSession }
-  | { readonly ok: false };
+  | { readonly ok: false; readonly failure: LoginFailure };
 
-const FAILURE: LoginResult = { ok: false };
+const REJECTED: LoginResult = { ok: false, failure: "rejected" };
+const RATE_LIMITED: LoginResult = { ok: false, failure: "rate-limited" };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -60,9 +77,13 @@ export async function attemptStudentLogin(
 
   const limit = checkRateLimit(db, { ip: input.ip, digest });
   if (limit.blocked) {
-    // Deliberately not recorded: a refused attempt never reached the credential,
-    // and counting it would let one IP throttle a digest it does not own.
-    return settle(FAILURE);
+    // Recorded under `ip-refused`, which no limiter reads: an attempt that never
+    // reached the credential must not extend the window that refused it, and
+    // must not be counted against a digest this address does not own. Without
+    // any record at all an operator could not tell a throttled class from a
+    // quiet one.
+    recordRefusedAttempt(db, { ip: input.ip });
+    return settle(RATE_LIMITED);
   }
 
   const student = findStudentByDigest(db, digest);
@@ -70,7 +91,7 @@ export async function attemptStudentLogin(
 
   recordAttempt(db, { ip: input.ip, digest, successful: authenticated });
 
-  if (!authenticated) return settle(FAILURE, limit.delayMs);
+  if (!authenticated) return settle(REJECTED, limit.delayMs);
 
   const session = createSession(db, { ownerKind: "student", ownerId: student.id });
   return settle({ ok: true, student, session });

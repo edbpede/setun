@@ -207,7 +207,8 @@ prek run --all-files  # hooks: format, hygiene, gitleaks
 components** (PRD §5). Add the key to both `messages/en.json` and `messages/da.json`, then call
 it as `m.my_key()`. English is the default locale; Danish ships complete at pilot. A component
 containing a bare user-visible string is a defect, not a shortcut — `src/routes/stack-check/`
-is the worked example.
+is the worked example. That route is development tooling and is gated on `dev`: `bun run dev`
+serves it, a production build answers 404.
 
 **Test placement follows the tool that can actually run it** (PRD §22):
 

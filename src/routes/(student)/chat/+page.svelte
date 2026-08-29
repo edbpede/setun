@@ -1,7 +1,8 @@
 <script lang="ts">
 import { untrack } from "svelte";
 import { enhance } from "$app/forms";
-import { invalidateAll } from "$app/navigation";
+import { goto, invalidateAll, replaceState } from "$app/navigation";
+import { page } from "$app/state";
 import { readEventStream } from "$lib/chat/sse-client";
 import { fitVisualViewport, readScrollPosition, writeScrollPosition } from "$lib/chat/viewport";
 import ArtifactPanel from "$lib/components/artifacts/ArtifactPanel.svelte";
@@ -18,7 +19,11 @@ import * as m from "$lib/paraglide/messages";
 import { ArtifactWorkspace } from "$lib/state/artifacts.svelte";
 import { ClassroomState } from "$lib/state/classroom.svelte";
 import { ComposerState } from "$lib/state/composer.svelte";
-import { ConversationState } from "$lib/state/conversation.svelte";
+import {
+  type ChatMessage as ChatMessageData,
+  ConversationState,
+  textOf,
+} from "$lib/state/conversation.svelte";
 import { attachmentRefusalMessage, imageRefusalMessage, refusalMessage } from "$lib/state/refusals";
 import type { PageProps } from "./$types";
 
@@ -54,6 +59,32 @@ let drawerOpen = $state(false);
 let windowSize = $state(MESSAGE_WINDOW);
 /** True while the composer's image mode is waiting on a picture (§15). */
 let generating = $state(false);
+
+/**
+ * The model the next conversation will be created with (§9).
+ *
+ * An alias is bound to a conversation when it is created and the messages in one
+ * were answered by that model, so the choice sits beside *New conversation*
+ * rather than over a thread already under way. The first message of a visit
+ * mints its conversation and carries the same value.
+ *
+ * Presentation only. Both `?/create` and `POST /api/conversations` fall back to
+ * an allowlisted alias whatever a client sends: hiding a control is never access
+ * control, and neither is trusting one (§8, §21).
+ */
+let selectedAliasId = $state<string | null>(null);
+
+const activeAlias = $derived(data.aliases.find((alias) => alias.id === data.modelAliasId) ?? null);
+
+// Default to the first allowlisted alias, and drop a choice the educator has
+// since withdrawn rather than sending an id the server will refuse.
+$effect(() => {
+  const available = data.aliases;
+  if (available.length === 0) return;
+  if (!selectedAliasId || !available.some((alias) => alias.id === selectedAliasId)) {
+    selectedAliasId = available[0].id;
+  }
+});
 
 /**
  * The status the page renders.
@@ -225,11 +256,79 @@ async function consume(url: string, init: RequestInit): Promise<void> {
   }
 }
 
+/**
+ * The mint already in flight, so simultaneous callers join one rather than each
+ * starting their own (§10).
+ *
+ * A pupil who picks three files at once calls `attach` three times before any of
+ * them has awaited anything, so without this all three would pass the
+ * `conversation.id` check below and create a conversation of their own. The
+ * uploads would then name three different conversations — only the last of which
+ * the composer writes into — so two attachments would be missing from the message
+ * they were picked for and left holding conversations nobody is in.
+ */
+let minting: Promise<string | null> | null = null;
+
+/**
+ * The conversation this composer writes into, minting one if there is none (§10).
+ *
+ * A pupil's very first visit has no conversation, and the empty state tells them
+ * to "write a message below". Before this the composer was withheld until they
+ * found a *New conversation* button first — the page asked for something it had
+ * not provided. The conversation is a container the pupil never asked for, so it
+ * is created when they first need one rather than made a step they must take.
+ *
+ * Still lazy: arriving and leaving without typing mints nothing.
+ *
+ * Returns null when the server refuses — closed, out of hours, or no allowlisted
+ * alias — with the refusal already on screen. Hiding the composer was never the
+ * control; this endpoint applies the same guard the send path does (§8, §21).
+ */
+async function ensureConversation(): Promise<string | null> {
+  if (conversation.id) return conversation.id;
+
+  minting ??= mintConversation();
+  try {
+    return await minting;
+  } finally {
+    // Cleared either way. A refusal is this attempt's answer, not the answer
+    // every later attempt is handed back.
+    minting = null;
+  }
+}
+
+/** The request itself; `ensureConversation` is what decides whether to make one. */
+async function mintConversation(): Promise<string | null> {
+  const response = await fetch("/api/conversations", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(selectedAliasId ? { modelAliasId: selectedAliasId } : {}),
+  }).catch(() => null);
+
+  if (!response?.ok) {
+    const payload = await response?.json().catch(() => null);
+    refusal = refusalMessage(payload?.error);
+    return null;
+  }
+
+  const { id } = (await response.json()) as { id: string };
+  conversation.id = id;
+  // `adopt`, not `attach`: the draft on screen is what we are about to send, and
+  // attaching would restore the (empty) draft of a conversation created a
+  // moment ago and discard it.
+  composer.adopt(id);
+
+  // Name the conversation in the URL, without navigating, so a reload lands on
+  // the thread the pupil is in rather than on whichever is newest.
+  replaceState(`/chat?c=${id}`, page.state);
+  return id;
+}
+
 async function send(): Promise<void> {
-  const conversationId = conversation.id;
+  refusal = null;
+  const conversationId = await ensureConversation();
   if (!conversationId) return;
 
-  refusal = null;
   const { text, editOfMessageId } = composer.take();
   if (!text) return;
 
@@ -259,6 +358,38 @@ async function send(): Promise<void> {
 }
 
 /**
+ * Ask the same question again, and keep the first answer (§10).
+ *
+ * There was no way to a different answer but rewriting the question, and a
+ * pupil who rewrote it lost the wording that had produced the answer they were
+ * comparing against.
+ *
+ * The prompt is re-sent as a sibling of itself — the same branching an edit
+ * performs, with the text unchanged — so the previous answer is not overwritten
+ * but moved onto a branch the picker steps back to. That is the only shape the
+ * message tree has for "two answers to one question", and it is the shape §10
+ * already describes.
+ *
+ * The prompt is the message above this one on the active path, which is what
+ * `parentId` says on the server; the client is handed the path in order and
+ * reads it from there rather than carrying a second copy of the tree.
+ */
+async function regenerate(assistant: ChatMessageData): Promise<void> {
+  if (conversation.turn.streaming) return;
+
+  const index = conversation.messages.findIndex((message) => message.id === assistant.id);
+  const prompt = conversation.messages
+    .slice(0, index)
+    .findLast((message) => message.role === "user");
+
+  const text = prompt ? textOf(prompt) : "";
+  if (!prompt || !text) return;
+
+  composer.beginEdit(prompt.id, text);
+  await send();
+}
+
+/**
  * Answer a question the running turn asked (§11).
  *
  * The turn is running detached from the request that started it, so the answer
@@ -280,10 +411,10 @@ async function respond(body: Record<string, unknown>): Promise<void> {
 
 /** Upload one file as the pupil picks it, so the send carries only identifiers (§10). */
 async function attach(file: File): Promise<void> {
-  const conversationId = conversation.id;
+  refusal = null;
+  const conversationId = await ensureConversation();
   if (!conversationId) return;
 
-  refusal = null;
   const body = new FormData();
   body.set("file", file);
   body.set("conversationId", conversationId);
@@ -311,10 +442,10 @@ async function detach(attachmentId: string): Promise<void> {
  * agent loop's tool reaches, so there is nothing to do here but ask and reload.
  */
 async function generateImage(): Promise<void> {
-  const conversationId = conversation.id;
+  refusal = null;
+  const conversationId = await ensureConversation();
   if (!conversationId) return;
 
-  refusal = null;
   const { text } = composer.take();
   if (!text) return;
 
@@ -361,6 +492,36 @@ async function switchBranch(messageId: string): Promise<void> {
   if (response.ok) await invalidateAll();
 }
 
+/**
+ * Delete one of the pupil's own conversations (§16).
+ *
+ * "Students see only their own conversations", and what they can see they can
+ * remove: the endpoint is owner-scoped in SQL and cascades to messages, turns,
+ * buffered events and the search index, so nothing is left searchable by nobody.
+ * The drawer asks before calling this.
+ *
+ * Deleting the conversation on screen leaves nothing to show, so the page starts
+ * fresh rather than silently jumping to a neighbouring thread.
+ */
+async function deleteConversation(conversationId: string): Promise<void> {
+  const response = await fetch(`/api/conversations/${conversationId}`, {
+    method: "DELETE",
+  }).catch(() => null);
+
+  if (!response?.ok) {
+    refusal = m.chat_refusal_unavailable();
+    return;
+  }
+
+  if (conversationId === conversation.id) {
+    // Nothing left to show on this page; the load falls back to the newest
+    // conversation the pupil still has, or to an empty composer if none remain.
+    await goto("/chat", { invalidateAll: true, noScroll: true });
+    return;
+  }
+  await invalidateAll();
+}
+
 async function abort(): Promise<void> {
   const turnId = conversation.turn.turnId;
 
@@ -388,6 +549,7 @@ async function abort(): Promise<void> {
   activeId={data.conversation?.id ?? null}
   open={drawerOpen}
   onclose={() => (drawerOpen = false)}
+  ondelete={deleteConversation}
 />
 
 <!--
@@ -417,10 +579,50 @@ async function abort(): Promise<void> {
     </div>
 
     <div class="flex shrink-0 items-center gap-2">
+      <!--
+        Which model this conversation is using (§9).
+        Read-only, because an alias is bound to a conversation when it is created
+        and every message already in one was answered by that model. The choice
+        is made beside *New conversation*, where it applies.
+
+        Only the friendly name ever appears — the gateway identifier behind it is
+        editable in the panel and reaches no pupil's browser (§9, §21).
+      -->
+      {#if activeAlias && data.aliases.length > 1}
+        <span class="hidden text-xs text-muted-foreground sm:inline">
+          {m.chat_model_in_use({ model: activeAlias.name })}
+        </span>
+      {/if}
+
       <div class="hidden w-28 sm:block">
         <AllowanceMeter allowance={status.allowance} compact />
       </div>
-      <form method="POST" action="?/create" use:enhance>
+
+      <form method="POST" action="?/create" use:enhance class="flex items-center gap-1.5">
+        <!--
+          The model the next conversation will use. Inside this form so the
+          choice travels with the button that acts on it, and so it works with
+          JavaScript off; the same value is sent when a conversation is minted by
+          the first message instead.
+
+          Only where the educator has allowlisted more than one alias: a picker
+          with one option is a control that decides nothing (§9).
+        -->
+        {#if data.aliases.length > 1}
+          <label class="hidden items-center gap-1.5 sm:flex">
+            <span class="sr-only">{m.chat_model_label()}</span>
+            <select
+              name="modelAliasId"
+              bind:value={selectedAliasId}
+              class="h-8 rounded-md border border-input bg-background px-1.5 text-xs text-foreground"
+            >
+              {#each data.aliases as alias (alias.id)}
+                <option value={alias.id}>{alias.name}</option>
+              {/each}
+            </select>
+          </label>
+        {/if}
+
         <button
           type="submit"
           class="rounded-md border border-input px-2.5 py-1.5 text-xs font-medium text-foreground hover:bg-secondary"
@@ -505,6 +707,7 @@ async function abort(): Promise<void> {
         <ChatMessage
           {message}
           onedit={(target) => composer.beginEdit(target.id, target.text)}
+          onregenerate={regenerate}
           onswitch={switchBranch}
         />
       {/each}
@@ -556,27 +759,23 @@ async function abort(): Promise<void> {
     </div>
   </div>
 
-  {#if conversation.id}
-    <Composer
-      {composer}
-      streaming={conversation.turn.streaming || generating}
-      attachmentsEnabled={data.attachmentsEnabled}
-      imageModeAvailable={data.imageModeAvailable}
-      onsend={() => (composer.mode === "image" ? generateImage() : send())}
-      onabort={abort}
-      onattach={attach}
-      ondetach={detach}
-    />
-  {:else}
-    <form method="POST" action="?/create" use:enhance class="border-t border-border p-3">
-      <button
-        type="submit"
-        class="h-11 w-full rounded-md bg-primary text-sm font-medium text-primary-foreground hover:bg-primary/90"
-      >
-        {m.chat_new_conversation()}
-      </button>
-    </form>
-  {/if}
+  <!--
+    Always present, including on a pupil's very first visit: the empty state says
+    "write a message below", and the conversation it needs is minted on the first
+    send rather than demanded of the pupil first (§10). The header keeps its own
+    *New conversation* control for starting a second one, and is the affordance
+    that still works with JavaScript off.
+  -->
+  <Composer
+    {composer}
+    streaming={conversation.turn.streaming || generating}
+    attachmentsEnabled={data.attachmentsEnabled}
+    imageModeAvailable={data.imageModeAvailable}
+    onsend={() => (composer.mode === "image" ? generateImage() : send())}
+    onabort={abort}
+    onattach={attach}
+    ondetach={detach}
+  />
   {/if}
 
   <!--

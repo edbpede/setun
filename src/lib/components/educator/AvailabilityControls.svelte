@@ -1,5 +1,6 @@
 <script lang="ts">
 import { enhance } from "$app/forms";
+import { classroomStateLabel } from "$lib/classroom/state-label";
 import * as m from "$lib/paraglide/messages";
 import { getLocale } from "$lib/paraglide/runtime";
 import type { AvailabilityStatus } from "$lib/server/classroom/schedule";
@@ -21,19 +22,12 @@ import type { AvailabilityStatus } from "$lib/server/classroom/schedule";
 
 interface Props {
   availability: AvailabilityStatus;
-  state: "scheduled" | "open" | "locked";
   timezone: string;
 }
 
-let { availability, state, timezone }: Props = $props();
+let { availability, timezone }: Props = $props();
 
-const label = $derived.by(() => {
-  if (state === "locked") return m.educator_state_locked();
-  if (state === "open") return m.educator_state_open();
-  return availability.open
-    ? m.educator_state_scheduled_open()
-    : m.educator_state_scheduled_closed();
-});
+const label = $derived(classroomStateLabel(availability));
 
 /** Formatting only; the instant was resolved on the server via `date-fns-tz` (§5). */
 const until = $derived.by(() => {

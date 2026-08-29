@@ -1,6 +1,7 @@
 <script lang="ts">
 import { type SuperValidated, superForm } from "sveltekit-superforms";
 import type * as v from "valibot";
+import FieldError from "$lib/components/ui/FieldError.svelte";
 import * as m from "$lib/paraglide/messages";
 import type { AliasSchema } from "$lib/server/classroom/schemas";
 import { setupFieldError } from "./labels";
@@ -50,15 +51,13 @@ const check = "flex items-center gap-2 text-sm text-foreground";
     <label class="flex flex-col gap-1.5">
       <span class="text-sm font-medium text-foreground">{m.educator_alias_name_label()}</span>
       <input name="name" type="text" bind:value={$form.name} class={field} />
-      {#if $errors.name}<span class="text-xs text-destructive">{$errors.name}</span>{/if}
+      <FieldError message={$errors.name} />
     </label>
 
     <label class="flex flex-col gap-1.5">
       <span class="text-sm font-medium text-foreground">{m.educator_alias_gateway_label()}</span>
       <input name="gatewayModelId" type="text" bind:value={$form.gatewayModelId} class={field} />
-      {#if $errors.gatewayModelId}
-        <span class="text-xs text-destructive">{$errors.gatewayModelId}</span>
-      {/if}
+      <FieldError message={$errors.gatewayModelId} />
     </label>
 
     <label class="flex flex-col gap-1.5">
