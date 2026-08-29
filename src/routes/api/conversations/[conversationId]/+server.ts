@@ -1,5 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import * as v from "valibot";
+import { assertNoTurnInFlight, TurnInFlightError } from "$lib/server/agent/concurrency";
 import { requireStudentApi } from "$lib/server/auth/guards";
 import { getDb } from "$lib/server/boot";
 import {
@@ -31,6 +32,12 @@ const SwitchBranchSchema = v.object({
  * it. Given a message at a branch point, the active leaf moves to the tip of
  * that branch, so the whole variant reappears. Owner-scoped, and the target must
  * live in this conversation — otherwise absent and not-yours are one answer.
+ *
+ * Refused while a turn streams: the turn moves the active leaf itself when it
+ * finishes, so a switch accepted now is either silently reverted by that write
+ * or silently discards the answer it was racing. The composer already hides the
+ * picker mid-turn, but a second tab has not heard about the lock — so, as with
+ * sending, the server is what enforces it (§10).
  */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
   const student = requireStudentApi(locals);
@@ -44,6 +51,15 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
     studentId: student.id,
   });
   if (!owned) error(404, "Not found");
+
+  try {
+    assertNoTurnInFlight(db, student.id);
+  } catch (cause) {
+    if (cause instanceof TurnInFlightError) {
+      return json({ error: "turn-in-flight", activeTurnId: cause.activeTurnId }, { status: 409 });
+    }
+    throw cause;
+  }
 
   const target = getMessage(db, parsed.output.activeLeafOf);
   if (!target || target.conversationId !== params.conversationId) error(404, "Not found");
