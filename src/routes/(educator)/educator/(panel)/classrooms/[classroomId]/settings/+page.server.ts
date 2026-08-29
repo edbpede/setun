@@ -2,7 +2,7 @@ import { error, fail as kitFail } from "@sveltejs/kit";
 import { fail, superValidate } from "sveltekit-superforms";
 import { valibot } from "sveltekit-superforms/adapters";
 import * as v from "valibot";
-import { BUDGET_PRESETS } from "$lib/server/agent/budgets";
+import { BUDGET_PRESETS, budgetsOf, matchPreset } from "$lib/server/agent/budgets";
 import { requireEducatorPage } from "$lib/server/auth/guards";
 import { getDb } from "$lib/server/boot";
 import { resolveRoster } from "$lib/server/classroom/roster";
@@ -148,6 +148,11 @@ export const load: PageServerLoad = async ({ params }) => {
       budgetsAdapter,
       { id: "budgets" },
     ),
+    // Which preset (if any) the current budgets match, so the preset picker can
+    // show it instead of always defaulting to the first option. A preset is
+    // never stored (see BUDGET_PRESETS), so it is derived by comparison; a
+    // hand-edit yields null, which the picker renders as "Custom".
+    activePreset: matchPreset(budgetsOf(classroom)),
     policyForm: await superValidate(
       {
         classroomInstructions: classroom.classroomInstructions ?? "",

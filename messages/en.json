@@ -232,6 +232,7 @@
   "educator_permission_standard": "Ask only for tools marked “ask first”",
   "educator_permission_strict": "Always ask the pupil",
   "educator_preset_cautious": "Cautious",
+  "educator_preset_custom": "Custom",
   "educator_preset_generous": "Generous",
   "educator_preset_label": "Preset",
   "educator_preset_standard": "Standard",
