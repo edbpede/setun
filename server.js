@@ -15,6 +15,28 @@
  *
  * Both helpers live in `server-guard.js` so they can be tested without starting
  * a server; this file is only the wiring.
+ *
+ * ---
+ *
+ * Why this lives in the repository root, and not in `src/`.
+ *
+ * Because the root is where a Node or Bun server entry belongs, and because
+ * `src/` is the wrong kind of directory for it. `src/` is *input*: Vite and
+ * SvelteKit compile everything under it, `svelte-check` and `tsconfig.json`
+ * scope to it, and nothing there is executed as it was written. This file is
+ * the opposite — it ships unbuilt and runs the build's output — so putting it
+ * beside `src/routes` would say something untrue about what it is.
+ *
+ * It also has to sit next to the build it loads. The Dockerfile copies `build/`,
+ * `server.js` and `server-guard.js` into one working directory precisely so that
+ * `./build/index.js` resolves; a subdirectory would mean recreating that layout
+ * in the image for nothing. And four call sites name this path — `package.json`'s
+ * `start`, the Dockerfile `CMD`, and both Playwright `webServer` commands — none
+ * of which reads better for the change.
+ *
+ * `server-guard.js` follows it, being what this file imports, and
+ * `server-guard.test.ts` sits beside the module it tests, as every other test in
+ * the repository does. The question is closed: they stay here.
  */
 
 import { dirname, join, resolve } from "node:path";
