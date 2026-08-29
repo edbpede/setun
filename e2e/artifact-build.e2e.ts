@@ -44,6 +44,11 @@ test("utility classes come from the self-hosted UnoCSS runtime, not a CDN", asyn
   const external: string[] = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
+    // Only schemes that can reach a server. The runtimes are handed to the
+    // artifact as source and loaded from `blob:` URLs it makes itself (§13,
+    // §14), and a blob has no host to be off-origin from — counting one as
+    // external would make this assert the opposite of what it means.
+    if (url.protocol !== "http:" && url.protocol !== "https:") return;
     if (!url.hostname.endsWith("localhost") && url.hostname !== "127.0.0.1") {
       external.push(request.url());
     }

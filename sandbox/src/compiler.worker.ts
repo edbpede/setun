@@ -1,6 +1,6 @@
 import * as esbuild from "esbuild-wasm";
-import wasmUrl from "esbuild-wasm/esbuild.wasm?url";
-import type { CompileRequest, CompileResponse } from "./compile-protocol";
+import { SANDBOX_COMPILER_PATH, SVELTE_COMPILER_PATH } from "$lib/artifacts/assets";
+import type { CompileRequest, WorkerRequest, WorkerResponse } from "./compile-protocol";
 
 /**
  * The artifact compiler (PRD §13, §20).
@@ -10,21 +10,58 @@ import type { CompileRequest, CompileResponse } from "./compile-protocol";
  * exists because the target device has two cores and roughly one to spare, so
  * compilation must not be on the thread that is drawing the interface (§20).
  *
- * Everything expensive here is lazy: the WebAssembly binary is fetched the first
- * time a non-static artifact is compiled and cached by the browser thereafter,
- * and the Svelte compiler is a dynamic import that a React-only lesson never
- * pays for.
+ * Everything expensive here is lazy, and stays lazy now that the bytes arrive by
+ * message rather than by URL: the WebAssembly binary is requested the first time
+ * a non-static artifact is compiled, and the Svelte compiler the first time a
+ * `.svelte` one is, so a React-only lesson never pays for it.
+ *
+ * Nothing here fetches. This worker was built from a blob and inherits the
+ * runner's opaque origin, which is the origin that may not read the sandbox
+ * host — the same restriction that had the runner inlined into `index.html`.
+ * `assets.ts` has the whole account; here it is enough that `request` goes up
+ * to the runner and the runner goes up to the application.
  */
+
+/** Assets asked for and not yet answered, by path. */
+const waiting = new Map<string, (result: AssetResult) => void>();
+
+type AssetResult = { ok: true; bytes: ArrayBuffer } | { ok: false; message: string };
+
+function request(path: string): Promise<ArrayBuffer> {
+  return new Promise((resolve, reject) => {
+    waiting.set(path, (result) => {
+      if (result.ok) resolve(result.bytes);
+      else reject(new Error(result.message || `The compiler could not load ${path}.`));
+    });
+    self.postMessage({ kind: "need-asset", path } satisfies WorkerResponse);
+  });
+}
+
+async function requestText(path: string): Promise<string> {
+  return new TextDecoder().decode(await request(path));
+}
 
 let esbuildReady: Promise<void> | null = null;
 
-function initialiseEsbuild(origin: string): Promise<void> {
-  esbuildReady ??= esbuild.initialize({
-    // Absolute: a blob-URL worker has no path of its own to resolve against.
-    wasmURL: new URL(wasmUrl, origin).href,
-    // We are already the worker; esbuild must not spawn a second one.
-    worker: false,
-  });
+function initialiseEsbuild(): Promise<void> {
+  esbuildReady ??= request(SANDBOX_COMPILER_PATH)
+    // Compiled here rather than in the application: `wasm-unsafe-eval` is in this
+    // origin's policy, and a WebAssembly.Module is what `initialize` wants when
+    // there is no URL to give it.
+    .then((bytes) => WebAssembly.compile(bytes))
+    .then((wasmModule) =>
+      esbuild.initialize({
+        wasmModule,
+        // We are already the worker; esbuild must not spawn a second one.
+        worker: false,
+      }),
+    )
+    .catch((cause: unknown) => {
+      // A failed initialisation must not be cached as a settled promise, or every
+      // later artifact in the session fails with the first one's message.
+      esbuildReady = null;
+      throw cause;
+    });
 
   return esbuildReady;
 }
@@ -39,10 +76,16 @@ type SvelteCompiler = {
 
 let svelteReady: Promise<SvelteCompiler> | null = null;
 
-function loadSvelteCompiler(origin: string): Promise<SvelteCompiler> {
-  svelteReady ??= import(
-    /* @vite-ignore */ `${origin}/runtimes/svelte-compiler.js`
-  ) as Promise<SvelteCompiler>;
+function loadSvelteCompiler(): Promise<SvelteCompiler> {
+  svelteReady ??= requestText(SVELTE_COMPILER_PATH)
+    // A blob URL is same-origin with this worker by definition, so importing one
+    // is the one module load an opaque origin can always make.
+    .then((source) => URL.createObjectURL(new Blob([source], { type: "text/javascript" })))
+    .then((url) => import(/* @vite-ignore */ url) as Promise<SvelteCompiler>)
+    .catch((cause: unknown) => {
+      svelteReady = null;
+      throw cause;
+    });
 
   return svelteReady;
 }
@@ -83,14 +126,14 @@ async function stripTypeScript(source: string): Promise<string> {
   return result;
 }
 
-async function compile(request: CompileRequest): Promise<string> {
-  await initialiseEsbuild(request.origin);
+async function compile(job: CompileRequest): Promise<string> {
+  await initialiseEsbuild();
 
-  if (request.language === "svelte") {
-    const { compile: compileSvelte } = await loadSvelteCompiler(request.origin);
+  if (job.language === "svelte") {
+    const { compile: compileSvelte } = await loadSvelteCompiler();
     // No `runes` option: Svelte decides from the source itself, so a component
     // written in either dialect compiles rather than one of them failing.
-    const output = compileSvelte(await stripTypeScript(request.source), {
+    const output = compileSvelte(await stripTypeScript(job.source), {
       generate: "client",
       name: "Artifact",
     });
@@ -98,8 +141,8 @@ async function compile(request: CompileRequest): Promise<string> {
     return output.js.code;
   }
 
-  const output = await esbuild.transform(request.source, {
-    loader: request.language,
+  const output = await esbuild.transform(job.source, {
+    loader: job.language,
     format: "esm",
     target: "es2022",
     // The automatic runtime means the model need not import React by hand,
@@ -123,17 +166,27 @@ function describe(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
-self.onmessage = async (event: MessageEvent<CompileRequest>) => {
-  const request = event.data;
+self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
+  const message = event.data;
+
+  if (message.kind === "asset") {
+    const settle = waiting.get(message.path);
+    waiting.delete(message.path);
+    settle?.(
+      message.ok ? { ok: true, bytes: message.bytes } : { ok: false, message: message.message },
+    );
+    return;
+  }
 
   try {
-    const code = await compile(request);
-    self.postMessage({ id: request.id, ok: true, code } satisfies CompileResponse);
+    const code = await compile(message);
+    self.postMessage({ kind: "compiled", id: message.id, ok: true, code } satisfies WorkerResponse);
   } catch (cause) {
     self.postMessage({
-      id: request.id,
+      kind: "compiled",
+      id: message.id,
       ok: false,
       message: describe(cause),
-    } satisfies CompileResponse);
+    } satisfies WorkerResponse);
   }
 };

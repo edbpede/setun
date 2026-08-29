@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { artifactTitle, compiledDocument, importMap, staticDocument } from "./document";
+import { artifactTitle, compiledDocument, type RuntimeSources, staticDocument } from "./document";
 
 /**
  * The document an artifact runs in (plan 4.1, 4.3; PRD §13, §14, §22).
@@ -9,20 +9,56 @@ import { artifactTitle, compiledDocument, importMap, staticDocument } from "./do
  * out of the element it is interpolated into.
  */
 
-const ORIGIN = "https://artifacts.example.org";
+/**
+ * A stand-in for the module graph the runner collects (see `assets.ts`).
+ *
+ * Sources rather than URLs, because the artifact's frame has an opaque origin of
+ * its own and can fetch neither the sandbox host nor a blob the runner made — so
+ * it builds its own blob URLs from these and an import map over them. `setun:`
+ * keys are the shared chunks, whose relative references the build rewrites
+ * because a relative specifier cannot resolve from a blob URL.
+ */
+const REACT: RuntimeSources = {
+  modules: {
+    react: '/* react */ import "setun:core.js"; export default {};',
+    "react-jsx-runtime": "/* jsx runtime */ export const jsx = 1;",
+    "react-dom-client": "/* react-dom/client */ export const createRoot = () => {};",
+    "setun:core.js": "/* shared chunk */ export const core = 1;",
+    unocss: "/* unocss */ export const uno = 1;",
+  },
+  imports: {
+    react: "react",
+    "react/jsx-runtime": "react-jsx-runtime",
+    "react/jsx-dev-runtime": "react-jsx-runtime",
+    "react-dom/client": "react-dom-client",
+    "setun:core.js": "setun:core.js",
+    unocss: "unocss",
+  },
+  sideEffects: ["unocss"],
+};
+
+const SVELTE: RuntimeSources = {
+  modules: {
+    svelte: "/* svelte */ export const mount = () => {};",
+    "svelte-internal-client": "/* svelte internal */ export const x = 1;",
+  },
+  imports: { svelte: "svelte", "svelte/internal/client": "svelte-internal-client" },
+};
+
+const RUNTIMES = REACT;
 
 describe("staticDocument", () => {
   it("injects the preamble into a full document's head", () => {
     const html = staticDocument({
       language: "html",
       source: "<!doctype html><html><head><title>Kort</title></head><body>hi</body></html>",
-      origin: ORIGIN,
+      runtimes: RUNTIMES,
       runId: "run-1",
     });
 
     expect(html).toContain("<title>Kort</title>");
     expect(html).toContain("connect-src 'none'");
-    expect(html).toContain(`${ORIGIN}/runtimes/unocss.js`);
+    expect(html).toContain("/* unocss */");
     // The model's own head content survives; nothing is rewritten.
     expect(html.indexOf("connect-src 'none'")).toBeLessThan(html.indexOf("<title>Kort</title>"));
   });
@@ -31,7 +67,7 @@ describe("staticDocument", () => {
     const html = staticDocument({
       language: "html",
       source: "<button>Klik</button>",
-      origin: ORIGIN,
+      runtimes: RUNTIMES,
       runId: "run-1",
     });
 
@@ -44,7 +80,7 @@ describe("staticDocument", () => {
     const html = staticDocument({
       language: "html",
       source: "<html><body><p>hi</p></body></html>",
-      origin: ORIGIN,
+      runtimes: RUNTIMES,
       runId: "run-1",
     });
 
@@ -57,7 +93,7 @@ describe("staticDocument", () => {
     const html = staticDocument({
       language: "svg",
       source: '<svg viewBox="0 0 10 10"><circle cx="5" cy="5" r="4"/></svg>',
-      origin: ORIGIN,
+      runtimes: RUNTIMES,
       runId: "run-1",
     });
 
@@ -153,7 +189,7 @@ describe("staticDocument", () => {
     ];
 
     for (const { source, intact, real } of diversions) {
-      const html = staticDocument({ language: "html", source, origin: ORIGIN, runId: "r" });
+      const html = staticDocument({ language: "html", source, runtimes: RUNTIMES, runId: "r" });
       const policy = html.indexOf("connect-src 'none'");
 
       expect(html).toContain(intact);
@@ -171,7 +207,7 @@ describe("staticDocument", () => {
 
   it("denies outbound network and framing on every path", () => {
     for (const source of ["<p>x</p>", "<html><body>x</body></html>", "<head></head>"]) {
-      const html = staticDocument({ language: "html", source, origin: ORIGIN, runId: "r" });
+      const html = staticDocument({ language: "html", source, runtimes: RUNTIMES, runId: "r" });
       expect(html).toContain("connect-src 'none'");
       expect(html).toContain("frame-src 'none'");
       expect(html).toContain("form-action 'none'");
@@ -181,22 +217,72 @@ describe("staticDocument", () => {
 });
 
 describe("compiledDocument", () => {
-  it("resolves bare specifiers to this origin's pinned runtimes", () => {
-    const map = importMap(ORIGIN);
+  it("resolves bare specifiers to the runtimes it carries", () => {
+    const html = compiledDocument({
+      framework: "react",
+      module: 'export default () => "hi";',
+      runtimes: RUNTIMES,
+      runId: "run-1",
+    });
 
-    expect(map).toContain(`${ORIGIN}/runtimes/react.js`);
-    expect(map).toContain(`${ORIGIN}/runtimes/react-jsx-runtime.js`);
-    expect(map).toContain(`${ORIGIN}/runtimes/svelte-internal-client.js`);
+    // The map is built at run time over blob URLs, so what the document carries
+    // is the specifier table and the sources — never an address to fetch.
+    expect(html).toContain('"react/jsx-runtime"');
+    expect(html).toContain('"react-dom/client"');
+    expect(html).toContain("/* react */");
+    expect(html).toContain('type="importmap"');
     // No other framework is hosted (§13), and no CDN is named anywhere.
-    expect(map).not.toContain("cdn");
-    expect(map).not.toContain("unpkg");
+    expect(html).not.toContain("cdn");
+    expect(html).not.toContain("unpkg");
+  });
+
+  it("names only the specifiers it has a runtime for", () => {
+    const html = compiledDocument({
+      framework: "svelte",
+      module: "export default function App() {}",
+      runtimes: SVELTE,
+      runId: "run-1",
+    });
+
+    expect(html).toContain('"svelte/internal/client"');
+    // A Svelte lesson never carries React, so the map cannot name it either.
+    expect(html).not.toContain('"react-dom/client"');
+  });
+
+  it("carries a shared chunk under the specifier the build rewrote it to", () => {
+    const html = compiledDocument({
+      framework: "react",
+      module: 'export default () => "hi";',
+      runtimes: REACT,
+      runId: "run-1",
+    });
+
+    // `react` and `react-dom/client` share React itself; duplicating it would
+    // give the artifact two Reacts and no working hooks. So the chunk travels
+    // once and both entries import it by name.
+    expect(html).toContain("setun:core.js");
+    expect(html).toContain("/* shared chunk */");
+  });
+
+  it("registers the import map before any module that resolves against it", () => {
+    const html = compiledDocument({
+      framework: "react",
+      module: 'export default () => "hi";',
+      runtimes: RUNTIMES,
+      runId: "run-1",
+    });
+
+    // An import map added after a module script has begun loading is ignored, so
+    // no module is left to the parser at all: the script that registers the map
+    // appends every one of them itself, in order.
+    expect(html).not.toContain('<script type="module"');
   });
 
   it("carries the compiled module and the mount harness", () => {
     const html = compiledDocument({
       framework: "react",
       module: 'export default () => "hi";',
-      origin: ORIGIN,
+      runtimes: RUNTIMES,
       runId: "run-1",
     });
 
@@ -209,13 +295,15 @@ describe("compiledDocument", () => {
     const html = compiledDocument({
       framework: "svelte",
       module: "export default function App() {}",
-      origin: ORIGIN,
+      runtimes: RUNTIMES,
       runId: "run-1",
     });
 
-    expect(html).toContain('await import("svelte")');
-    // The import map is the same for both frameworks; the harness is not.
-    expect(html).not.toContain("createRoot");
+    // The harness travels as a JSON string inside the script that appends it,
+    // so its own quotes are escaped by the time they reach the markup.
+    expect(html).toContain('await import(\\"svelte\\")');
+    // The specifier table is the same for both frameworks; the harness is not.
+    expect(html).not.toContain("createRoot(root)");
   });
 
   it("cannot be broken out of with a closing script tag in the source", () => {
@@ -223,7 +311,7 @@ describe("compiledDocument", () => {
       framework: "react",
       // The tokenizer does not know it is inside a JavaScript string literal.
       module: 'const x = "</script><script>alert(1)</script>";',
-      origin: ORIGIN,
+      runtimes: RUNTIMES,
       runId: "run-1",
     });
 

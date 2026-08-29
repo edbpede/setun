@@ -1,4 +1,5 @@
 <script lang="ts">
+import { isSandboxAssetPath, sandboxAssetUrl } from "$lib/artifacts/assets";
 import { ARTIFACT_CHANNEL, asSandboxMessage, type HostMessage } from "$lib/artifacts/protocol";
 import type { ArtifactLanguage } from "$lib/artifacts/types";
 import * as m from "$lib/paraglide/messages";
@@ -16,7 +17,44 @@ import * as m from "$lib/paraglide/messages";
  * from the frame arrives with `event.origin === "null"`, so origin checking is
  * useless here and `event.source` is the identity that actually holds — it is a
  * window reference this component created and no other page can forge.
+ *
+ * The same opaque origin is why this component fetches the sandbox's own pinned
+ * files on its behalf: an opaque origin is the worst position from which to ask
+ * for a subresource, and this page is an ordinary origin for which the same GET
+ * is unremarkable. `$lib/artifacts/assets` has the account. Every path the frame
+ * names is checked against `isSandboxAssetPath` first, so this reads two
+ * directories on the sandbox origin and can be pointed nowhere else.
  */
+
+/**
+ * One copy per origin for the lifetime of the tab.
+ *
+ * Module-level rather than per-component: the compiler's WebAssembly is thirteen
+ * megabytes, and a pupil who opens a second artifact — or the same panel twice —
+ * must not pay for it again. The browser's own cache would usually cover that,
+ * but "usually" is doing too much work for a file this size.
+ */
+const held = new Map<string, Promise<ArrayBuffer>>();
+
+function loadAsset(origin: string, path: string): Promise<ArrayBuffer> {
+  const key = `${origin} ${path}`;
+  const already = held.get(key);
+  if (already) return already;
+
+  const wanted = fetch(sandboxAssetUrl(origin, path))
+    .then((response) => {
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+      return response.arrayBuffer();
+    })
+    .catch((cause: unknown) => {
+      // Not kept: a failure now must not be the answer for the rest of the session.
+      held.delete(key);
+      throw cause;
+    });
+
+  held.set(key, wanted);
+  return wanted;
+}
 
 interface Props {
   /** A distinct hostname from the application's; isolation is by origin (§14). */
@@ -37,10 +75,35 @@ let ready = $state(false);
 /** Plain, not reactive: it is only ever read inside an event callback. */
 let currentRunId: string | null = null;
 
-function send(message: HostMessage): void {
+function send(message: HostMessage, transfer: Transferable[] = []): void {
   // `"*"` because the frame has an opaque origin, which has no addressable
   // form. Nothing secret travels this way — the artifact already has its source.
-  frame?.contentWindow?.postMessage(message, "*");
+  frame?.contentWindow?.postMessage(message, "*", transfer);
+}
+
+/**
+ * Answer the frame's request for one of the sandbox origin's own files.
+ *
+ * The buffer is transferred rather than copied, and a fresh copy is taken from
+ * the cached one each time: transfer detaches what it moves, and the cache has
+ * to survive a second artifact.
+ */
+async function serveAsset(path: string): Promise<void> {
+  try {
+    // Checked again here rather than trusted from the message: `asSandboxMessage`
+    // already refused anything else, and this is the line that does the reading.
+    if (!isSandboxAssetPath(path)) throw new Error("refused");
+    const bytes = (await loadAsset(sandboxOrigin, path)).slice(0);
+    send({ channel: ARTIFACT_CHANNEL, type: "asset", path, ok: true, bytes }, [bytes]);
+  } catch (cause) {
+    send({
+      channel: ARTIFACT_CHANNEL,
+      type: "asset",
+      path,
+      ok: false,
+      message: cause instanceof Error ? cause.message : String(cause),
+    });
+  }
 }
 
 $effect(() => {
@@ -52,6 +115,11 @@ $effect(() => {
 
     if (message.type === "ready") {
       ready = true;
+      return;
+    }
+    // Not tied to a run: the compiler and the runtimes outlive any one of them.
+    if (message.type === "need-asset") {
+      void serveAsset(message.path);
       return;
     }
     // A late answer from a superseded run would report the wrong revision.
