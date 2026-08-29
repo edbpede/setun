@@ -238,10 +238,17 @@ async function render(runId: string, language: ArtifactLanguage, source: string)
   currentRunId = runId;
 
   if (tierOf(language) === 0) {
+    const runtimes = await runtimeSources(null);
+
+    // Collecting the runtimes is a round-trip through the application, so a
+    // later render may have staged its document while this one waited — the
+    // same reason the compiled path below rechecks before it assigns.
+    if (currentRunId !== runId) return;
+
     stage.srcdoc = staticDocument({
       language: language as "html" | "svg",
       source,
-      runtimes: await runtimeSources(null),
+      runtimes,
       runId,
     });
     return;
