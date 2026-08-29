@@ -24,6 +24,8 @@ from devsuite.util import now_iso
 # Log levels
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Ordered least verbose first, so a level's rank is also its position on the
+# verbosity dial: a line is shown when its own rank is at or below the floor's.
 LEVELS: tuple[str, ...] = ("silent", "error", "warn", "info", "debug", "trace")
 LEVEL_RANK = {name: index for index, name in enumerate(LEVELS)}
 DEFAULT_LEVEL = "info"
@@ -39,11 +41,6 @@ VITE_LEVEL = {
     "debug": "info",
     "trace": "info",
 }
-
-
-def level_at_least(level: str, floor: str) -> bool:
-    """True when `level` is as verbose as `floor` or more so."""
-    return LEVEL_RANK[level] >= LEVEL_RANK[floor]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
