@@ -171,8 +171,15 @@ export function dropMissingEncodings(req, clientDir) {
 
   if (!asset.startsWith(clientDir)) return;
 
+  // Encoding tokens are case-insensitive (RFC 9110 §8.4), and adapter-node's
+  // static handler already matches Brotli that way. Compare in lower case on
+  // both sides: a header spelled `BR` must be recognised here, and it must also
+  // be the part that gets dropped — recognising it without dropping it would
+  // leave the handler reaching for the missing file anyway.
+  const normalized = accept.toLowerCase();
+
   const missing = ENCODINGS.filter(
-    ([token, suffix]) => accept.includes(token) && !existsSync(asset + suffix),
+    ([token, suffix]) => normalized.includes(token) && !existsSync(asset + suffix),
   ).map(([token]) => token);
 
   if (missing.length === 0) return;
@@ -180,7 +187,9 @@ export function dropMissingEncodings(req, clientDir) {
   const kept = accept
     .split(",")
     .map((part) => part.trim())
-    .filter((part) => part !== "" && !missing.some((token) => part.startsWith(token)));
+    .filter(
+      (part) => part !== "" && !missing.some((token) => part.toLowerCase().startsWith(token)),
+    );
 
   // An empty header would be rejected outright, so fall back to the encoding
   // every client understands rather than leaving nothing behind.

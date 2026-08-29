@@ -147,6 +147,21 @@ describe("dropMissingEncodings", () => {
     expect(req.headers["accept-encoding"]).toBe("identity");
   });
 
+  test("matches encoding tokens whatever their case", () => {
+    // adapter-node's static handler tests Brotli with `/(br|brotli)/i`, so a
+    // header spelled `BR` reaches the missing `.br` file unless it is dropped
+    // here too.
+    const req = request("/_app/immutable/chunks/a.js", "BR");
+    dropMissingEncodings(req, dir);
+
+    expect(req.headers["accept-encoding"]).toBe("identity");
+
+    const mixed = request("/_app/immutable/chunks/a.js", "Br;q=1.0, GZip");
+    dropMissingEncodings(mixed, dir);
+
+    expect(mixed.headers["accept-encoding"]).toBe("GZip");
+  });
+
   test("ignores requests that are not for build assets", () => {
     const req = request("/chat", "br");
     dropMissingEncodings(req, dir);
