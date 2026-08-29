@@ -1,6 +1,7 @@
 <script lang="ts">
 import { superForm } from "sveltekit-superforms";
 import DashboardRow from "$lib/components/educator/DashboardRow.svelte";
+import FieldError from "$lib/components/ui/FieldError.svelte";
 import * as m from "$lib/paraglide/messages";
 import type { PageProps } from "./$types";
 
@@ -62,7 +63,7 @@ const { form, errors, enhance: formEnhance, submitting } = superForm(data.form);
           required
           class="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground"
         />
-        {#if $errors.name}<span class="text-xs text-destructive">{$errors.name}</span>{/if}
+        <FieldError message={$errors.name} />
       </label>
 
       <label class="flex flex-col gap-1.5">
@@ -72,7 +73,7 @@ const { form, errors, enhance: formEnhance, submitting } = superForm(data.form);
           bind:value={$form.timezone}
           class="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground"
         />
-        {#if $errors.timezone}<span class="text-xs text-destructive">{$errors.timezone}</span>{/if}
+        <FieldError message={$errors.timezone} />
       </label>
 
       <button

@@ -1,6 +1,7 @@
 <script lang="ts">
 import { type SuperValidated, superForm } from "sveltekit-superforms";
 import type * as v from "valibot";
+import FieldError from "$lib/components/ui/FieldError.svelte";
 import * as m from "$lib/paraglide/messages";
 import type { SetupClassroomSchema } from "$lib/server/setup/schemas";
 import { setupFieldError } from "./labels";
@@ -52,13 +53,13 @@ const field = "h-10 rounded-md border border-input bg-background px-3 text-sm te
     <label class="flex flex-col gap-1.5">
       <span class="text-sm font-medium text-foreground">{m.educator_classroom_name_label()}</span>
       <input name="name" type="text" bind:value={$form.name} class={field} />
-      {#if $errors.name}<span class="text-xs text-destructive">{$errors.name}</span>{/if}
+      <FieldError message={$errors.name} />
     </label>
 
     <label class="flex flex-col gap-1.5">
       <span class="text-sm font-medium text-foreground">{m.educator_timezone_label()}</span>
       <input name="timezone" type="text" bind:value={$form.timezone} class={field} />
-      {#if $errors.timezone}<span class="text-xs text-destructive">{$errors.timezone}</span>{/if}
+      <FieldError message={$errors.timezone} />
     </label>
 
     <label class="flex flex-col gap-1.5">
@@ -89,9 +90,7 @@ const field = "h-10 rounded-md border border-input bg-background px-3 text-sm te
         bind:value={$form.sessionSlidingDays}
         class={field}
       />
-      {#if $errors.sessionSlidingDays}
-        <span class="text-xs text-destructive">{$errors.sessionSlidingDays}</span>
-      {/if}
+      <FieldError message={$errors.sessionSlidingDays} />
     </label>
 
     {#if alias}

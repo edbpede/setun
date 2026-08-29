@@ -1,6 +1,7 @@
 <script lang="ts">
 import { type SuperValidated, superForm } from "sveltekit-superforms";
 import type * as v from "valibot";
+import FieldError from "$lib/components/ui/FieldError.svelte";
 import * as m from "$lib/paraglide/messages";
 import type { TemporaryWindowsSchema } from "$lib/server/classroom/schemas";
 
@@ -121,7 +122,7 @@ const field = "h-9 rounded-md border border-input bg-background px-2 text-sm tex
     {/each}
 
     {#if $errors.temporaryWindows?._errors}
-      <p class="text-xs text-destructive">{$errors.temporaryWindows._errors}</p>
+      <FieldError message={$errors.temporaryWindows._errors} />
     {/if}
 
     <div class="flex gap-2 pt-1">
