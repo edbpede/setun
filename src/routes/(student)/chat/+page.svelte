@@ -1,7 +1,8 @@
 <script lang="ts">
 import { untrack } from "svelte";
 import { enhance } from "$app/forms";
-import { invalidateAll } from "$app/navigation";
+import { goto, invalidateAll, replaceState } from "$app/navigation";
+import { page } from "$app/state";
 import { readEventStream } from "$lib/chat/sse-client";
 import { fitVisualViewport, readScrollPosition, writeScrollPosition } from "$lib/chat/viewport";
 import ArtifactPanel from "$lib/components/artifacts/ArtifactPanel.svelte";
@@ -18,7 +19,11 @@ import * as m from "$lib/paraglide/messages";
 import { ArtifactWorkspace } from "$lib/state/artifacts.svelte";
 import { ClassroomState } from "$lib/state/classroom.svelte";
 import { ComposerState } from "$lib/state/composer.svelte";
-import { ConversationState } from "$lib/state/conversation.svelte";
+import {
+  type ChatMessage as ChatMessageData,
+  ConversationState,
+  textOf,
+} from "$lib/state/conversation.svelte";
 import { attachmentRefusalMessage, imageRefusalMessage, refusalMessage } from "$lib/state/refusals";
 import type { PageProps } from "./$types";
 
@@ -54,6 +59,32 @@ let drawerOpen = $state(false);
 let windowSize = $state(MESSAGE_WINDOW);
 /** True while the composer's image mode is waiting on a picture (§15). */
 let generating = $state(false);
+
+/**
+ * The model the next conversation will be created with (§9).
+ *
+ * An alias is bound to a conversation when it is created and the messages in one
+ * were answered by that model, so the choice sits beside *New conversation*
+ * rather than over a thread already under way. The first message of a visit
+ * mints its conversation and carries the same value.
+ *
+ * Presentation only. Both `?/create` and `POST /api/conversations` fall back to
+ * an allowlisted alias whatever a client sends: hiding a control is never access
+ * control, and neither is trusting one (§8, §21).
+ */
+let selectedAliasId = $state<string | null>(null);
+
+const activeAlias = $derived(data.aliases.find((alias) => alias.id === data.modelAliasId) ?? null);
+
+// Default to the first allowlisted alias, and drop a choice the educator has
+// since withdrawn rather than sending an id the server will refuse.
+$effect(() => {
+  const available = data.aliases;
+  if (available.length === 0) return;
+  if (!selectedAliasId || !available.some((alias) => alias.id === selectedAliasId)) {
+    selectedAliasId = available[0].id;
+  }
+});
 
 /**
  * The status the page renders.
@@ -246,7 +277,7 @@ async function ensureConversation(): Promise<string | null> {
   const response = await fetch("/api/conversations", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({}),
+    body: JSON.stringify(selectedAliasId ? { modelAliasId: selectedAliasId } : {}),
   }).catch(() => null);
 
   if (!response?.ok) {
@@ -261,6 +292,10 @@ async function ensureConversation(): Promise<string | null> {
   // attaching would restore the (empty) draft of a conversation created a
   // moment ago and discard it.
   composer.adopt(id);
+
+  // Name the conversation in the URL, without navigating, so a reload lands on
+  // the thread the pupil is in rather than on whichever is newest.
+  replaceState(`/chat?c=${id}`, page.state);
   return id;
 }
 
@@ -295,6 +330,38 @@ async function send(): Promise<void> {
       ...(editOfMessageId ? { editOfMessageId } : {}),
     }),
   });
+}
+
+/**
+ * Ask the same question again, and keep the first answer (§10).
+ *
+ * There was no way to a different answer but rewriting the question, and a
+ * pupil who rewrote it lost the wording that had produced the answer they were
+ * comparing against.
+ *
+ * The prompt is re-sent as a sibling of itself — the same branching an edit
+ * performs, with the text unchanged — so the previous answer is not overwritten
+ * but moved onto a branch the picker steps back to. That is the only shape the
+ * message tree has for "two answers to one question", and it is the shape §10
+ * already describes.
+ *
+ * The prompt is the message above this one on the active path, which is what
+ * `parentId` says on the server; the client is handed the path in order and
+ * reads it from there rather than carrying a second copy of the tree.
+ */
+async function regenerate(assistant: ChatMessageData): Promise<void> {
+  if (conversation.turn.streaming) return;
+
+  const index = conversation.messages.findIndex((message) => message.id === assistant.id);
+  const prompt = conversation.messages
+    .slice(0, index)
+    .findLast((message) => message.role === "user");
+
+  const text = prompt ? textOf(prompt) : "";
+  if (!prompt || !text) return;
+
+  composer.beginEdit(prompt.id, text);
+  await send();
 }
 
 /**
@@ -400,6 +467,36 @@ async function switchBranch(messageId: string): Promise<void> {
   if (response.ok) await invalidateAll();
 }
 
+/**
+ * Delete one of the pupil's own conversations (§16).
+ *
+ * "Students see only their own conversations", and what they can see they can
+ * remove: the endpoint is owner-scoped in SQL and cascades to messages, turns,
+ * buffered events and the search index, so nothing is left searchable by nobody.
+ * The drawer asks before calling this.
+ *
+ * Deleting the conversation on screen leaves nothing to show, so the page starts
+ * fresh rather than silently jumping to a neighbouring thread.
+ */
+async function deleteConversation(conversationId: string): Promise<void> {
+  const response = await fetch(`/api/conversations/${conversationId}`, {
+    method: "DELETE",
+  }).catch(() => null);
+
+  if (!response?.ok) {
+    refusal = m.chat_refusal_unavailable();
+    return;
+  }
+
+  if (conversationId === conversation.id) {
+    // Nothing left to show on this page; the load falls back to the newest
+    // conversation the pupil still has, or to an empty composer if none remain.
+    await goto("/chat", { invalidateAll: true, noScroll: true });
+    return;
+  }
+  await invalidateAll();
+}
+
 async function abort(): Promise<void> {
   const turnId = conversation.turn.turnId;
 
@@ -427,6 +524,7 @@ async function abort(): Promise<void> {
   activeId={data.conversation?.id ?? null}
   open={drawerOpen}
   onclose={() => (drawerOpen = false)}
+  ondelete={deleteConversation}
 />
 
 <!--
@@ -456,10 +554,50 @@ async function abort(): Promise<void> {
     </div>
 
     <div class="flex shrink-0 items-center gap-2">
+      <!--
+        Which model this conversation is using (§9).
+        Read-only, because an alias is bound to a conversation when it is created
+        and every message already in one was answered by that model. The choice
+        is made beside *New conversation*, where it applies.
+
+        Only the friendly name ever appears — the gateway identifier behind it is
+        editable in the panel and reaches no pupil's browser (§9, §21).
+      -->
+      {#if activeAlias && data.aliases.length > 1}
+        <span class="hidden text-xs text-muted-foreground sm:inline">
+          {m.chat_model_in_use({ model: activeAlias.name })}
+        </span>
+      {/if}
+
       <div class="hidden w-28 sm:block">
         <AllowanceMeter allowance={status.allowance} compact />
       </div>
-      <form method="POST" action="?/create" use:enhance>
+
+      <form method="POST" action="?/create" use:enhance class="flex items-center gap-1.5">
+        <!--
+          The model the next conversation will use. Inside this form so the
+          choice travels with the button that acts on it, and so it works with
+          JavaScript off; the same value is sent when a conversation is minted by
+          the first message instead.
+
+          Only where the educator has allowlisted more than one alias: a picker
+          with one option is a control that decides nothing (§9).
+        -->
+        {#if data.aliases.length > 1}
+          <label class="hidden items-center gap-1.5 sm:flex">
+            <span class="sr-only">{m.chat_model_label()}</span>
+            <select
+              name="modelAliasId"
+              bind:value={selectedAliasId}
+              class="h-8 rounded-md border border-input bg-background px-1.5 text-xs text-foreground"
+            >
+              {#each data.aliases as alias (alias.id)}
+                <option value={alias.id}>{alias.name}</option>
+              {/each}
+            </select>
+          </label>
+        {/if}
+
         <button
           type="submit"
           class="rounded-md border border-input px-2.5 py-1.5 text-xs font-medium text-foreground hover:bg-secondary"
@@ -544,6 +682,7 @@ async function abort(): Promise<void> {
         <ChatMessage
           {message}
           onedit={(target) => composer.beginEdit(target.id, target.text)}
+          onregenerate={regenerate}
           onswitch={switchBranch}
         />
       {/each}
