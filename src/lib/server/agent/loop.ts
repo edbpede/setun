@@ -5,6 +5,7 @@ import { GatewayError } from "../gateway/errors";
 import type { GatewayEvent, TurnEndReason } from "../gateway/events";
 import { promptTextOf } from "../gateway/messages";
 import { estimateTokens, resolveUsage } from "../gateway/usage";
+import type { AttachmentPayload } from "../storage/attachments";
 import { BUDGET_PRESETS, type BudgetSettings, TurnBudget } from "./budgets";
 import type { InteractionAnswer, TurnInteractionRegistry } from "./interactions";
 import {
@@ -46,13 +47,14 @@ export interface RunTurnInput {
   /** The active path of the message tree, oldest first (§10). */
   readonly path: readonly Pick<Message, "role" | "parts">[];
   /**
-   * Image attachments, already read from storage and base64-encoded.
+   * Attachments, already read from storage: images base64-encoded,
+   * text/code files decoded to the fenced text the message sends.
    *
    * Resolved by the caller rather than here: the loop stays pure over stored
    * parts, and reading a file is not something a termination-condition test
    * should need a filesystem for (§10).
    */
-  readonly attachmentImages?: ReadonlyMap<string, { mediaType: string; data: string }>;
+  readonly attachmentPayloads?: ReadonlyMap<string, AttachmentPayload>;
   readonly promptLayers?: SystemPromptLayers;
   /**
    * The classroom's per-turn caps (§10).
@@ -116,7 +118,7 @@ function encodeArtifactEdit(part: Extract<MessagePart, { type: "artifact-edit" }
  */
 function encodeStoredMessage(
   message: Pick<Message, "role" | "parts">,
-  images: RunTurnInput["attachmentImages"],
+  payloads: RunTurnInput["attachmentPayloads"],
 ): GatewayMessage[] {
   const text = textOf(message);
   const toolCalls: GatewayToolCall[] = message.parts
@@ -136,19 +138,32 @@ function encodeStoredMessage(
     (part): part is Extract<MessagePart, { type: "tool-result" }> => part.type === "tool-result",
   );
 
-  const attachments: GatewayContentPart[] = message.parts
+  const attachmentParts = message.parts.filter(
+    (part): part is Extract<MessagePart, { type: "attachment" }> => part.type === "attachment",
+  );
+
+  // Text and code files travel inline as part of the message text (they were
+  // stored already fenced), so the model reads them the same way it reads what
+  // the pupil typed. Images travel as their own content part (§10).
+  const imageParts: GatewayContentPart[] = attachmentParts.flatMap((part) => {
+    const payload = payloads?.get(part.attachmentId);
+    return payload?.kind === "image"
+      ? [{ type: "image" as const, mediaType: payload.mediaType, data: payload.data }]
+      : [];
+  });
+
+  const inlinedText = attachmentParts
+    .map((part) => payloads?.get(part.attachmentId))
     .filter(
-      (part): part is Extract<MessagePart, { type: "attachment" }> => part.type === "attachment",
+      (payload): payload is Extract<AttachmentPayload, { kind: "text" }> =>
+        payload?.kind === "text",
     )
-    .flatMap((part) => {
-      const image = images?.get(part.attachmentId);
-      return image
-        ? [{ type: "image" as const, mediaType: image.mediaType, data: image.data }]
-        : [];
-    });
+    .map((payload) => payload.text);
+
+  const fullText = [text, ...inlinedText].filter((chunk) => chunk.length > 0).join("\n\n");
 
   const content: string | GatewayContentPart[] =
-    attachments.length > 0 ? [{ type: "text", text }, ...attachments] : text;
+    imageParts.length > 0 ? [{ type: "text", text: fullText }, ...imageParts] : fullText;
 
   const head: GatewayMessage = {
     role: message.role,
@@ -172,11 +187,11 @@ function encodeStoredMessage(
 export function assembleContext(
   path: readonly Pick<Message, "role" | "parts">[],
   layers?: SystemPromptLayers,
-  images?: RunTurnInput["attachmentImages"],
+  payloads?: RunTurnInput["attachmentPayloads"],
 ): GatewayMessage[] {
   return [
     { role: "system" as const, content: buildSystemPrompt(layers) },
-    ...path.flatMap((message) => encodeStoredMessage(message, images)),
+    ...path.flatMap((message) => encodeStoredMessage(message, payloads)),
   ];
 }
 
@@ -192,7 +207,7 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<GatewayEvent
   const messages: GatewayMessage[] = assembleContext(
     input.path,
     input.promptLayers,
-    input.attachmentImages,
+    input.attachmentPayloads,
   );
   const now = input.now ?? Date.now;
   const budget = new TurnBudget(input.budgets ?? BUDGET_PRESETS.standard, now());

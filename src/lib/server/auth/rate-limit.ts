@@ -105,6 +105,46 @@ export function recordAttempt(
     .run();
 }
 
+/**
+ * The progressive delay a credential digest has earned — the per-digest axis
+ * only, with no per-IP block.
+ *
+ * The per-IP ceiling is a blunt instrument that suits many-credentials guessing
+ * (the student codes, where each code is a different digest so only the IP axis
+ * catches a bot working through them). It is the wrong instrument for a *single
+ * known* account: in a classroom the operator shares one NAT'd address with a
+ * whole class, whose ordinary successful sign-ins would fill that address's
+ * bucket and lock the operator out — of the one credential with no in-app
+ * recovery. The per-digest progressive delay is exactly the axis that resists
+ * guessing one account, and it only ever delays, never blocks, so the real
+ * operator always gets in after the wait (§7).
+ */
+export function digestFailureDelayMs(
+  db: AppDatabase,
+  input: { digest: string; now?: Date },
+): number {
+  const now = input.now ?? new Date();
+  const since = new Date(now.getTime() - RATE_LIMIT_WINDOW_MS);
+  const digestAttempts = attemptsSince(db, { scope: "digest", key: input.digest, since });
+  return delayForFailures(consecutiveFailures(digestAttempts));
+}
+
+/**
+ * Record an attempt on the digest axis only.
+ *
+ * The counterpart to `digestFailureDelayMs`: where the per-IP block must not
+ * apply, the per-IP row must not be written either, so an account's failures
+ * never spend a shared address's budget (and vice versa).
+ */
+export function recordDigestAttempt(
+  db: AppDatabase,
+  input: { digest: string; successful: boolean },
+): void {
+  db.insert(loginAttempt)
+    .values([{ scope: "digest", key: input.digest, successful: input.successful }])
+    .run();
+}
+
 /** Housekeeping for the Phase 5 scheduler; rows outside the window decide nothing. */
 export function pruneAttemptsBefore(db: AppDatabase, cutoff: Date): number {
   const rows = db

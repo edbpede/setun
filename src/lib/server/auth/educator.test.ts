@@ -2,13 +2,16 @@ import { beforeEach, describe, expect, it } from "bun:test";
 import type { AppDatabase } from "../db/client";
 import { createClassroom } from "../db/queries/classrooms";
 import { createStudent } from "../db/queries/students";
+import { loginAttempt } from "../db/schema";
 import { createTestDatabase } from "../db/testing";
 import {
   attemptEducatorLogin,
+  attemptEducatorSignIn,
   EDUCATOR_LOGIN_MINIMUM_DURATION_MS,
   resolveEducatorSession,
   seedEducator,
 } from "./educator";
+import { DIGEST_FAILURE_THRESHOLD, delayForFailures } from "./rate-limit";
 import {
   createSession,
   EDUCATOR_SESSION_TTL_DAYS,
@@ -27,6 +30,11 @@ import {
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const USERNAME = "laerer";
 const PASSWORD = "a-long-operator-password";
+
+function countLoginAttempts(database: AppDatabase, scope?: "ip" | "digest"): number {
+  const rows = database.select().from(loginAttempt).all();
+  return scope ? rows.filter((row) => row.scope === scope).length : rows.length;
+}
 
 let db: AppDatabase;
 
@@ -135,6 +143,69 @@ describe("attemptEducatorLogin", () => {
     // An unknown username must not be observably cheaper than a known one — the
     // decoy hash is what keeps the argon2id work on both paths.
     expect(Math.abs(unknown - wrong)).toBeLessThan(120);
+  });
+});
+
+describe("attemptEducatorSignIn", () => {
+  beforeEach(async () => {
+    await seedEducator(db, { username: USERNAME, password: PASSWORD });
+  });
+
+  it("authenticates the correct credential", async () => {
+    const result = await attemptEducatorSignIn(db, { username: USERNAME, password: PASSWORD });
+    expect(result.ok).toBe(true);
+  });
+
+  it("throttles repeated failures against the same username with a progressive delay", async () => {
+    // Fail up to (but not past) the threshold: still no delay.
+    for (let i = 0; i < DIGEST_FAILURE_THRESHOLD; i++) {
+      const result = await attemptEducatorSignIn(db, {
+        username: USERNAME,
+        password: "wrong-password",
+      });
+      expect(result.ok).toBe(false);
+    }
+
+    // The next failure is past the threshold, so a delay now applies. Measured
+    // against `now` so the wall-clock floor does not have to be waited out.
+    const base = new Date();
+    const started = Date.now();
+    const throttled = await attemptEducatorSignIn(db, {
+      username: USERNAME,
+      password: "wrong-password",
+      now: base,
+    });
+    const elapsed = Date.now() - started;
+
+    expect(throttled.ok).toBe(false);
+    // The throttled attempt sees the DIGEST_FAILURE_THRESHOLD failures before
+    // it, so the base 1 s delay applies (delayForFailures counts from there).
+    expect(delayForFailures(DIGEST_FAILURE_THRESHOLD)).toBeGreaterThan(0);
+    expect(elapsed).toBeGreaterThanOrEqual(delayForFailures(DIGEST_FAILURE_THRESHOLD) - 20);
+  });
+
+  it("records each attempt on the digest axis only, never the shared IP bucket", async () => {
+    // The bare login records nothing; the sign-in wrapper records every attempt
+    // so it leaves an audit trail and can be throttled at all (ISSUE-005). It
+    // records the *digest* axis only — the operator must not be locked out of
+    // the one recovery-less credential by a class filling the shared IP bucket,
+    // so educator attempts never touch the ip scope.
+    const before = countLoginAttempts(db, "digest");
+    const beforeIp = countLoginAttempts(db, "ip");
+
+    const failed = await attemptEducatorSignIn(db, {
+      username: USERNAME,
+      password: "wrong-password",
+    });
+    expect(failed.ok).toBe(false);
+    expect(countLoginAttempts(db, "digest") - before).toBe(1);
+
+    const successful = await attemptEducatorSignIn(db, { username: USERNAME, password: PASSWORD });
+    expect(successful.ok).toBe(true);
+    expect(countLoginAttempts(db, "digest") - before).toBe(2);
+
+    // No IP row was ever written by the educator path.
+    expect(countLoginAttempts(db, "ip") - beforeIp).toBe(0);
   });
 });
 

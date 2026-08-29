@@ -8,6 +8,7 @@ import {
 } from "../db/queries/educators";
 import { findSessionByDigest, touchSession } from "../db/queries/sessions";
 import type { Educator } from "../db/schema";
+import { digestFailureDelayMs, recordDigestAttempt } from "./rate-limit";
 import {
   createSession,
   EDUCATOR_SESSION_TTL_DAYS,
@@ -34,6 +35,24 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /** Same floor as the student path, for the same reason: a uniform observable duration (§7). */
 export const EDUCATOR_LOGIN_MINIMUM_DURATION_MS = 250;
+
+/**
+ * The rate-limit key for an educator sign-in (§7).
+ *
+ * The operator account is the one privileged credential for the whole instance
+ * and there is no password recovery inside the app, so failed sign-ins earn a
+ * progressive delay on the SQLite-backed limiter the student codes and the
+ * first-run token already use — the normal login was the one path left off.
+ *
+ * `login_attempt.scope` is the enum `["ip", "digest"]`, so the budget is
+ * namespaced *inside* the digest scope rather than adding a third scope and a
+ * migration — the same choice `setup/claim` makes. The key is a digest of the
+ * submitted username, never of anything stored, so the limiter never reveals
+ * whether an account exists (§7, §21).
+ */
+export function educatorRateLimitKey(username: string): string {
+  return `educator:${hashSessionToken(username.trim().toLowerCase())}`;
+}
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -178,6 +197,47 @@ export async function attemptEducatorLogin(
     educator,
     session: createSession(db, { ownerKind: "educator", ownerId: educator.id }),
   });
+}
+
+/**
+ * Verify the operator credential with the same throttling the other
+ * educator-credential paths carry (§7).
+ *
+ * `attemptEducatorLogin` is the pure decision and is shared with the first-run
+ * "lost the token" recovery, which brings its own, separately-namespaced
+ * limiter. Normal sign-in is throttled here instead, keyed per username digest
+ * and per IP on the shared SQLite limiter: the operator account is the one
+ * privileged credential for the whole instance and has no in-app recovery, so
+ * unlimited online guessing must not be possible. A blocked attempt is refused
+ * before the credential is touched and is not recorded; every branch is held to
+ * the login duration floor plus any progressive delay so timing discloses
+ * nothing (§7, §21).
+ */
+export async function attemptEducatorSignIn(
+  db: AppDatabase,
+  input: { username: string; password: string; now?: Date },
+): Promise<EducatorLoginResult> {
+  const startedAt = Date.now();
+  const settleFloor = async (
+    result: EducatorLoginResult,
+    extraDelayMs = 0,
+  ): Promise<EducatorLoginResult> => {
+    const remaining = EDUCATOR_LOGIN_MINIMUM_DURATION_MS + extraDelayMs - (Date.now() - startedAt);
+    if (remaining > 0) await sleep(remaining);
+    return result;
+  };
+
+  const digest = educatorRateLimitKey(input.username);
+  const delayMs = digestFailureDelayMs(db, { digest, now: input.now });
+
+  const result = await attemptEducatorLogin(db, {
+    username: input.username,
+    password: input.password,
+  });
+  recordDigestAttempt(db, { digest, successful: result.ok });
+
+  if (!result.ok) return settleFloor(FAILURE, delayMs);
+  return result;
 }
 
 /**
