@@ -54,8 +54,10 @@ test("a student logs in, chats with a streaming answer, and logs out", async ({ 
 
   await expect(page).toHaveURL(/\/chat/);
 
-  // A fresh account has no conversation yet.
-  await page.getByRole("button", { name: m.chat_new_conversation() }).first().click();
+  // A fresh account has no conversation yet, and does not need one: the empty
+  // state says to write a message below, and the composer is there to write it
+  // in. The conversation is minted on the first send (§10).
+  await expect(page.getByText(m.chat_empty_body())).toBeVisible();
   await expect(page.getByRole("textbox", { name: m.chat_composer_label() })).toBeVisible();
 
   await page.getByRole("textbox", { name: m.chat_composer_label() }).fill("Forklar loops");

@@ -50,6 +50,27 @@ export class ComposerState {
     this.mode = "text";
   }
 
+  /**
+   * Rebind to a conversation that did not exist when the pupil started typing.
+   *
+   * The first message of a visit is composed before there is anything to compose
+   * into: the conversation is minted on send, and the draft, the attachments and
+   * the image mode all belong to the words already on screen. `attach` would
+   * discard every one of them, because it exists for the opposite case — moving
+   * to a conversation that has its own draft to restore.
+   *
+   * The draft follows to the new storage key, so a tab discarded between the
+   * mint and the send still comes back with the message in it (§20).
+   */
+  adopt(conversationId: string): void {
+    if (this.#conversationId === conversationId) return;
+
+    const draft = this.draft;
+    this.#writeDraft("");
+    this.#conversationId = conversationId;
+    this.#writeDraft(draft);
+  }
+
   addAttachment(attachment: ComposerAttachment): void {
     this.attachments = [...this.attachments, attachment];
   }

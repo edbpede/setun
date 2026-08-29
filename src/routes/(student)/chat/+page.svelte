@@ -225,11 +225,50 @@ async function consume(url: string, init: RequestInit): Promise<void> {
   }
 }
 
+/**
+ * The conversation this composer writes into, minting one if there is none (§10).
+ *
+ * A pupil's very first visit has no conversation, and the empty state tells them
+ * to "write a message below". Before this the composer was withheld until they
+ * found a *New conversation* button first — the page asked for something it had
+ * not provided. The conversation is a container the pupil never asked for, so it
+ * is created when they first need one rather than made a step they must take.
+ *
+ * Still lazy: arriving and leaving without typing mints nothing.
+ *
+ * Returns null when the server refuses — closed, out of hours, or no allowlisted
+ * alias — with the refusal already on screen. Hiding the composer was never the
+ * control; this endpoint applies the same guard the send path does (§8, §21).
+ */
+async function ensureConversation(): Promise<string | null> {
+  if (conversation.id) return conversation.id;
+
+  const response = await fetch("/api/conversations", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({}),
+  }).catch(() => null);
+
+  if (!response?.ok) {
+    const payload = await response?.json().catch(() => null);
+    refusal = refusalMessage(payload?.error);
+    return null;
+  }
+
+  const { id } = (await response.json()) as { id: string };
+  conversation.id = id;
+  // `adopt`, not `attach`: the draft on screen is what we are about to send, and
+  // attaching would restore the (empty) draft of a conversation created a
+  // moment ago and discard it.
+  composer.adopt(id);
+  return id;
+}
+
 async function send(): Promise<void> {
-  const conversationId = conversation.id;
+  refusal = null;
+  const conversationId = await ensureConversation();
   if (!conversationId) return;
 
-  refusal = null;
   const { text, editOfMessageId } = composer.take();
   if (!text) return;
 
@@ -280,10 +319,10 @@ async function respond(body: Record<string, unknown>): Promise<void> {
 
 /** Upload one file as the pupil picks it, so the send carries only identifiers (§10). */
 async function attach(file: File): Promise<void> {
-  const conversationId = conversation.id;
+  refusal = null;
+  const conversationId = await ensureConversation();
   if (!conversationId) return;
 
-  refusal = null;
   const body = new FormData();
   body.set("file", file);
   body.set("conversationId", conversationId);
@@ -311,10 +350,10 @@ async function detach(attachmentId: string): Promise<void> {
  * agent loop's tool reaches, so there is nothing to do here but ask and reload.
  */
 async function generateImage(): Promise<void> {
-  const conversationId = conversation.id;
+  refusal = null;
+  const conversationId = await ensureConversation();
   if (!conversationId) return;
 
-  refusal = null;
   const { text } = composer.take();
   if (!text) return;
 
@@ -556,27 +595,23 @@ async function abort(): Promise<void> {
     </div>
   </div>
 
-  {#if conversation.id}
-    <Composer
-      {composer}
-      streaming={conversation.turn.streaming || generating}
-      attachmentsEnabled={data.attachmentsEnabled}
-      imageModeAvailable={data.imageModeAvailable}
-      onsend={() => (composer.mode === "image" ? generateImage() : send())}
-      onabort={abort}
-      onattach={attach}
-      ondetach={detach}
-    />
-  {:else}
-    <form method="POST" action="?/create" use:enhance class="border-t border-border p-3">
-      <button
-        type="submit"
-        class="h-11 w-full rounded-md bg-primary text-sm font-medium text-primary-foreground hover:bg-primary/90"
-      >
-        {m.chat_new_conversation()}
-      </button>
-    </form>
-  {/if}
+  <!--
+    Always present, including on a pupil's very first visit: the empty state says
+    "write a message below", and the conversation it needs is minted on the first
+    send rather than demanded of the pupil first (§10). The header keeps its own
+    *New conversation* control for starting a second one, and is the affordance
+    that still works with JavaScript off.
+  -->
+  <Composer
+    {composer}
+    streaming={conversation.turn.streaming || generating}
+    attachmentsEnabled={data.attachmentsEnabled}
+    imageModeAvailable={data.imageModeAvailable}
+    onsend={() => (composer.mode === "image" ? generateImage() : send())}
+    onabort={abort}
+    onattach={attach}
+    ondetach={detach}
+  />
   {/if}
 
   <!--
