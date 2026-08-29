@@ -23,9 +23,22 @@ type BudgetsData = v.InferOutput<typeof BudgetsSchema>;
 
 interface Props {
   data: SuperValidated<BudgetsData>;
+  /**
+   * The preset the classroom's budgets currently match, or null for a custom
+   * mix. Derived server-side (a preset is never a stored mode), so the picker
+   * shows the real state instead of always defaulting to the first option.
+   */
+  activePreset?: "cautious" | "standard" | "generous" | null;
 }
 
-let { data }: Props = $props();
+let { data, activePreset = null }: Props = $props();
+
+// The picker's own selection. Seeded from the current budgets so it reflects
+// reality on load; "custom" when the values match no preset. The seed is the
+// initial prop by design — the page reloads on save, remounting with the fresh
+// value — so the "referenced locally" note does not apply.
+// svelte-ignore state_referenced_locally
+let selectedPreset = $state<string>(activePreset ?? "custom");
 
 // svelte-ignore state_referenced_locally
 const { form, errors, enhance, submitting } = superForm(data, {
@@ -62,7 +75,15 @@ const field = "h-9 rounded-md border border-input bg-background px-3 text-sm tex
   >
     <label class="flex flex-col gap-1">
       <span class="text-xs text-muted-foreground">{m.educator_preset_label()}</span>
-      <select name="preset" class={field}>
+      <select name="preset" bind:value={selectedPreset} class={field}>
+        <!--
+          "Custom" is shown, never submitted: it is disabled, so a teacher whose
+          budgets match no preset cannot re-apply "custom" over their values. The
+          three presets remain the only submittable options.
+        -->
+        {#if selectedPreset === "custom"}
+          <option value="custom" disabled>{m.educator_preset_custom()}</option>
+        {/if}
         {#each PRESETS as preset (preset.value)}
           <option value={preset.value}>{preset.label()}</option>
         {/each}
@@ -70,7 +91,8 @@ const field = "h-9 rounded-md border border-input bg-background px-3 text-sm tex
     </label>
     <button
       type="submit"
-      class="h-9 rounded-md border border-input px-3 text-sm font-medium text-foreground hover:bg-secondary"
+      disabled={selectedPreset === "custom"}
+      class="h-9 rounded-md border border-input px-3 text-sm font-medium text-foreground hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
     >
       {m.educator_apply_preset()}
     </button>

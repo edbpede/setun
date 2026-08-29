@@ -30,7 +30,7 @@ const forceLoggedOut = $derived(
 
   <AllowlistEditor aliases={data.aliases} />
 
-  <BudgetForm data={data.budgetsForm} />
+  <BudgetForm data={data.budgetsForm} activePreset={data.activePreset} />
 
   <PolicyForm data={data.policyForm} {forceLoggedOut} />
 

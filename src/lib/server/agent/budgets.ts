@@ -61,6 +61,29 @@ export const BUDGET_PRESETS: Readonly<Record<BudgetPresetName, BudgetSettings>> 
   },
 };
 
+/**
+ * Which preset a classroom's budgets currently match, or null for a custom mix.
+ *
+ * A preset is never a stored mode (see `BUDGET_PRESETS`), so the panel derives
+ * the selected preset by comparing the five fields. A hand-edit of any field
+ * yields null — "Custom" — rather than a preset name the values no longer match.
+ */
+export function matchPreset(budgets: BudgetSettings): BudgetPresetName | null {
+  for (const name of BUDGET_PRESET_NAMES) {
+    const preset = BUDGET_PRESETS[name];
+    if (
+      preset.perTurnStepCap === budgets.perTurnStepCap &&
+      preset.perTurnWallClockSeconds === budgets.perTurnWallClockSeconds &&
+      preset.perTurnTokenCap === budgets.perTurnTokenCap &&
+      preset.perStudentDailyTokens === budgets.perStudentDailyTokens &&
+      preset.perClassroomDailyTokens === budgets.perClassroomDailyTokens
+    ) {
+      return name;
+    }
+  }
+  return null;
+}
+
 /** The classroom's budget settings, as the loop and the start-of-turn check read them. */
 export function budgetsOf(classroom: Pick<Classroom, keyof BudgetSettings>): BudgetSettings {
   return {

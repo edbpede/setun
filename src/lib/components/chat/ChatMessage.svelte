@@ -14,11 +14,14 @@ interface Props {
   /** Editing a prompt branches the tree as a sibling (§10). */
   onedit?: (message: { id: string; text: string }) => void;
   onregenerate?: (message: ChatMessage) => void;
+  /** Step to the sibling variant at `messageId` — the branch picker (§10). */
+  onswitch?: (messageId: string) => void;
 }
 
-let { message, onedit, onregenerate }: Props = $props();
+let { message, onedit, onregenerate, onswitch }: Props = $props();
 
 let isUser = $derived(message.role === "user");
+let branch = $derived(message.branch ?? null);
 </script>
 
 <article
@@ -36,6 +39,36 @@ let isUser = $derived(message.role === "user");
   >
     <MessageParts parts={message.parts} plain={isUser} />
   </div>
+
+  {#if branch && onswitch}
+    <!--
+      A branch point: this message has sibling variants an edit or regenerate
+      left off-screen. The picker steps between them so the older branch is never
+      orphaned (§10). Always visible — unlike the hover actions — because it is
+      the only way back to a variant that is not currently shown.
+    -->
+    <div class="flex items-center gap-1 text-xs text-muted-foreground">
+      <button
+        type="button"
+        class="rounded px-1 hover:text-foreground disabled:opacity-40"
+        disabled={branch.prevId === null}
+        aria-label={m.chat_branch_previous()}
+        onclick={() => branch?.prevId && onswitch?.(branch.prevId)}
+      >
+        ‹
+      </button>
+      <span>{branch.index + 1}/{branch.total}</span>
+      <button
+        type="button"
+        class="rounded px-1 hover:text-foreground disabled:opacity-40"
+        disabled={branch.nextId === null}
+        aria-label={m.chat_branch_next()}
+        onclick={() => branch?.nextId && onswitch?.(branch.nextId)}
+      >
+        ›
+      </button>
+    </div>
+  {/if}
 
   <div
     class="flex gap-2 opacity-0 transition-opacity group-hover/message:opacity-100 focus-within:opacity-100"

@@ -25,12 +25,19 @@ function withConversation(title?: string) {
 }
 
 describe("toMatchExpression", () => {
-  it("quotes every token so FTS5 operators are inert", () => {
-    expect(toMatchExpression("neural OR network")).toBe('"neural" "OR" "network"*');
+  it("quotes every token, scoped to the folded column, so FTS5 operators are inert", () => {
+    expect(toMatchExpression("neural OR network")).toBe(
+      'folded : "neural" folded : "OR" folded : "network"*',
+    );
   });
 
   it("prefix-matches the final token, because a search box is read as you type", () => {
-    expect(toMatchExpression("neur")).toBe('"neur"*');
+    expect(toMatchExpression("neur")).toBe('folded : "neur"*');
+  });
+
+  it("folds Danish æ/ø so ae/oe and the special letters build the same query", () => {
+    expect(toMatchExpression("sætning")).toBe(toMatchExpression("saetning"));
+    expect(toMatchExpression("smør")).toBe('folded : "smoer"*');
   });
 
   it("refuses punctuation-only input rather than building a malformed query", () => {
@@ -82,7 +89,28 @@ describe("searchConversations", () => {
       parts: [{ type: "text", text: "hvordan får man ø-tegnet frem" }],
     });
 
+    // å folds to a in the tokenizer: "far" finds "får".
     expect(searchConversations(db, { studentId: student.id, query: "far" })).toHaveLength(1);
+    // æ/ø fold in the application: "oe" finds "ø", and the special letter finds itself.
+    expect(searchConversations(db, { studentId: student.id, query: "oe-tegnet" })).toHaveLength(1);
+    expect(searchConversations(db, { studentId: student.id, query: "ø-tegnet" })).toHaveLength(1);
+  });
+
+  it("folds æ across the spelling divide, and keeps a clean excerpt", () => {
+    const { db, student, conversation } = withConversation();
+    appendMessage(db, {
+      conversationId: conversation.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "en sætning om løkker" }],
+    });
+
+    // Both spellings of the query find the conversation…
+    expect(searchConversations(db, { studentId: student.id, query: "saetning" })).toHaveLength(1);
+    // …and the excerpt still shows the real Danish spelling, not the folded form.
+    const hits = searchConversations(db, { studentId: student.id, query: "sætning" });
+    expect(hits).toHaveLength(1);
+    expect(hits[0].excerpt).toContain("sætning");
   });
 
   it("finds a conversation by its title", () => {

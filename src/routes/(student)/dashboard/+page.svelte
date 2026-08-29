@@ -160,7 +160,26 @@ const action =
   <!-- The pupil's own language, overriding the classroom's (§8, §18). -->
   <section class="flex flex-col gap-2">
     <h2 class="text-sm font-medium text-foreground">{m.student_language_label()}</h2>
-    <form method="POST" action="?/language" use:enhance class="flex flex-wrap items-end gap-2">
+    <!--
+      A full document reload after saving, not the default enhance. Paraglide
+      latches the resolved locale at hydration, so an in-place invalidateAll
+      leaves already-rendered messages in the old language until the next
+      navigation — a mixed-language flash. Reloading re-resolves the locale from
+      the freshly written PARAGLIDE_LOCALE cookie for the whole tree at once.
+    -->
+    <form
+      method="POST"
+      action="?/language"
+      use:enhance={() =>
+        async ({ result, update }) => {
+          if (result.type === "success" || result.type === "redirect") {
+            window.location.reload();
+            return;
+          }
+          await update();
+        }}
+      class="flex flex-wrap items-end gap-2"
+    >
       <select name="language" value={data.student.interfaceLanguage ?? ""} class={field}>
         <option value="">{m.student_language_follow_class()}</option>
         <option value="da">{m.educator_language_da()}</option>
