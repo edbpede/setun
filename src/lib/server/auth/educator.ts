@@ -200,6 +200,44 @@ export async function attemptEducatorLogin(
 }
 
 /**
+ * Serialize the throttle's read/verify/record interval per username digest.
+ *
+ * `digestFailureDelayMs` counts committed rows, and the argon2id verify between
+ * that count and `recordDigestAttempt` is a real yield point. Without this,
+ * sign-in attempts that overlap on one username all observe the same pre-burst
+ * count, so a parallel burst shares a single stale delay instead of each attempt
+ * earning the next step of the progression — parallelism, not patience, would be
+ * the way past the limiter.
+ *
+ * Process-local is the exact granularity: the instance is one server over one
+ * SQLite file. Keying on the digest means different usernames never contend, and
+ * the held interval is bounded by the login duration floor plus one verify — the
+ * penalty itself is served outside, so the lock cannot become a lockout of the
+ * one credential with no in-app recovery (§7).
+ *
+ * The chain is dropped once nothing is queued behind it, so the map stays the
+ * size of the concurrent attempts rather than of every username ever submitted.
+ */
+const signInChains = new Map<string, Promise<void>>();
+
+function withDigestLock<T>(digest: string, run: () => Promise<T>): Promise<T> {
+  const previous = signInChains.get(digest) ?? Promise.resolve();
+  const current = previous.then(run);
+
+  // The stored tail never rejects, so one failed attempt cannot wedge the queue.
+  const tail = current.then(
+    () => undefined,
+    () => undefined,
+  );
+  signInChains.set(digest, tail);
+  void tail.then(() => {
+    if (signInChains.get(digest) === tail) signInChains.delete(digest);
+  });
+
+  return current;
+}
+
+/**
  * Verify the operator credential with the same throttling the other
  * educator-credential paths carry (§7).
  *
@@ -212,6 +250,10 @@ export async function attemptEducatorLogin(
  * before the credential is touched and is not recorded; every branch is held to
  * the login duration floor plus any progressive delay so timing discloses
  * nothing (§7, §21).
+ *
+ * Counting, verifying and recording are serialized per username digest, because
+ * a progressive delay is only progressive if each attempt sees the one before it
+ * (see `withDigestLock`).
  */
 export async function attemptEducatorSignIn(
   db: AppDatabase,
@@ -228,13 +270,21 @@ export async function attemptEducatorSignIn(
   };
 
   const digest = educatorRateLimitKey(input.username);
-  const delayMs = digestFailureDelayMs(db, { digest, now: input.now });
 
-  const result = await attemptEducatorLogin(db, {
-    username: input.username,
-    password: input.password,
+  // Only the count/verify/record interval is held. The progressive delay is
+  // served after the lock is released, so a burst cannot park the operator
+  // behind a minute of someone else's penalty.
+  const { result, delayMs } = await withDigestLock(digest, async () => {
+    const earned = digestFailureDelayMs(db, { digest, now: input.now });
+
+    const attempt = await attemptEducatorLogin(db, {
+      username: input.username,
+      password: input.password,
+    });
+    recordDigestAttempt(db, { digest, successful: attempt.ok });
+
+    return { result: attempt, delayMs: earned };
   });
-  recordDigestAttempt(db, { digest, successful: result.ok });
 
   if (!result.ok) return settleFloor(FAILURE, delayMs);
   return result;

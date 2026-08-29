@@ -8,6 +8,7 @@ import {
   attemptEducatorLogin,
   attemptEducatorSignIn,
   EDUCATOR_LOGIN_MINIMUM_DURATION_MS,
+  educatorRateLimitKey,
   resolveEducatorSession,
   seedEducator,
 } from "./educator";
@@ -206,6 +207,44 @@ describe("attemptEducatorSignIn", () => {
 
     // No IP row was ever written by the educator path.
     expect(countLoginAttempts(db, "ip") - beforeIp).toBe(0);
+  });
+
+  it("makes overlapping attempts on one username each earn the next delay step", async () => {
+    // Load the digest with exactly the threshold, so the next failure is the
+    // first delayed one and the failure after it the second. Inserted directly:
+    // the point of the test is the two concurrent attempts, not the run-up.
+    const digest = educatorRateLimitKey(USERNAME);
+    db.insert(loginAttempt)
+      .values(
+        Array.from({ length: DIGEST_FAILURE_THRESHOLD }, () => ({
+          scope: "digest" as const,
+          key: digest,
+          successful: false,
+        })),
+      )
+      .run();
+
+    // Fired together. The count/verify/record interval contains an argon2id
+    // await, so without serialization both attempts read the same pre-burst
+    // count, shared one stale delay, and the burst never climbed the
+    // progression at all.
+    const elapsed = await Promise.all(
+      [0, 1].map(async () => {
+        const startedAt = Date.now();
+        const result = await attemptEducatorSignIn(db, {
+          username: USERNAME,
+          password: "wrong-password",
+        });
+        expect(result.ok).toBe(false);
+        return Date.now() - startedAt;
+      }),
+    );
+
+    // The second attempt to reach the credential must have seen the first one's
+    // recorded failure, so it owes the next step up rather than a repeat.
+    expect(Math.max(...elapsed)).toBeGreaterThanOrEqual(
+      delayForFailures(DIGEST_FAILURE_THRESHOLD + 1) - 20,
+    );
   });
 });
 
