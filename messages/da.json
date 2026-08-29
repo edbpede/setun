@@ -470,5 +470,7 @@
   "validation_password_too_short": "Brug mindst 12 tegn.",
   "validation_passwords_differ": "De to adgangskoder er ikke ens.",
   "validation_price_negative": "En pris kan ikke være negativ.",
+  "validation_price_not_a_number": "Skriv prisen som et tal, eller lad feltet stå tomt.",
+  "validation_price_too_large": "Den pris er usandsynligt høj. Priser er pr. million tokens.",
   "validation_username_required": "Skriv et brugernavn."
 }

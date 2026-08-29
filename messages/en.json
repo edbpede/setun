@@ -470,5 +470,7 @@
   "validation_password_too_short": "Use at least 12 characters.",
   "validation_passwords_differ": "The two passwords are not the same.",
   "validation_price_negative": "A price cannot be negative.",
+  "validation_price_not_a_number": "Enter a price as a number, or leave it empty.",
+  "validation_price_too_large": "That price is implausibly high. Prices are per million tokens.",
   "validation_username_required": "Enter a username."
 }

@@ -75,7 +75,15 @@ const flag = v.optional(v.boolean(), false);
  * price of zero would be priced as free rather than unpriced.
  */
 const optionalPrice = v.nullable(
-  v.pipe(v.number(), v.minValue(0, m.validation_price_negative()), v.maxValue(10_000)),
+  v.pipe(
+    // Named, like `gatewayModelId` above and for the same reason: a blank or
+    // mistyped price arrives as NaN, and "Invalid type: Expected number but
+    // received NaN" is not a sentence anyone should be shown (§21).
+    v.number(m.validation_price_not_a_number()),
+    v.check((value) => Number.isFinite(value), m.validation_price_not_a_number()),
+    v.minValue(0, m.validation_price_negative()),
+    v.maxValue(10_000, m.validation_price_too_large()),
+  ),
   null,
 );
 
