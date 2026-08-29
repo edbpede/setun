@@ -157,13 +157,27 @@ function longestBacktickRun(text: string): number {
 }
 
 /**
- * Read the image attachments on a message path, encoded for the gateway (§10).
+ * What a stored attachment contributes to the model input (§10).
  *
- * Images travel to the model inline, so the bytes have to be read at some point;
- * doing it here keeps the loop pure over stored parts and keeps the filesystem
- * out of every termination-condition test.
+ * An image travels inline as base64; a text/code file travels as the fenced
+ * text the loop appends to the message. Both are read from storage here so the
+ * loop stays pure over stored parts and the filesystem stays out of every
+ * termination-condition test.
  */
-export async function loadAttachmentImages(
+export type AttachmentPayload =
+  | { readonly kind: "image"; readonly mediaType: string; readonly data: string }
+  | { readonly kind: "text"; readonly text: string };
+
+/**
+ * Read the attachments on a message path, ready for the gateway (§10).
+ *
+ * Text and code files are stored already fenced (see the upload handler), so
+ * for them the stored bytes are the exact text the model should read — decode
+ * and pass through. Images are base64-encoded. Either way a file that has gone
+ * is simply not sent: the message still makes sense without it, and failing the
+ * turn over a missing attachment would not.
+ */
+export async function loadAttachmentPayloads(
   files: { read(storagePath: string): Promise<Uint8Array | null> },
   attachments: readonly {
     id: string;
@@ -171,21 +185,28 @@ export async function loadAttachmentImages(
     mediaType: string;
     storagePath: string;
   }[],
-): Promise<Map<string, { mediaType: string; data: string }>> {
-  const images = new Map<string, { mediaType: string; data: string }>();
+): Promise<Map<string, AttachmentPayload>> {
+  const payloads = new Map<string, AttachmentPayload>();
 
   for (const record of attachments) {
-    if (record.kind !== "image") continue;
-
     const bytes = await files.read(record.storagePath);
-    // A file that has gone is simply not sent: the message still makes sense
-    // without it, and failing the turn over a missing attachment would not.
     if (!bytes) continue;
 
-    images.set(record.id, { mediaType: record.mediaType, data: encodeBase64(bytes) });
+    if (record.kind === "image") {
+      payloads.set(record.id, {
+        kind: "image",
+        mediaType: record.mediaType,
+        data: encodeBase64(bytes),
+      });
+    } else if (record.kind === "text") {
+      payloads.set(record.id, { kind: "text", text: new TextDecoder().decode(bytes) });
+    }
+    // A kind neither of those is not silently mangled — it is simply not sent,
+    // the same as a missing file. A new binary kind must add its own branch
+    // rather than being UTF-8-decoded here by accident.
   }
 
-  return images;
+  return payloads;
 }
 
 function encodeBase64(bytes: Uint8Array): string {

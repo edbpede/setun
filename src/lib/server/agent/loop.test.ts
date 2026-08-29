@@ -311,7 +311,7 @@ describe("replaying a turn that used tools (§10, §11)", () => {
     const withImage = assembleContext(
       path,
       undefined,
-      new Map([["att-1", { mediaType: "image/png", data: "AAA" }]]),
+      new Map([["att-1", { kind: "image", mediaType: "image/png", data: "AAA" }]]),
     );
     expect(withImage[1].content).toEqual([
       { type: "text", text: "Hvad er der på billedet?" },
@@ -320,5 +320,37 @@ describe("replaying a turn that used tools (§10, §11)", () => {
 
     // A file that has gone is simply not sent; the message still makes sense.
     expect(assembleContext(path)[1].content).toBe("Hvad er der på billedet?");
+  });
+
+  it("inlines a text attachment's fenced content into the message the model reads", () => {
+    const path = [
+      {
+        role: "user" as const,
+        parts: [
+          { type: "text" as const, text: "Hvad returnerer funktionen?" },
+          {
+            type: "attachment" as const,
+            attachmentId: "att-txt",
+            kind: "text" as const,
+            filename: "script.py",
+            mediaType: "text/plain",
+          },
+        ],
+      },
+    ];
+
+    const fenced = "script.py:\n```\ndef hej():\n    return 42\n```";
+    const withText = assembleContext(
+      path,
+      undefined,
+      new Map([["att-txt", { kind: "text", text: fenced }]]),
+    );
+
+    // Text files travel inline as part of the message text, not as a separate
+    // content part — the model reads them the way it reads what the pupil typed.
+    expect(withText[1].content).toBe(`Hvad returnerer funktionen?\n\n${fenced}`);
+
+    // A text file that has gone leaves the typed message unchanged.
+    expect(assembleContext(path)[1].content).toBe("Hvad returnerer funktionen?");
   });
 });

@@ -5,7 +5,7 @@ import type { Classroom, Message, MessagePart, Student } from "../db/schema";
 import type { GatewayAdapter } from "../gateway/adapter";
 import type { McpClient } from "../mcp/client";
 import { resolveSkills, skillIndexEntries } from "../skills/registry";
-import { loadAttachmentImages } from "../storage/attachments";
+import { type AttachmentPayload, loadAttachmentPayloads } from "../storage/attachments";
 import type { FileStore } from "../storage/files";
 import type { SystemPromptLayers } from "./system-prompt";
 import { buildToolSet, type ToolContext, type ToolSet } from "./tools";
@@ -24,7 +24,7 @@ export interface PreparedTurn {
   readonly tools: ToolSet;
   readonly toolContext: ToolContext;
   readonly promptLayers: SystemPromptLayers;
-  readonly attachmentImages: ReadonlyMap<string, { mediaType: string; data: string }>;
+  readonly attachmentPayloads: ReadonlyMap<string, AttachmentPayload>;
 }
 
 export async function prepareTurn(input: {
@@ -64,7 +64,7 @@ export async function prepareTurn(input: {
       .map((part) => part.attachmentId),
   );
 
-  const attachmentImages = await loadAttachmentImages(
+  const attachmentPayloads = await loadAttachmentPayloads(
     input.files,
     listAttachmentsByIds(input.db, { attachmentIds, studentId: input.student.id }),
   );
@@ -78,6 +78,6 @@ export async function prepareTurn(input: {
       // Appended last, by §10; the loader tool below it reads the same list.
       skillIndex: skillIndexEntries(skills),
     },
-    attachmentImages,
+    attachmentPayloads,
   };
 }

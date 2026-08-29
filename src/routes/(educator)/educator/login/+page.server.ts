@@ -1,6 +1,6 @@
 import { fail, redirect } from "@sveltejs/kit";
 import * as v from "valibot";
-import { attemptEducatorLogin } from "$lib/server/auth/educator";
+import { attemptEducatorSignIn } from "$lib/server/auth/educator";
 import { EDUCATOR_SESSION_COOKIE_NAME, EDUCATOR_SESSION_TTL_DAYS } from "$lib/server/auth/sessions";
 import { getDb } from "$lib/server/boot";
 import type { Actions, PageServerLoad } from "./$types";
@@ -38,7 +38,10 @@ export const actions: Actions = {
 
     if (!parsed.success) return fail(400, { failed: true });
 
-    const result = await attemptEducatorLogin(getDb(), parsed.output);
+    // Throttling and the timing floor live in the sign-in decision; the route
+    // stays thin. It is keyed on the username alone (§7), so no client address
+    // is needed here.
+    const result = await attemptEducatorSignIn(getDb(), parsed.output);
     if (!result.ok) return fail(401, { failed: true });
 
     cookies.set(EDUCATOR_SESSION_COOKIE_NAME, result.session.token, {

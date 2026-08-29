@@ -9,6 +9,7 @@ import type { Message, MessagePart, ModelAlias, PermissionMode } from "../db/sch
 import type { GatewayAdapter } from "../gateway/adapter";
 import type { GatewayEvent } from "../gateway/events";
 import { describeCause, log } from "../logging";
+import type { AttachmentPayload } from "../storage/attachments";
 import { recordTurnArtifacts } from "./artifacts";
 import type { BudgetSettings } from "./budgets";
 import { turnInteractions } from "./interactions";
@@ -41,7 +42,7 @@ export interface ExecuteTurnInput {
   readonly alias: ModelAlias;
   readonly parentMessageId: string | null;
   readonly path: readonly Pick<Message, "role" | "parts">[];
-  readonly attachmentImages?: ReadonlyMap<string, { mediaType: string; data: string }>;
+  readonly attachmentPayloads?: ReadonlyMap<string, AttachmentPayload>;
   readonly promptLayers?: SystemPromptLayers;
   /** The classroom's per-turn caps; the loop stops the turn at a clean boundary (§10). */
   readonly budgets?: BudgetSettings;
@@ -82,7 +83,7 @@ export async function executeTurn(input: ExecuteTurnInput): Promise<void> {
       dialect: input.alias.dialect,
       model: input.alias.gatewayModelId,
       path: input.path,
-      attachmentImages: input.attachmentImages,
+      attachmentPayloads: input.attachmentPayloads,
       promptLayers: input.promptLayers,
       budgets: input.budgets,
       signal,

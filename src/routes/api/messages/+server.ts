@@ -171,7 +171,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     alias,
     parentMessageId: prompt.id,
     path,
-    attachmentImages: prepared.attachmentImages,
+    attachmentPayloads: prepared.attachmentPayloads,
     promptLayers: prepared.promptLayers,
     budgets: budgetsOf(access.classroom),
     tools: prepared.tools,
