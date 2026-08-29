@@ -16,6 +16,8 @@ COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --production
 
 COPY --from=build /app/build ./build
+# The production entry installs the process guard before adapter-node listens.
+COPY server.js server-guard.js ./
 
 EXPOSE 3000
-CMD ["bun", "./build/index.js"]
+CMD ["bun", "./server.js"]
