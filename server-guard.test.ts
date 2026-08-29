@@ -162,6 +162,23 @@ describe("dropMissingEncodings", () => {
     expect(mixed.headers["accept-encoding"]).toBe("GZip");
   });
 
+  test("drops an alias that merely contains the token", () => {
+    // The handler tests the whole header for the substring `gzip`, so the
+    // historical `x-gzip` alias selects the `.gz` file there. Dropping only
+    // parts that *start* with the token would leave it behind.
+    const req = request("/_app/immutable/chunks/both.js", "x-gzip");
+    dropMissingEncodings(req, dir);
+
+    // `both.js.gz` is on disk, so nothing is dropped.
+    expect(req.headers["accept-encoding"]).toBe("x-gzip");
+
+    const missing = request("/_app/immutable/chunks/a.js", "x-gzip, brotli");
+    dropMissingEncodings(missing, dir);
+
+    // `a.js.gz` exists but `a.js.br` does not, so only the Brotli alias goes.
+    expect(missing.headers["accept-encoding"]).toBe("x-gzip");
+  });
+
   test("ignores requests that are not for build assets", () => {
     const req = request("/chat", "br");
     dropMissingEncodings(req, dir);

@@ -171,11 +171,15 @@ export function dropMissingEncodings(req, clientDir) {
 
   if (!asset.startsWith(clientDir)) return;
 
-  // Encoding tokens are case-insensitive (RFC 9110 §8.4), and adapter-node's
-  // static handler already matches Brotli that way. Compare in lower case on
-  // both sides: a header spelled `BR` must be recognised here, and it must also
-  // be the part that gets dropped — recognising it without dropping it would
-  // leave the handler reaching for the missing file anyway.
+  // Match the way adapter-node's static handler reads this header, or the two
+  // disagree and the request reaches the missing file anyway. That handler tests
+  // the whole header value for a case-insensitive substring — `/(br|brotli)/i`
+  // for Brotli, `.includes("gzip")` for gzip — so `BR` and `x-gzip` both select a
+  // pre-compressed variant there.
+  //
+  // Hence: lower case on both sides, and substring rather than prefix. Dropping a
+  // part is only useful if no occurrence of the token survives anywhere in what
+  // is left, which is exactly what the handler will look at.
   const normalized = accept.toLowerCase();
 
   const missing = ENCODINGS.filter(
@@ -187,9 +191,7 @@ export function dropMissingEncodings(req, clientDir) {
   const kept = accept
     .split(",")
     .map((part) => part.trim())
-    .filter(
-      (part) => part !== "" && !missing.some((token) => part.toLowerCase().startsWith(token)),
-    );
+    .filter((part) => part !== "" && !missing.some((token) => part.toLowerCase().includes(token)));
 
   // An empty header would be rejected outright, so fall back to the encoding
   // every client understands rather than leaving nothing behind.
