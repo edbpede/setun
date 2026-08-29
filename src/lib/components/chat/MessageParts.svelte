@@ -1,4 +1,5 @@
 <script lang="ts">
+import { toolLabel } from "$lib/chat/tool-labels";
 import * as m from "$lib/paraglide/messages";
 import type { MessagePart } from "$lib/server/db/schema";
 import MarkdownMessage from "./MarkdownMessage.svelte";
@@ -58,11 +59,11 @@ const failed = $derived(
         {#if part.decision === "declined"}
           {m.chat_permission_declined_notice()}
         {:else if !settled.has(part.toolCallId)}
-          {m.chat_tool_running({ tool: part.toolName })}
+          {m.chat_tool_running({ tool: toolLabel(part.toolName) })}
         {:else if failed.has(part.toolCallId)}
-          {m.chat_tool_failed({ tool: part.toolName })}
+          {m.chat_tool_failed({ tool: toolLabel(part.toolName) })}
         {:else}
-          {m.chat_tool_done({ tool: part.toolName })}
+          {m.chat_tool_done({ tool: toolLabel(part.toolName) })}
         {/if}
       </span>
     </div>

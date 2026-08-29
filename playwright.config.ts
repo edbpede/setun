@@ -114,7 +114,7 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: `rm -rf ${E2E_DATABASE_PATH.replace(/\/[^/]+$/, "")} && bun --bun vite build && bun ./build/index.js`,
+      command: `rm -rf ${E2E_DATABASE_PATH.replace(/\/[^/]+$/, "")} && bun --bun vite build && bun ./server.js`,
       port: APP_PORT,
       reuseExistingServer: !process.env.CI,
       env: appEnv,
@@ -142,7 +142,7 @@ export default defineConfig({
        * every `webServer` starts at once, and two concurrent `vite build` runs
        * would write over each other's output.
        */
-      command: `rm -rf ${SETUP_ROOT} && bun run e2e/support/await-app.ts && bun ./build/index.js`,
+      command: `rm -rf ${SETUP_ROOT} && bun run e2e/support/await-app.ts && bun ./server.js`,
       port: SETUP_PORT,
       /**
        * Never reused, unlike the others.

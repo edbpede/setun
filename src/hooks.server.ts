@@ -15,6 +15,48 @@ import { describeCause, log } from "$lib/server/logging";
 import { isSetupComplete, isSetupGateExempt, SETUP_PATH } from "$lib/server/setup/state";
 
 /**
+ * Headers the application origin owes every response (PRD §21).
+ *
+ * The sandbox origin is hardened in the Caddyfile — a full `default-src 'none'`
+ * policy, `nosniff`, `no-referrer` — because that is where untrusted generated
+ * code runs. The *application* origin, which holds the session cookies, the
+ * pupils' conversations and the teacher panel, was sending none of it.
+ *
+ * `frame-ancestors 'none'` is the one that earns its place immediately: nothing
+ * ever frames Setun (the artifact iframe points the other way, app → sandbox),
+ * and without it the panel can be framed by any site, which puts *Lås klassen*,
+ * *Sign everyone out* and *Delete for good* one invisible click away.
+ * `X-Frame-Options` says the same thing to agents that predate CSP.
+ *
+ * Deliberately not a full content policy yet. `script-src` and `style-src` on
+ * this origin have to account for SvelteKit's inline bootstrap, the on-demand
+ * CodeMirror and highlighter chunks, and blob workers; getting that wrong fails
+ * closed in a classroom. It is worth doing and it is worth doing with its own
+ * verification, so it is left as follow-up rather than guessed at here.
+ *
+ * Set rather than overwritten: routes that serve pupil files already choose
+ * their own `x-content-type-options`, and a blanket assignment here would start
+ * quietly deciding for them.
+ */
+const RESPONSE_HEADERS: ReadonlyArray<readonly [string, string]> = [
+  ["content-security-policy", "frame-ancestors 'none'"],
+  ["x-frame-options", "DENY"],
+  ["x-content-type-options", "nosniff"],
+  ["referrer-policy", "no-referrer"],
+  ["permissions-policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()"],
+];
+
+const handleSecurityHeaders: Handle = async ({ event, resolve }) => {
+  const response = await resolve(event);
+
+  for (const [name, value] of RESPONSE_HEADERS) {
+    if (!response.headers.has(name)) response.headers.set(name, value);
+  }
+
+  return response;
+};
+
+/**
  * Resolve the session cookie into request-scoped state (PRD §7).
  *
  * Request state lives on `event.locals`, typed in `app.d.ts` — never at module
@@ -175,7 +217,13 @@ function withLocaleCookie(request: Request, locale: string): Request {
   return new Request(request, { headers });
 }
 
-export const handle: Handle = sequence(handleSession, handleSetupGate, handleLocale);
+// Outermost, so it sees the response every later hook produced.
+export const handle: Handle = sequence(
+  handleSecurityHeaders,
+  handleSession,
+  handleSetupGate,
+  handleLocale,
+);
 
 /**
  * What an unexpected failure tells the browser, and what it tells the log
