@@ -20,6 +20,12 @@ DEVSUITE = REPO / ".devsuite"
 INSTANCES = DEVSUITE / "instances"
 COMPOSE_FILE = SCRIPTS / "devsuite.compose.yml"
 
+# Serialises `bun run build` across instances. The outputs are per-instance
+# (see `Instance.build_path`), but the intermediates are not: `.svelte-kit/`
+# and Vite's dependency cache are one directory for the whole checkout, and two
+# builds walking through them at once corrupt each other's.
+BUILD_LOCK = DEVSUITE / "build.lock"
+
 DEFAULT_INSTANCE = "dev"
 EPHEMERAL_PREFIX = "ephemeral-"
 

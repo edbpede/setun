@@ -150,7 +150,13 @@ export default defineConfig({
   build: {
     // Outside `build/`: adapter-node empties that directory on every application
     // build, and the two builds are independent by design (§6).
-    outDir: `${repository}build-sandbox`,
+    //
+    // SETUN_SANDBOX_BUILD_DIR is the dev suite's override, and the only reason
+    // this is not a constant: every instance builds the sandbox, so two of them
+    // sharing `build-sandbox/` means the second empties what the first is
+    // serving. Unset everywhere else, including the Dockerfile and the
+    // end-to-end run.
+    outDir: process.env.SETUN_SANDBOX_BUILD_DIR || `${repository}build-sandbox`,
     // Only the first pass clears the directory; the other two add to it.
     emptyOutDir: target === "runner",
     target: "es2022",

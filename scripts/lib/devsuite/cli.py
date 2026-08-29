@@ -82,8 +82,10 @@ log levels            silent < error < warn < info < debug < trace  (default: in
                       under .devsuite/instances/<name>/logs/ always keep it all.
 
 state                 everything lives in .devsuite/ inside the repository:
-                      instances/<name>/{data,logs,run}. Nothing is written to
-                      $HOME or /tmp.
+                      instances/<name>/{data,logs,run,build,build-sandbox}. Each
+                      instance builds into its own directories, so a second
+                      stack never empties the output the first one is serving.
+                      Nothing is written to $HOME or /tmp.
 
 examples
   ./scripts/devsuite start                       # persistent 'dev', attached

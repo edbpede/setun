@@ -127,6 +127,34 @@ class Instance:
         return self.data / "backups"
 
     @property
+    def build_path(self) -> Path:
+        """
+        Where `--production` puts the adapter-node build for *this* instance.
+
+        Not the repository's own `build/`. That directory is one for the whole
+        checkout, and `vite build` empties it before it writes: a second
+        instance starting would delete the files the first one is serving, and
+        an application reading a hashed asset that has just vanished is exactly
+        the failure ISSUE-001 was. Per-instance output is what makes two
+        `--production` stacks independent rather than merely concurrent.
+
+        Beside data/ rather than inside it: this is derived output, not the
+        instance's data, and `destroy` takes the whole root anyway.
+        """
+        return self.root / "build"
+
+    @property
+    def sandbox_build_path(self) -> Path:
+        """
+        The instance's own `build-sandbox/`, for the same reason as `build_path`.
+
+        Every instance builds the sandbox, not only `--production` ones (see
+        `sandbox_service`), so this collision is the wider of the two: two dev
+        stacks share it as readily as two production ones.
+        """
+        return self.root / "build-sandbox"
+
+    @property
     def compose_project(self) -> str:
         # Compose object names allow a narrow alphabet; instance names allow a
         # wider one, so it is folded rather than assumed compatible.

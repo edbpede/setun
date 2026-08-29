@@ -19,11 +19,12 @@ from types import FrameType
 from typing import IO
 
 from devsuite.compose import compose_argv
-from devsuite.console import OUT, fail
+from devsuite.console import OUT, fail, relative
 from devsuite.environment import EDUCATOR_SEED_KEYS
 from devsuite.health import probe
 from devsuite.instance import Instance, InstanceLock, RunState
 from devsuite.layout import (
+    BUILD_LOCK,
     HEALTH_TIMEOUT_SECONDS,
     PROBE_INTERVAL_SECONDS,
     REPO,
@@ -39,7 +40,7 @@ from devsuite.logview import (
     short_stamp,
 )
 from devsuite.services import Service, app_service, caddy_service, cpa_service, sandbox_service
-from devsuite.util import now_iso, signal_group, write_json
+from devsuite.util import exclusive_lock, now_iso, signal_group, write_json
 
 
 class Supervisor:
@@ -166,8 +167,8 @@ class Supervisor:
 
         if self.caddy:
             # After the build, not before: Caddy's `file_server` is pointed at
-            # `build-sandbox/`, and starting it against a half-written directory
-            # would serve a runner from the previous build.
+            # this instance's `build-sandbox/`, and starting it against a
+            # half-written directory would serve a runner from the previous build.
             self.compose_up("caddy")
             self.spawn(caddy_service(self.instance.compose_project, self.ports["caddy"]))
         else:
@@ -199,29 +200,44 @@ class Supervisor:
         built only for `--production`. Both are the repository's own package
         scripts, so there is still one place that knows how to build each.
 
-        Synchronous and fail-loud on purpose: a stale `build-sandbox/` serves an
-        old runner that looks fine and behaves like the last build, which is the
-        most confusing failure this suite could produce.
-        """
-        steps = [("sandbox", "build:sandbox")]
-        if self.production:
-            steps.insert(0, ("app", "build"))
+        Both write into *this instance's* directories — SETUN_BUILD_DIR and
+        SETUN_SANDBOX_BUILD_DIR are in the child environment — so a start here
+        never empties the output another instance is serving from. What is still
+        shared is the intermediate state those builds walk through: `.svelte-kit/`
+        and Vite's dependency cache are one per checkout, and two builds inside
+        them at once corrupt each other. Hence the lock, which is held for the
+        build alone and released before anything is spawned.
 
-        for name, script in steps:
-            self.emit("suite", f"building {name} (bun run {script})")
-            result = subprocess.run(
-                ["bun", "run", script],
-                cwd=REPO,
-                env=self.environment,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if result.returncode != 0:
-                detail = (result.stderr or result.stdout).strip()
-                tail = "\n".join(detail.splitlines()[-20:])
-                self.emit("suite", f"error: `bun run {script}` failed\n{tail}")
-                raise RuntimeError(f"{name} build failed")
+        Synchronous and fail-loud on purpose: a stale build serves an old runner
+        that looks fine and behaves like the last build, which is the most
+        confusing failure this suite could produce.
+        """
+        steps = [("sandbox", "build:sandbox", self.instance.sandbox_build_path)]
+        if self.production:
+            steps.insert(0, ("app", "build", self.instance.build_path))
+
+        def waiting() -> None:
+            self.emit("suite", "another instance is building — waiting for its turn")
+
+        with exclusive_lock(BUILD_LOCK, on_wait=waiting):
+            for name, script, destination in steps:
+                self.emit(
+                    "suite",
+                    f"building {name} (bun run {script}) into {relative(destination)}",
+                )
+                result = subprocess.run(
+                    ["bun", "run", script],
+                    cwd=REPO,
+                    env=self.environment,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if result.returncode != 0:
+                    detail = (result.stderr or result.stdout).strip()
+                    tail = "\n".join(detail.splitlines()[-20:])
+                    self.emit("suite", f"error: `bun run {script}` failed\n{tail}")
+                    raise RuntimeError(f"{name} build failed")
 
     def write_state(self) -> None:
         state: RunState = {

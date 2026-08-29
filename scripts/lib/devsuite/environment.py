@@ -188,6 +188,14 @@ def child_environment(
             "SETUN_DATABASE_PATH": str(instance.database_path),
             "SETUN_STORAGE_PATH": str(instance.storage_path),
             "SETUN_BACKUP_PATH": str(instance.backup_path),
+            # Per-instance build output. Read by svelte.config.js (adapter-node's
+            # `out`), by server.js when it loads that build, and by
+            # sandbox/vite.config.ts as its `outDir` — so a second instance's
+            # build never empties the directory the first one is serving from.
+            # Unset outside the suite, where both fall back to the repository's
+            # own build/ and build-sandbox/ exactly as before.
+            "SETUN_BUILD_DIR": str(instance.build_path),
+            "SETUN_SANDBOX_BUILD_DIR": str(instance.sandbox_build_path),
             # Both origins, and adapter-node's ORIGIN for its CSRF check.
             "SETUN_APP_ORIGIN": app_origin,
             "SETUN_SANDBOX_ORIGIN": sandbox_origin,

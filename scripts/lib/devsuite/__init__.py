@@ -18,8 +18,8 @@ docker-compose.yml):
 
 Two shapes, then. Without `--production` the two Vite servers answer directly on
 their own ports, which is the fast loop. With it, Caddy sits in front on two
-`*.localhost` hostnames and serves `build-sandbox/` itself, so the
-static server, the response headers, the origin shape and the proxy hop
+`*.localhost` hostnames and serves the instance's own `build-sandbox/` itself,
+so the static server, the response headers, the origin shape and the proxy hop
 are the ones a deployment actually has rather than Vite's approximations of
 them. `--no-caddy` takes it back out for a machine without Docker.
 

@@ -43,7 +43,8 @@ render.
 
 `scripts/devsuite` runs the whole local stack from one place — both origins, a per-instance
 SQLite database, optionally the CLIProxyAPI container, and with `--production` the deployment's
-Caddy — and streams every service into one aligned, colour-coded log view.
+Caddy — and streams every service into one aligned, colour-coded log view. It is a thin entry
+point over the `devsuite` package in `scripts/lib/`, and needs Python 3.14 and nothing else.
 
 ```sh
 ./scripts/devsuite start        # bring the stack up and attach to the log view
@@ -184,9 +185,23 @@ Everything is inside the repository, under `.devsuite/`, and gitignored:
   logs/           one plain, timestamped file per service
   run/            state.json, the lock that makes `start` idempotent, and — under
                   --first-run — the bootstrap token the banner reads back
+  build/          this instance's adapter-node output, under --production
+  build-sandbox/  this instance's artifact host, built on every start
 ```
 
 Nothing is written to `$HOME` or `/tmp`.
+
+**Each instance builds into its own directories.** `vite build` empties its output before it
+writes, so instances sharing the repository's `build/` and `build-sandbox/` would have each new
+start delete the files a running one is still serving — a pupil's next request then reads a
+hashed asset that has just vanished. The suite gives every instance its own output through
+`SETUN_BUILD_DIR` and `SETUN_SANDBOX_BUILD_DIR`, which `svelte.config.js`, `server.js` and
+`sandbox/vite.config.ts` read. Unset — which is `bun run build` by hand, the Dockerfile, CI and
+the end-to-end run — nothing moves, and both still land in the repository root.
+
+The intermediates those builds walk through are still one per checkout (`.svelte-kit/`, Vite's
+dependency cache), so the suite holds a lock across the build itself. A start that arrives while
+another instance is building says so and waits its turn.
 
 ## Gates
 
