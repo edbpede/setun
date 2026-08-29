@@ -257,6 +257,19 @@ async function consume(url: string, init: RequestInit): Promise<void> {
 }
 
 /**
+ * The mint already in flight, so simultaneous callers join one rather than each
+ * starting their own (§10).
+ *
+ * A pupil who picks three files at once calls `attach` three times before any of
+ * them has awaited anything, so without this all three would pass the
+ * `conversation.id` check below and create a conversation of their own. The
+ * uploads would then name three different conversations — only the last of which
+ * the composer writes into — so two attachments would be missing from the message
+ * they were picked for and left holding conversations nobody is in.
+ */
+let minting: Promise<string | null> | null = null;
+
+/**
  * The conversation this composer writes into, minting one if there is none (§10).
  *
  * A pupil's very first visit has no conversation, and the empty state tells them
@@ -274,6 +287,18 @@ async function consume(url: string, init: RequestInit): Promise<void> {
 async function ensureConversation(): Promise<string | null> {
   if (conversation.id) return conversation.id;
 
+  minting ??= mintConversation();
+  try {
+    return await minting;
+  } finally {
+    // Cleared either way. A refusal is this attempt's answer, not the answer
+    // every later attempt is handed back.
+    minting = null;
+  }
+}
+
+/** The request itself; `ensureConversation` is what decides whether to make one. */
+async function mintConversation(): Promise<string | null> {
   const response = await fetch("/api/conversations", {
     method: "POST",
     headers: { "content-type": "application/json" },
