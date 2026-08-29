@@ -1,289 +1,256 @@
-# Setun
+<p align="center">
+  <img src="static/setun-mark.svg" alt="Setun logo" width="192" height="192">
+</p>
 
-A self-hosted, privacy-first learning environment for teaching AI and *Teknologiforståelse*.
-Students get pseudonymous access to modern AI models, a code artifact workspace, and curated
-tools — no accounts, no email addresses, no names, no third-party identity.
+<h1 align="center">Setun</h1>
 
-Licensed AGPL-3.0.
+<p align="center">
+  <strong>A privacy-first AI learning environment for classrooms</strong>
+</p>
 
-## Normative documents
+<p align="center">
+  <a href="https://github.com/edbpede/setun/actions/workflows/ci.yml"><img src="https://github.com/edbpede/setun/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="https://github.com/edbpede/setun/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" alt="AGPL-3.0 license"></a>
+  <img src="https://img.shields.io/badge/Bun_1.4+-000000?logo=bun&logoColor=white" alt="Bun 1.4 or newer">
+  <img src="https://img.shields.io/badge/SvelteKit_2-FF3E00?logo=svelte&logoColor=white" alt="SvelteKit 2">
+  <img src="https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white" alt="TypeScript">
+  <img src="https://img.shields.io/badge/SQLite-003B57?logo=sqlite&logoColor=white" alt="SQLite">
+</p>
 
-Three files govern this repository, in this order of authority:
+---
 
-| File | Carries |
+## What is Setun?
+
+Setun is a self-hosted environment for teaching AI and *Teknologiforståelse*. Students use
+pseudonymous access cards instead of accounts, email addresses, or real names. Educators control
+which models, skills, tools, schedules, and spending limits each classroom receives.
+
+The application combines streaming AI chat with a code artifact workspace, while keeping generated
+code on a separate, tightly restricted origin. Model credentials stay behind an internal gateway and
+never reach the browser or the Setun database.
+
+The name comes from the 1958 Setun computer, built around balanced ternary. The mark stacks its three
+states: minus, zero, and plus.
+
+## Features
+
+- **Pseudonymous student access** — issue printable access cards without collecting names, email
+  addresses, or third-party identities.
+- **Classroom controls** — manage rosters, weekly schedules, temporary locks, model allowlists,
+  instructions, retention, and daily or per-student budgets.
+- **Streaming AI chat** — run classroom-scoped conversations with attachments, search, cancellation,
+  and model aliases chosen by the educator.
+- **Live artifacts** — preview, edit, rerun, and version HTML, SVG, JSX, TSX, and Svelte creations in
+  an isolated workspace.
+- **Curated capabilities** — publish reusable skills and expose only approved MCP tools, with
+  per-classroom controls for tools that require confirmation.
+- **Image workflows** — support image attachments and model-generated images without exposing the
+  underlying storage directory.
+- **English and Danish** — complete localized interfaces, with a classroom default and per-student
+  override.
+- **Self-hosted operations** — SQLite persistence, automatic migrations, retention jobs, nightly
+  snapshots, and a Compose deployment behind Caddy.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  Browser[Student and educator browsers] -->|app.example.org| Caddy
+  Browser -->|artifacts.example.org| Caddy
+  Caddy --> App[Setun app]
+  Caddy --> Sandbox[Static artifact sandbox]
+  App --> SQLite[(SQLite)]
+  App --> Storage[(Private file storage)]
+  App --> CPA[CLIProxyAPI]
+  CPA --> Providers[AI providers]
+  App --> MCP[Approved MCP servers]
+```
+
+The application and artifact sandbox must use different hostnames. That origin boundary is part of
+the security model: Caddy serves the sandbox as static files with a restrictive content security
+policy, and generated code has no route back into the authenticated application. CLIProxyAPI is
+reachable only from the app's internal network and has no published host port.
+
+## Tech stack
+
+| Layer | Technology |
 | --- | --- |
-| `docs/setun-prd.md` | What to build and why — scope, behaviour, data model, security (§21), testing (§22), Appendix A defaults |
-| `docs/setun-implementation-plan.md` | In what order, and how each phase proves itself. **The single source of progress truth** |
-| `.agents/rules/svelte5-sveltekit-app.md` | The stack idiom, version-anchored, with its anti-pattern table |
+| Runtime and package manager | [Bun](https://bun.com) 1.4+ |
+| Application | [SvelteKit](https://svelte.dev/docs/kit) 2, Svelte 5, TypeScript |
+| UI | UnoCSS, shadcn-svelte, bits-ui |
+| Data | SQLite with Drizzle ORM |
+| Validation and forms | Valibot and sveltekit-superforms |
+| Localization | Paraglide JS |
+| Model gateway | [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) |
+| Production edge | Caddy and Docker Compose |
+| Quality gates | svelte-check, Biome, Bun test, Vitest, Playwright |
 
-## Setup
+## Quick start
 
-Requires [Bun](https://bun.com) 1.4 or newer.
+For local development, install:
 
-```sh
-bun install          # also compiles Paraglide messages and syncs SvelteKit types
-prek install         # git hooks — required before your first commit
-bun --bun run dev    # the application, on :5173
-bun run dev:sandbox  # the artifact origin, on :5174 — a second terminal
-```
+- [Bun](https://bun.com) 1.4 or newer
+- Python 3.14 for the development suite
+- [prek](https://prek.j178.dev) for repository hooks
 
-`prek install` is not optional: the hooks enforce Conventional Commits, block direct commits
-to `main`, and run the secret scanner. Install [prek](https://prek.j178.dev) separately.
-
-`./scripts/devsuite start` runs both servers, the database and the log view from a single
-terminal — see [Development suite](#development-suite).
-
-**Two origins, always.** Artifacts execute on a separate hostname from the application, and
-that separation *is* the isolation (PRD §14) — so development runs two servers, and `bun run
-build` produces two outputs: `build/` for the application and `build-sandbox/` for the static
-artifact host Caddy serves. Running only the first leaves the Build panel with nothing to
-render.
-
-## Development suite
-
-`scripts/devsuite` runs the whole local stack from one place — both origins, a per-instance
-SQLite database, optionally the CLIProxyAPI container, and with `--production` the deployment's
-Caddy — and streams every service into one aligned, colour-coded log view. It is a thin entry
-point over the `devsuite` package in `scripts/lib/`, and needs Python 3.14 and nothing else.
+Then run:
 
 ```sh
-./scripts/devsuite start        # bring the stack up and attach to the log view
-./scripts/devsuite status       # what is running, on which ports, healthy or not
-./scripts/devsuite logs app     # follow one service
-./scripts/devsuite stop         # graceful shutdown, data preserved
-./scripts/devsuite --help       # every command and flag
+bun install
+prek install
+./scripts/devsuite start
 ```
 
-`start` runs in the foreground and **Ctrl-C stops the stack**. Add `--detach` to leave it running
-and come back with `logs`, where **Ctrl-C only detaches**. Starting an instance that is already
-running attaches to its log view rather than spawning a second one.
+The suite starts the application, sandbox, and a persistent development database, then prints the
+student and educator URLs and credentials. Development secrets are generated per instance when they
+are not present in the environment or `.env`; the suite never writes them to `.env`.
 
-Every start, resume and attach prints where to sign in and as whom. That origin's root is the
-**student** login and asks for an access code; the educator entry point is `/educator/login`,
-panel at `/educator`.
+The default application is at `http://localhost:5173`, with educator login at
+`http://localhost:5173/educator/login`. The sandbox runs separately on port `5174`. Pressing Ctrl-C
+stops an attached stack while preserving its data.
 
-### Reproducing a deployment
-
-`--production` runs the stack the way a deployment runs it, which is more than swapping the dev
-server for the build:
+Useful commands:
 
 ```sh
-./scripts/devsuite start --production   # http://setun.localhost:8080
+./scripts/devsuite status                 # show services, ports, and health
+./scripts/devsuite logs app               # follow one service
+./scripts/devsuite stop                   # stop and preserve the default instance
+./scripts/devsuite start --ephemeral      # use a disposable database
+./scripts/devsuite start --with-cpa       # include the model gateway; needs Docker
+./scripts/devsuite start --production     # reproduce the Caddy deployment locally
+./scripts/devsuite --help                 # all commands and options
 ```
 
-The application becomes `bun run build` and the adapter-node server, and the deployment's own
-Caddy goes in front of it — the same pinned image as `docker-compose.yml`, reading the
-repository's `Caddyfile` rather than a copy of it. Two hostnames answer on one port,
-`http://setun.localhost:8080` and `http://sandbox.setun.localhost:8080`, and `build-sandbox/` is
-served by Caddy's `file_server` instead of a Vite preview. So the static server, the response
-headers, the origin shape and the `X-Forwarded-For` hop are the ones a deployment has, and
-`ADDRESS_HEADER`/`XFF_DEPTH` are set to match.
+Production mode serves `http://setun.localhost:8080` and
+`http://sandbox.setun.localhost:8080`. It builds both applications, runs the adapter-node server
+behind the repository's Caddy configuration, and uses Caddy's static file server for artifacts. TLS
+is the only production behavior omitted.
 
-`*.localhost` resolves to loopback with no `/etc/hosts` entry. TLS is the one piece left out: the
-site addresses carry an explicit `http://`, which is what tells Caddy to skip ACME — a deployment
-passes bare hostnames and gets automatic HTTPS from the same file.
-
-Caddy needs a Docker engine, the same one `--with-cpa` needs. `--production --no-caddy` leaves it
-out and serves the build on the two Vite ports instead.
-
-CPA is opt-in with `--with-cpa` — it needs a Docker engine
-and an operator's filled-in `cpa/config.yaml`, and it runs from `scripts/devsuite.compose.yml`
-because the deployment's CPA is deliberately unreachable from the host (PRD §6, §9).
-
-Either form of Compose works, and the `docker` CLI itself is not required — Compose reaches the
-engine directly. The `docker compose` plugin that Docker Desktop ships is one; the standalone
-`docker-compose` that Homebrew installs is the other, which is what a Colima machine has:
+To run the two development servers manually instead:
 
 ```sh
-brew install colima docker-compose && colima start   # a Docker engine without Docker Desktop
+bun --bun run dev       # application on :5173
+bun run dev:sandbox     # sandbox on :5174, in a second terminal
 ```
 
-CPA's `api-keys:` must carry the same value as `SETUN_CPA_LISTENER_KEY` — it is the only thing
-authenticating the gateway (PRD §9), and nothing keeps the two files in step. Where the suite
-minted the key itself, it is in that instance's `instance.json`. `--with-cpa` warns at start-up
-when the two disagree, rather than leaving a 401 to be met on the first model call.
+## First-time setup
 
-Colima *does* need the `docker` CLI on PATH for its own dependency check, even though the suite
-does not. A Homebrew `docker` that is installed but unlinked makes `colima start` report it as
-missing; `brew link docker`, or putting `$(brew --prefix docker)/bin` on PATH, settles it. The
-suite says so by name when it cannot reach an engine.
+### 1. Prepare the deployment
 
-### Two modes
-
-**`--persistent NAME`** — a named instance whose data survives `stop`. The default, as `dev`.
-`resume NAME` brings one back, `list` shows them all, `destroy NAME` removes one for good.
-
-**`--ephemeral`** — a throwaway instance on a fresh database, destroyed on the way out: on
-`stop`, on Ctrl-C, and on a crash.
+You need Docker with Compose, Bun 1.4+, and two DNS names pointing to the host: one for Setun and one
+for the artifact sandbox.
 
 ```sh
-./scripts/devsuite start  --persistent demo
-./scripts/devsuite stop   --persistent demo
-./scripts/devsuite resume demo             # the same data
-./scripts/devsuite start  --ephemeral      # fresh database, nothing left behind
+bun install --frozen-lockfile
+cp .env.example .env
+cp cpa/config.example.yaml cpa/config.yaml
+cp mcp.example.json mcp.json
 ```
 
-The four values `.env.example` gives no default for — the code pepper, the two educator seed
-credentials and the CPA listener key — are read from the environment or `.env` when they are
-there. When they are not, the suite mints development values *per instance* and keeps them in
-that instance's own `instance.json`; it never writes to `.env`. A generated educator signs in as
-`educator` / `educator`, and the banner says so on every run, not only the one that minted them.
-A password *you* supplied through the environment or `.env` is named rather than echoed. While a
-stack is up the banner reports the account that stack was *started* with — recorded in its
-`run/state.json` — rather than whatever the environment or `.env` says now, because the running
-application seeded the former and only a restart would pick up the latter.
+Fill in `.env`, then configure the provider account in `cpa/config.yaml`. Two secrets deserve special
+care:
 
-### Exercising the first-run wizard
+- `SETUN_STUDENT_CODE_PEPPER` must be high-entropy and permanent. Changing it invalidates every
+  existing student access code.
+- `SETUN_CPA_LISTENER_KEY` must exactly match the value under `api-keys` in
+  `cpa/config.yaml`.
 
-An instance with seed credentials is a finished installation by definition (PRD §6.2), so it
-never sees the wizard. `--first-run` is the instance that does:
+`SETUN_APP_ORIGIN` and `SETUN_SANDBOX_ORIGIN` must be full public URLs on different hosts. Their
+hostname-only counterparts configure Caddy. Leave both educator seed variables blank to use the
+guided first-run setup.
+
+MCP is optional. If the installation offers no tools, replace the example entry in `mcp.json` with
+an empty `servers` object. Credentials are referenced there by environment-variable name; do not put
+secret values in the JSON file.
+
+### 2. Build and start
 
 ```sh
-./scripts/devsuite start --first-run --persistent setup --port 6173 --sandbox-port 6174
+bun run build:sandbox
+docker compose up -d --build
+docker compose logs app
 ```
 
-It blanks both `SETUN_EDUCATOR_SEED_*` variables for the child — a blank counts as absent — so
-the application gates every path to `/setup`. This is the one place the suite overrides a real
-environment variable or a line in `.env`; it says so when it does.
+The sandbox build is explicit because Caddy serves `build-sandbox/` directly from the host. The app
+itself is built into its container image.
 
-The bootstrap token is lifted onto the suite's own banner, by pointing
-`SETUN_BOOTSTRAP_TOKEN_PATH` at the instance's `run/` directory. That is what makes `--detach`
-usable here: otherwise the token is printed only to a log file nobody is watching. It is valid
-fifteen minutes and a restart mints another; the application evaluates that deadline in memory and
-leaves the file alone until it exits, so the suite dates the file and reports a token past its
-fifteen minutes as lapsed rather than printing one `/setup` would refuse.
+### 3. Complete the wizard
 
-The flag needs a database that has never been through setup, because "setup started" and "setup
-completed" are recorded in the database itself; an instance that already has one is refused, with
-`--ephemeral` and `destroy` named as the ways forward. It is remembered in `instance.json` rather
-than passed on every run, so `resume` comes back to an unfinished wizard — with a fresh token and
-your progress intact — rather than seeding an account half-way through creating one.
+On an unconfigured database, Setun writes a one-time setup token to the app log and redirects every
+route to `/setup`. Open the application URL, enter the token, and follow the wizard to:
 
-### Log levels
+1. Create the educator account.
+2. Verify the model gateway.
+3. Add the first model alias.
+4. Create a classroom.
+5. Issue the first student access cards.
 
-`--log-level silent|error|warn|info|debug|trace`, default `info`. `-v` is `debug`, `-vv` is
-`trace`.
+The token expires after 15 minutes; restarting the app issues a new one. If
+`SETUN_EDUCATOR_SEED_USERNAME` and `SETUN_EDUCATOR_SEED_PASSWORD` are both set, Setun seeds that
+account at boot and skips the wizard. Updating the seeded password and restarting is also the
+recovery path for a forgotten educator password.
 
-| Service | How the level reaches it |
-| --- | --- |
-| `app`, `sandbox` | Vite's own `--logLevel` for `silent`, `error`, `warn` and `info`. `debug` and `trace` pin Vite at `info` and raise `SETUN_LOG_LEVEL`, which gates the application's own logging and turns on **Drizzle query logging** — statements *with their bound parameters*, which is why it takes an explicit `--log-level debug`. `trace` also sets `DEBUG=vite:*`. |
-| `cpa` | **Not reachable.** CPA reads `debug:` from `cpa/config.yaml`, an operator file the suite will not rewrite. Its lines are filtered at the log view instead. |
-| the log view | Whatever a service still prints below the chosen level is dropped on the way to the terminal. |
+## Configuration notes
 
-The per-service files under `.devsuite/instances/<name>/logs/` are never filtered — the view has
-a floor, the file is the record. The view degrades to plain, greppable lines when stdout is not a
-terminal or `NO_COLOR` is set.
+- **Provider credentials** belong to CLIProxyAPI, not Setun. Its management API, control panel,
+  plugins, and public port are disabled by the supplied configuration.
+- **MCP servers** are defined in the read-only `mcp.json`; the educator panel may enable configured
+  servers and tools but cannot add endpoints.
+- **Persistent data** lives in separate Compose volumes for the database, private storage, backups,
+  provider authentication, and Caddy state.
+- **TLS** is handled automatically by Caddy for publicly reachable hostnames. For a closed network,
+  use Caddy's internal CA as described in the comments in `Caddyfile`.
+- **Backups** contain a consistent SQLite snapshot plus private storage. Fourteen daily snapshots are
+  retained by default; copy the backup volume off-host for disaster recovery.
 
-### Where state lives
+## Development
 
-Everything is inside the repository, under `.devsuite/`, and gitignored:
+Every build has two outputs:
 
-```
-.devsuite/instances/<name>/
-  instance.json   mode, ports, and any generated development values
-  data/           db/setun.sqlite, storage/, backups/ — this instance's whole state
-  logs/           one plain, timestamped file per service
-  run/            state.json, the lock that makes `start` idempotent, and — under
-                  --first-run — the bootstrap token the banner reads back
-  build/          this instance's adapter-node output, under --production
-  build-sandbox/  this instance's artifact host, built on every start
-```
+- `build/` — the adapter-node application
+- `build-sandbox/` — the static artifact host, runtimes, and compilers
 
-Nothing is written to `$HOME` or `/tmp`.
+Always use `bun run build`; running only the SvelteKit build leaves the artifact panel without the
+files it needs. The development suite keeps each named instance under `.devsuite/instances/` with
+its own database, logs, and production build outputs.
 
-**Each instance builds into its own directories.** `vite build` empties its output before it
-writes, so instances sharing the repository's `build/` and `build-sandbox/` would have each new
-start delete the files a running one is still serving — a pupil's next request then reads a
-hashed asset that has just vanished. The suite gives every instance its own output through
-`SETUN_BUILD_DIR` and `SETUN_SANDBOX_BUILD_DIR`, which `svelte.config.js`, `server.js` and
-`sandbox/vite.config.ts` read. Unset — which is `bun run build` by hand, the Dockerfile, CI and
-the end-to-end run — nothing moves, and both still land in the repository root.
+### Quality gates
 
-The intermediates those builds walk through are still one per checkout (`.svelte-kit/`, Vite's
-dependency cache), so the suite holds a lock across the build itself. A start that arrives while
-another instance is building says so and waits its turn.
-
-## Gates
-
-All five must be green; nothing merges past a red one, including a pre-existing failure.
+CI runs five independent gates:
 
 ```sh
-bun run check         # svelte-check — the authority on template and type correctness
-bunx biome ci         # format + lint, writes nothing
+bun run check         # Svelte and TypeScript correctness
+bunx biome ci         # formatting and linting
 bun test              # server logic and rune modules
-bunx vitest run       # component behaviour, Vitest Browser Mode
-bunx playwright test  # end-to-end
-prek run --all-files  # hooks: format, hygiene, gitleaks
+bunx vitest run       # component behavior in Chromium
+bunx playwright test  # end-to-end flows
 ```
 
-## Conventions
+Install Chromium once with `bunx playwright install chromium` if it is not already available.
 
-**All user-facing text flows through Paraglide messages — never string literals in
-components** (PRD §5). Add the key to both `messages/en.json` and `messages/da.json`, then call
-it as `m.my_key()`. English is the default locale; Danish ships complete at pilot. A component
-containing a bare user-visible string is a defect, not a shortcut — `src/routes/stack-check/`
-is the worked example. That route is development tooling and is gated on `dev`: `bun run dev`
-serves it, a production build answers 404.
+Test filenames select their runner:
 
-**Test placement follows the tool that can actually run it** (PRD §22):
-
-| Target | Tool | Filename |
+| Scope | Filename | Runner |
 | --- | --- | --- |
-| Server logic, `.svelte.ts` rune modules | `bun test` | `*.test.ts` |
-| `.svelte` component behaviour | Vitest Browser Mode | `*.svelte.spec.ts` |
-| Flows through a real server | Playwright | `*.e2e.ts` |
+| Server logic and `.svelte.ts` rune modules | `*.test.ts` | Bun |
+| Svelte components | `*.svelte.spec.ts` | Vitest Browser Mode |
+| Other tests needing Vite resolution | `*.spec.ts` | Vitest server project |
+| Real-server flows | `*.e2e.ts` | Playwright |
 
-The three suffixes are disjoint so each runner claims only its own files; `bunfig.toml` keeps
-`bun test` off the other two.
+### Project conventions
 
-**Styling is UnoCSS, not Tailwind.** Never run `shadcn-svelte init` — `components.json` is
-hand-written and `tailwind.config.js` is an empty stub that exists only to satisfy the CLI's
-`add` command. Add components with:
+- Add every user-facing message to both `messages/en.json` and `messages/da.json`.
+- Styling uses UnoCSS, not Tailwind. Add shadcn-svelte components with
+  `bunx shadcn-svelte add <component> --skip-preflight`; never run `init`.
+- Use `bun run check` as the authority for Svelte templates. Biome does not fully understand Svelte
+  markup, so never apply its unsafe fixes to a component.
+- The design baseline is tweakcn's clean-slate theme, ported to bare oklch components in
+  `uno.config.ts`.
+- Install `prek` before committing. Hooks enforce Conventional Commits, protect `main`, and scan for
+  secrets.
 
-```sh
-bunx shadcn-svelte add <component> --skip-preflight
-```
+See [`AGENTS.md`](AGENTS.md) for the complete repository rules before contributing.
 
-`--skip-preflight` is required: the CLI's preflight insists on an installed Tailwind.
+## License
 
-**Biome does not judge `.svelte` templates.** It parses `<script>` but not the markup, so
-`noUnusedImports` and `noUnusedVariables` are disabled for `.svelte` files in `biome.json` —
-otherwise every template-only import reads as unused, and `--write --unsafe` would delete it.
-`svelte-check` is the authority there. Never run Biome's unsafe fixes over a component.
-
-## Theme
-
-The design baseline is the tweakcn **clean-slate** theme (PRD §5), light mode by default. A
-Tailwind project would install it with
-`bunx shadcn@latest add https://tweakcn.com/r/themes/clean-slate.json`; Setun runs UnoCSS, so
-its variables are ported by hand into `uno.config.ts` as bare **oklch** components — that is
-what `unocss-preset-shadcn`'s Wind4 entry resolves, whatever its published types claim.
-
-## Deployment
-
-Three containers: the app, CLIProxyAPI (the model gateway), and Caddy. The operator surface is
-the Compose file, one `.env`, and the MCP configuration file; CPA's own `cpa/config.yaml` is
-the gateway operator's file, where provider accounts are enrolled on the host (PRD §9).
-
-```sh
-cp .env.example .env            # fill every required value; boot fails loudly on a missing one
-cp mcp.example.json mcp.json    # the tool servers this installation offers (PRD §11)
-docker compose up -d
-```
-
-The educator seed credentials are **optional**. Left blank, the first boot prints a one-time
-setup token to the container log and sends every request to `/setup`, where a wizard creates the
-account, checks the gateway, and makes the first model alias and classroom. Filled in, the
-account is seeded at every boot instead — which is also how a forgotten password is reset,
-because there is none inside the application (PRD §6.2, §7).
-
-**Operating a real installation — first run, DNS and TLS, provider enrolment, educator password
-recovery, the backup restore procedure, and the pinned gateway upgrade — is documented in
-[`docs/setun-operations.md`](docs/setun-operations.md).**
-
-`mcp.json` is where MCP servers are defined: an endpoint is a security decision, so it lives
-in reviewable configuration rather than in the database or the panel, and credentials are
-referenced there by the *name* of an environment variable. The panel switches configured
-servers on, chooses which of their tools each class may use, and marks the ones that should
-ask before they run — it can add nothing. A deployment that offers no tools keeps the file
-with an empty `servers` object.
+Setun is licensed under the [GNU Affero General Public License v3.0](LICENSE).
