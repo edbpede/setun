@@ -1,4 +1,4 @@
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq, isNull } from "drizzle-orm";
 import type { AppDatabase } from "../client";
 import { type Message, type MessagePart, type MessageRole, message } from "../schema";
 import { indexMessage } from "./search";
@@ -122,6 +122,56 @@ export function listChildren(db: AppDatabase, parentId: string): Message[] {
     .where(eq(message.parentId, parentId))
     .orderBy(asc(message.createdAt))
     .all();
+}
+
+/**
+ * The siblings at a branch point — a node's parent's children, oldest first.
+ *
+ * Scoped to the conversation so a null parent (the root variants an edited first
+ * prompt creates) means "this conversation's roots", not every conversation's,
+ * and so the picker a message offers is always within the pupil's own thread.
+ */
+export function listSiblings(
+  db: AppDatabase,
+  conversationId: string,
+  parentId: string | null,
+): Message[] {
+  return db
+    .select()
+    .from(message)
+    .where(
+      and(
+        eq(message.conversationId, conversationId),
+        parentId === null ? isNull(message.parentId) : eq(message.parentId, parentId),
+      ),
+    )
+    .orderBy(asc(message.createdAt))
+    .all();
+}
+
+/**
+ * The tip of the branch rooted at `nodeId`, following the newest child each step.
+ *
+ * Switching to a sibling should land on that branch's latest state, so a pupil
+ * flipping between variants sees each one as they last left it rather than at
+ * some interior node. Terminates on the newest-child walk; the seen-set guards a
+ * malformed tree the append API cannot produce.
+ */
+export function deepestLeaf(db: AppDatabase, nodeId: string): string {
+  let cursor = nodeId;
+  const seen = new Set<string>();
+
+  for (;;) {
+    if (seen.has(cursor)) break;
+    seen.add(cursor);
+
+    const children = listChildren(db, cursor);
+    if (children.length === 0) break;
+    // listChildren is oldest-first, so the last child is the newest branch.
+    cursor = children[children.length - 1].id;
+  }
+
+  return cursor;
 }
 
 /** Records usage on the assistant message once the turn finishes (§10). */

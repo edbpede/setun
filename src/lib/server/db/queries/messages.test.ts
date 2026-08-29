@@ -11,9 +11,11 @@ import {
 import {
   appendMessage,
   appendSibling,
+  deepestLeaf,
   getActivePath,
   listChildren,
   listConversationMessages,
+  listSiblings,
   recordMessageUsage,
 } from "./messages";
 
@@ -215,6 +217,115 @@ describe("message tree", () => {
     expect(reloaded.inputTokens).toBe(12);
     expect(reloaded.outputTokens).toBe(34);
     expect(reloaded.usageEstimated).toBe(true);
+  });
+});
+
+describe("branch navigation", () => {
+  it("lists sibling variants at a branch point, scoped to the conversation", () => {
+    const conversation = newConversation();
+    const first = appendMessage(db, {
+      conversationId: conversation.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "original prompt" }],
+    });
+    // Editing the first prompt appends a sibling at the root (parentId null).
+    const edited = appendSibling(db, {
+      siblingOfId: first.id,
+      conversationId: conversation.id,
+      role: "user",
+      parts: [{ type: "text", text: "edited prompt" }],
+    });
+    if (!edited) throw new Error("edit did not append");
+
+    const siblings = listSiblings(db, conversation.id, null);
+    expect(siblings.map((s) => s.id)).toEqual([first.id, edited.id]);
+  });
+
+  it("does not treat another conversation's roots as siblings", () => {
+    const a = newConversation();
+    appendMessage(db, {
+      conversationId: a.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "a" }],
+    });
+    const b = newConversation();
+    appendMessage(db, {
+      conversationId: b.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "b" }],
+    });
+
+    expect(listSiblings(db, a.id, null)).toHaveLength(1);
+  });
+
+  it("walks a branch down to its newest leaf", () => {
+    const conversation = newConversation();
+    const root = appendMessage(db, {
+      conversationId: conversation.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "q" }],
+    });
+    const reply = appendMessage(db, {
+      conversationId: conversation.id,
+      parentId: root.id,
+      role: "assistant",
+      parts: [{ type: "text", text: "a" }],
+    });
+    const followUp = appendMessage(db, {
+      conversationId: conversation.id,
+      parentId: reply.id,
+      role: "user",
+      parts: [{ type: "text", text: "more" }],
+    });
+
+    expect(deepestLeaf(db, root.id)).toBe(followUp.id);
+    // A leaf resolves to itself.
+    expect(deepestLeaf(db, followUp.id)).toBe(followUp.id);
+  });
+
+  it("keeps the original branch reachable after an edit orphans it on screen", () => {
+    const conversation = newConversation();
+    const first = appendMessage(db, {
+      conversationId: conversation.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "first" }],
+    });
+    const reply = appendMessage(db, {
+      conversationId: conversation.id,
+      parentId: first.id,
+      role: "assistant",
+      parts: [{ type: "text", text: "reply" }],
+    });
+    setActiveLeaf(db, {
+      conversationId: conversation.id,
+      studentId: fixtures.student.id,
+      messageId: reply.id,
+    });
+
+    // Edit the first prompt: a new root branch becomes active.
+    const edited = appendSibling(db, {
+      siblingOfId: first.id,
+      conversationId: conversation.id,
+      role: "user",
+      parts: [{ type: "text", text: "edited" }],
+    });
+    if (!edited) throw new Error("edit did not append");
+    setActiveLeaf(db, {
+      conversationId: conversation.id,
+      studentId: fixtures.student.id,
+      messageId: deepestLeaf(db, edited.id),
+    });
+
+    // The picker can step back to the original branch's tip.
+    const backToOriginalLeaf = deepestLeaf(db, first.id);
+    expect(backToOriginalLeaf).toBe(reply.id);
+    const path = getActivePath(db, backToOriginalLeaf);
+    expect(path.map((m) => m.id)).toEqual([first.id, reply.id]);
   });
 });
 

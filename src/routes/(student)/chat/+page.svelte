@@ -341,6 +341,26 @@ async function generateImage(): Promise<void> {
   }
 }
 
+/**
+ * Step to a sibling variant of a branched message (§10).
+ *
+ * The server moves the conversation's active leaf to the tip of the chosen
+ * branch; invalidateAll then re-renders the whole branch — messages, artifacts
+ * and the branch picker's own position — in one round trip. Not while a turn is
+ * streaming: the leaf is about to move on its own.
+ */
+async function switchBranch(messageId: string): Promise<void> {
+  const conversationId = conversation.id;
+  if (!conversationId || conversation.turn.streaming) return;
+
+  const response = await fetch(`/api/conversations/${conversationId}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ activeLeafOf: messageId }),
+  });
+  if (response.ok) await invalidateAll();
+}
+
 async function abort(): Promise<void> {
   const turnId = conversation.turn.turnId;
 
@@ -485,6 +505,7 @@ async function abort(): Promise<void> {
         <ChatMessage
           {message}
           onedit={(target) => composer.beginEdit(target.id, target.text)}
+          onswitch={switchBranch}
         />
       {/each}
 

@@ -48,6 +48,8 @@
   "chat_attachment_refusal_type_not_allowed": "That kind of file cannot be attached here.",
   "chat_attachment_refusal_unavailable": "That file could not be attached.",
   "chat_attachment_remove": "Remove {filename}",
+  "chat_branch_next": "Next version",
+  "chat_branch_previous": "Previous version",
   "chat_cancel_edit": "Cancel",
   "chat_composer_label": "Your message",
   "chat_composer_placeholder": "Write a message…",

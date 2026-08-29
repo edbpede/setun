@@ -15,7 +15,7 @@ import {
   getOwnedConversation,
   listConversations,
 } from "$lib/server/db/queries/conversations";
-import { getActivePath } from "$lib/server/db/queries/messages";
+import { getActivePath, listSiblings } from "$lib/server/db/queries/messages";
 import { findActiveTurn } from "$lib/server/db/queries/turns";
 import type { Actions, PageServerLoad } from "./$types";
 
@@ -43,13 +43,34 @@ export const load: PageServerLoad = ({ locals, url }) => {
   // The parts travel whole: tool calls, generated images and attachments are as
   // much of the transcript as the prose is, and the same component renders a
   // reloaded message and a streaming one (§10, §11, §15).
-  const messages = active?.activeLeafId
-    ? getActivePath(db, active.activeLeafId).map((message) => ({
-        id: message.id,
-        role: message.role,
-        parts: message.parts,
-      }))
-    : [];
+  const conversationId = active?.id;
+  const messages =
+    active?.activeLeafId && conversationId
+      ? getActivePath(db, active.activeLeafId).map((message) => {
+          // A branch point is a message with siblings — the variants an edit or
+          // a regenerate left addressable but off-screen. The picker needs only
+          // this message's position and the neighbours to step to; the switch
+          // endpoint resolves each neighbour to its branch tip.
+          const siblings = listSiblings(db, conversationId, message.parentId);
+          const index = siblings.findIndex((sibling) => sibling.id === message.id);
+          const branch =
+            siblings.length > 1 && index !== -1
+              ? {
+                  index,
+                  total: siblings.length,
+                  prevId: index > 0 ? siblings[index - 1].id : null,
+                  nextId: index < siblings.length - 1 ? siblings[index + 1].id : null,
+                }
+              : null;
+
+          return {
+            id: message.id,
+            role: message.role,
+            parts: message.parts,
+            branch,
+          };
+        })
+      : [];
 
   // A turn still streaming when this tab reloaded: the client resumes it from
   // the buffer rather than losing the answer (§10).

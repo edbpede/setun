@@ -8,6 +8,20 @@ import { StreamingTurn } from "./streaming-turn.svelte";
  * on the server, and the client renders one branch.
  */
 
+/**
+ * A message's place among its siblings, when it sits at a branch point (§10).
+ *
+ * Present only for a persisted message the server found to have siblings — the
+ * variants an edit or a regenerate left addressable. `prevId`/`nextId` are the
+ * neighbouring variants to step to, or null at an end.
+ */
+export interface MessageBranch {
+  readonly index: number;
+  readonly total: number;
+  readonly prevId: string | null;
+  readonly nextId: string | null;
+}
+
 export interface ChatMessage {
   readonly id: string;
   readonly role: "user" | "assistant";
@@ -18,6 +32,8 @@ export interface ChatMessage {
    * accumulates, so one component renders all three.
    */
   readonly parts: readonly MessagePart[];
+  /** Branch-picker data, or null/absent for a message with no siblings. */
+  readonly branch?: MessageBranch | null;
 }
 
 /** The prose of a message, for the composer's edit flow (§10). */

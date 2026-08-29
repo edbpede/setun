@@ -48,6 +48,8 @@
   "chat_attachment_refusal_type_not_allowed": "Den slags fil kan ikke vedhæftes her.",
   "chat_attachment_refusal_unavailable": "Filen kunne ikke vedhæftes.",
   "chat_attachment_remove": "Fjern {filename}",
+  "chat_branch_next": "Næste version",
+  "chat_branch_previous": "Forrige version",
   "chat_cancel_edit": "Annuller",
   "chat_composer_label": "Din besked",
   "chat_composer_placeholder": "Skriv en besked…",
