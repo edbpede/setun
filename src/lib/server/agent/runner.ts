@@ -5,7 +5,7 @@ import { attachImageToMessage } from "../db/queries/images";
 import { appendMessage, recordMessageUsage } from "../db/queries/messages";
 import { finishTurn } from "../db/queries/turns";
 import { recordUsageEvent } from "../db/queries/usage";
-import type { Message, MessagePart, ModelAlias, PermissionMode } from "../db/schema";
+import type { Message, MessagePart, ModelAlias, PermissionMode, TurnNotice } from "../db/schema";
 import type { GatewayAdapter } from "../gateway/adapter";
 import type { GatewayEvent } from "../gateway/events";
 import { describeCause, log } from "../logging";
@@ -101,7 +101,15 @@ export async function executeTurn(input: ExecuteTurnInput): Promise<void> {
     })) {
       collect({ event, parts, imageIds, usage, asked });
 
-      if (event.type === "done") status = terminalStatusFor(event);
+      if (event.type === "done") {
+        status = terminalStatusFor(event);
+        // The reason travels with the message, not only down the wire. The
+        // client's live copy is cleared the instant the persisted message
+        // replaces the streaming one, so a pupil whose turn was stopped or
+        // capped had nothing left to read — then, or on the next visit (§10).
+        const notice = noticeFor(event);
+        if (notice) parts.push({ type: "turn-notice", notice });
+      }
 
       // Persist first, then publish: a tailing subscriber must never see an
       // event that a resuming reader could miss (§10).
@@ -211,6 +219,18 @@ function collect(args: {
     default:
       break;
   }
+}
+
+/**
+ * The sign a pupil should be left with, or null when the turn simply finished.
+ *
+ * `stop` is the model reaching its own end and has nothing to announce. Every
+ * other reason cut the answer short of where it was going, and the pupil is
+ * owed an explanation they can act on — press send again, wait for tomorrow's
+ * allowance, answer the question next time (§10, §11, §21).
+ */
+function noticeFor(event: Extract<GatewayEvent, { type: "done" }>): TurnNotice | null {
+  return event.reason === "stop" ? null : event.reason;
 }
 
 function terminalStatusFor(event: Extract<GatewayEvent, { type: "done" }>) {

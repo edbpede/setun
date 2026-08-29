@@ -80,6 +80,28 @@ export interface ToolResultPart {
 }
 
 /**
+ * Why an answer stops short of where it was going (§10, §11).
+ *
+ * A part of its own, for the same reason `ArtifactEditPart` is one: the sign has
+ * to survive a reload. The streaming container carries the reason live, but it
+ * is cleared the moment the turn is replaced by its persisted message, so a
+ * pupil who pressed Stop — or whose turn hit a per-turn cap — was left with a
+ * sentence that simply ended, with nothing to say it had been cut short, either
+ * then or on the next visit.
+ *
+ * Only the reasons a pupil can read something into: an answer that ended because
+ * the model finished has nothing to announce. `error` is included because a
+ * failed turn may still have persisted the words it managed to stream.
+ */
+export const TURN_NOTICES = ["aborted", "interrupted", "budget", "unanswered", "error"] as const;
+export type TurnNotice = (typeof TURN_NOTICES)[number];
+
+export interface TurnNoticePart {
+  readonly type: "turn-notice";
+  readonly notice: TurnNotice;
+}
+
+/**
  * One content part of a message (§19: "content parts, tool calls and results,
  * permission decisions").
  */
@@ -89,7 +111,8 @@ export type MessagePart =
   | ArtifactEditPart
   | GeneratedImagePart
   | ToolCallPart
-  | ToolResultPart;
+  | ToolResultPart
+  | TurnNoticePart;
 
 export const MESSAGE_ROLES = ["user", "assistant"] as const;
 export type MessageRole = (typeof MESSAGE_ROLES)[number];

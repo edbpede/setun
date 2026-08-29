@@ -1,4 +1,5 @@
 <script lang="ts">
+import { turnNoticeText } from "$lib/chat/turn-notices";
 import * as m from "$lib/paraglide/messages";
 import type { StreamingTurn } from "$lib/state/streaming-turn.svelte";
 import MessageParts from "./MessageParts.svelte";
@@ -20,15 +21,7 @@ interface Props {
 
 let { turn }: Props = $props();
 
-const NOTICES: Record<NonNullable<StreamingTurn["notice"]>, () => string> = {
-  aborted: m.chat_notice_aborted,
-  interrupted: m.chat_notice_interrupted,
-  error: m.chat_notice_error,
-  budget: m.chat_notice_budget,
-  unanswered: m.chat_notice_unanswered,
-};
-
-let noticeText = $derived(turn.notice ? NOTICES[turn.notice]() : null);
+let noticeText = $derived(turn.notice ? turnNoticeText(turn.notice) : null);
 </script>
 
 {#if turn.streaming || !turn.isEmpty || noticeText}
