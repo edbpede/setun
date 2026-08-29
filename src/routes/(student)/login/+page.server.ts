@@ -14,8 +14,10 @@ import type { Actions, PageServerLoad } from "./$types";
  * schema without exception (§5).
  *
  * The route is thin by design: it parses, delegates the decision to
- * `$lib/server/auth`, and shapes the response. There is exactly one failure
- * branch here, so there is nothing for the response to disclose (§7, §21).
+ * `$lib/server/auth`, and shapes the response. Every *credential* failure is one
+ * branch, so there is nothing for the response to disclose about whether a code
+ * exists (§7, §21); a refused address is reported separately, because it says
+ * nothing about a code and a pupil can act on it.
  */
 
 /** Length is unbounded on purpose: normalisation strips separators before the check. */
@@ -37,7 +39,7 @@ export const actions: Actions = {
     if (!parsed.success) {
       // Same shape as a rejected code: a malformed submission must not be
       // distinguishable from a wrong one (§7).
-      return fail(400, { failed: true });
+      return fail(400, { failed: true, rateLimited: false });
     }
 
     const result = await attemptStudentLogin(getDb(), {
@@ -46,7 +48,15 @@ export const actions: Actions = {
       pepper: getConfig().studentCodePepper,
     });
 
-    if (!result.ok) return fail(401, { failed: true });
+    if (!result.ok) {
+      // Two branches, and only two: every credential outcome is one message, and
+      // an exhausted per-IP budget is the other. The second says nothing about
+      // any code — it is a property of the network the class shares — and saying
+      // "that code did not work" instead sent a pupil looking for a typo in a
+      // code that was correct (§7, §21).
+      const rateLimited = result.failure === "rate-limited";
+      return fail(rateLimited ? 429 : 401, { failed: true, rateLimited });
+    }
 
     // TODO(phase-7): the student first-login introduction begins here — this is
     // the one path that knows a sign-in *just succeeded*, which is what

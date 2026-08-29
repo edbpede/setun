@@ -10,8 +10,11 @@ import type { ActionData } from "./$types";
  * One field, because the access code is the whole credential. Progressively
  * enhanced: the form posts and works without JavaScript.
  *
- * There is one failure message for every rejection, matching the server's single
- * failure branch — nothing here discloses whether a code exists (§7, §21).
+ * One message for every credential rejection, matching the server's single
+ * failure branch — nothing here discloses whether a code exists (§7, §21). The
+ * second message is for a refused address, which is a property of the network
+ * and not of any code; a pupil told their code was wrong when the limiter had
+ * simply run out goes looking for a typo that is not there.
  */
 interface Props {
   form: ActionData;
@@ -47,7 +50,9 @@ let { form }: Props = $props();
     </label>
 
     {#if form?.failed}
-      <p id="login-error" class="text-sm text-destructive" role="alert">{m.login_failed()}</p>
+      <p id="login-error" class="text-sm text-destructive" role="alert">
+        {form?.rateLimited ? m.login_rate_limited() : m.login_failed()}
+      </p>
     {/if}
 
     <button

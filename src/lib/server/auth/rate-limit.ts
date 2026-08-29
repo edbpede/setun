@@ -145,6 +145,21 @@ export function recordDigestAttempt(
     .run();
 }
 
+/**
+ * Note that an attempt was refused outright by the per-IP ceiling (§7).
+ *
+ * Written under the `ip-refused` scope, which `attemptsSince` never reads, so
+ * the record exists without feeding the limiter that produced it — see the
+ * scope's own note in the schema. Nothing is written on the digest axis: a
+ * refused attempt never reached the credential, and counting it there would let
+ * one address throttle a digest it does not own.
+ */
+export function recordRefusedAttempt(db: AppDatabase, input: { ip: string }): void {
+  db.insert(loginAttempt)
+    .values([{ scope: "ip-refused", key: input.ip, successful: false }])
+    .run();
+}
+
 /** Housekeeping for the Phase 5 scheduler; rows outside the window decide nothing. */
 export function pruneAttemptsBefore(db: AppDatabase, cutoff: Date): number {
   const rows = db

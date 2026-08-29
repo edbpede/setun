@@ -347,6 +347,7 @@
   "login_failed": "Koden virkede ikke. Tjek den, og prøv igen.",
   "login_help": "Har du mistet dit kort? Bed din lærer om en ny kode.",
   "login_intro": "Indtast adgangskoden fra dit kort.",
+  "login_rate_limited": "For mange loginforsøg fra dette netværk. Vent et par minutter, og prøv igen — din kode fejler ikke noget.",
   "login_submit": "Log ind",
   "login_title": "Log ind",
   "setup_alias_intro": "Eleverne vælger modeller ud fra det navn, du giver dem her.",

@@ -347,6 +347,7 @@
   "login_failed": "That code did not work. Check it and try again.",
   "login_help": "Lost your card? Ask your teacher for a new code.",
   "login_intro": "Enter the access code from your card.",
+  "login_rate_limited": "Too many sign-in attempts from this network. Wait a few minutes, then try again — your code is fine.",
   "login_submit": "Sign in",
   "login_title": "Sign in",
   "setup_alias_intro": "Pupils pick models by the friendly name you give them here.",

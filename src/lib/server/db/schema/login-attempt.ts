@@ -1,8 +1,17 @@
 import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { createdAt, primaryId } from "./helpers";
 
-/** Rate limiting is applied on both axes independently (PRD §7, Appendix A). */
-export const LOGIN_ATTEMPT_SCOPES = ["ip", "digest"] as const;
+/**
+ * Rate limiting is applied on both axes independently (PRD §7, Appendix A).
+ *
+ * `ip-refused` is an audit scope, not a limiter axis. An attempt refused by the
+ * per-IP ceiling never reaches the credential, so counting it as an `ip` attempt
+ * would keep a window that should drain in fifteen minutes topped up for as long
+ * as a client kept knocking — an indefinite lockout rather than the curve
+ * Appendix A specifies. It is recorded under its own scope so the operator can
+ * see that the limiter fired, and read back by nothing that decides anything.
+ */
+export const LOGIN_ATTEMPT_SCOPES = ["ip", "digest", "ip-refused"] as const;
 export type LoginAttemptScope = (typeof LOGIN_ATTEMPT_SCOPES)[number];
 
 /**
