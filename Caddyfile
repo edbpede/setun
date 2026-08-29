@@ -18,9 +18,15 @@
 }
 
 # Application origin.
+#
+# The upstream is a variable with the deployment's own value as its default, so
+# this file is the one Caddy reads in both places rather than a production file
+# with a development copy beside it. In deployment the app is a container on the
+# same network and `app:3000` is the answer; under scripts/devsuite the app runs
+# on the host, so the suite points this at `host.docker.internal:<app port>`.
 {$SETUN_APP_HOSTNAME} {
 	encode zstd gzip
-	reverse_proxy app:3000
+	reverse_proxy {$SETUN_APP_UPSTREAM:app:3000}
 }
 
 # Sandbox origin — prebuilt static files only. It proxies nothing, so generated

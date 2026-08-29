@@ -41,9 +41,9 @@ render.
 
 ## Development suite
 
-`scripts/devsuite` runs the whole local stack from one place — both Vite servers, a per-instance
-SQLite database, and optionally the CLIProxyAPI container — and streams every service into one
-aligned, colour-coded log view.
+`scripts/devsuite` runs the whole local stack from one place — both origins, a per-instance
+SQLite database, optionally the CLIProxyAPI container, and with `--production` the deployment's
+Caddy — and streams every service into one aligned, colour-coded log view.
 
 ```sh
 ./scripts/devsuite start        # bring the stack up and attach to the log view
@@ -57,12 +57,35 @@ aligned, colour-coded log view.
 and come back with `logs`, where **Ctrl-C only detaches**. Starting an instance that is already
 running attaches to its log view rather than spawning a second one.
 
-Every start, resume and attach prints where to sign in and as whom.
-`http://localhost:5173` is the **student** login and asks for an access code; the educator entry
-point is `/educator/login`, panel at `/educator`.
+Every start, resume and attach prints where to sign in and as whom. That origin's root is the
+**student** login and asks for an access code; the educator entry point is `/educator/login`,
+panel at `/educator`.
 
-Caddy is not part of it: locally Vite serves both origins on their own ports, and the Caddyfile
-needs real hostnames and certificates. CPA is opt-in with `--with-cpa` — it needs a Docker engine
+### Reproducing a deployment
+
+`--production` runs the stack the way a deployment runs it, which is more than swapping the dev
+server for the build:
+
+```sh
+./scripts/devsuite start --production   # http://setun.localhost:8080
+```
+
+The application becomes `bun run build` and the adapter-node server, and the deployment's own
+Caddy goes in front of it — the same pinned image as `docker-compose.yml`, reading the
+repository's `Caddyfile` rather than a copy of it. Two hostnames answer on one port,
+`http://setun.localhost:8080` and `http://sandbox.setun.localhost:8080`, and `build-sandbox/` is
+served by Caddy's `file_server` instead of a Vite preview. So the static server, the response
+headers, the origin shape and the `X-Forwarded-For` hop are the ones a deployment has, and
+`ADDRESS_HEADER`/`XFF_DEPTH` are set to match.
+
+`*.localhost` resolves to loopback with no `/etc/hosts` entry. TLS is the one piece left out: the
+site addresses carry an explicit `http://`, which is what tells Caddy to skip ACME — a deployment
+passes bare hostnames and gets automatic HTTPS from the same file.
+
+Caddy needs a Docker engine, the same one `--with-cpa` needs. `--production --no-caddy` leaves it
+out and serves the build on the two Vite ports instead.
+
+CPA is opt-in with `--with-cpa` — it needs a Docker engine
 and an operator's filled-in `cpa/config.yaml`, and it runs from `scripts/devsuite.compose.yml`
 because the deployment's CPA is deliberately unreachable from the host (PRD §6, §9).
 

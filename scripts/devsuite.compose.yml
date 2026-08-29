@@ -1,4 +1,4 @@
-# CPA for local development, driven by scripts/devsuite.
+# CPA and Caddy for local development, driven by scripts/devsuite.
 #
 # Not an override of docker-compose.yml, and deliberately so. There, CPA sits on
 # an `internal` network with no published port — it is reachable only by the app
@@ -26,6 +26,40 @@ services:
     volumes:
       - ./cpa/config.yaml:/CLIProxyAPI/config.yaml
       - cpa-auth:/root/.cli-proxy-api
+
+  # The deployment's proxy tier, on the deployment's image, reading the
+  # repository's own Caddyfile — not a copy of it. What differs between here and
+  # docker-compose.yml is the two hostname variables and the upstream, and that
+  # is the whole point: the static server, the response headers, the origin
+  # shape and the proxy hop are then the ones a deployment actually has.
+  #
+  # The hostnames the suite supplies carry an explicit `http://` scheme, which
+  # is what tells Caddy to serve plain HTTP on that port and skip ACME. A
+  # deployment passes bare hostnames and gets automatic HTTPS instead; the file
+  # does not know the difference. `*.localhost` resolves to loopback without an
+  # /etc/hosts entry, so two real origins cost nothing to set up.
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    # Same number inside and out: the port is part of the origin, and an origin
+    # that differed between Caddy's view and the browser's would break both the
+    # CSP sources and adapter-node's CSRF check.
+    ports:
+      - "127.0.0.1:${SETUN_CADDY_PORT:-8080}:${SETUN_CADDY_PORT:-8080}"
+    environment:
+      SETUN_APP_HOSTNAME: ${SETUN_APP_HOSTNAME}
+      SETUN_SANDBOX_HOSTNAME: ${SETUN_SANDBOX_HOSTNAME}
+      SETUN_APP_UPSTREAM: ${SETUN_APP_UPSTREAM}
+      SETUN_ACME_EMAIL: ""
+    # The application runs on the host here rather than as a container on this
+    # network, so Caddy needs a route back out to it.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # The same directory `bun run build:sandbox` writes and the deployment
+      # mounts, served by the same file_server. No Vite in the path at all.
+      - ./build-sandbox:/srv/sandbox:ro
 
 volumes:
   cpa-auth:
