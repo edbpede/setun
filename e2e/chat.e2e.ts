@@ -83,6 +83,55 @@ test("a student logs in, chats with a streaming answer, and logs out", async ({ 
   await expect(page).toHaveURL(/\/login/);
 });
 
+/**
+ * The three pupil controls that had no route to them at all (§10, §16, §22).
+ *
+ * Regenerating and deleting are both destructive-adjacent — one branches the
+ * tree, the other removes a conversation and everything it carried — so they are
+ * asserted through the UI rather than at the API, which is where the missing
+ * piece was.
+ */
+test("a pupil can ask again, and delete a conversation for good", async ({ page }) => {
+  const { code } = await provisionStudent();
+
+  await page.goto("/login");
+  await page.getByLabel(m.login_code_label()).fill(code);
+  await page.getByRole("button", { name: m.login_submit() }).click();
+  await expect(page).toHaveURL(/\/chat/);
+
+  await page.getByRole("textbox", { name: m.chat_composer_label() }).fill("Forklar loops");
+  await page.getByRole("button", { name: m.chat_send() }).click();
+  await expect(page.locator('[data-role="assistant"]').getByText(/Et loop gentager/)).toBeVisible({
+    timeout: 15_000,
+  });
+
+  // --- Ask again: the prompt branches rather than the answer being replaced ---
+  await page
+    .locator('[data-role="assistant"]')
+    .first()
+    .getByRole("button", { name: m.chat_regenerate() })
+    .click({ force: true });
+
+  // Two variants of the same question, reachable from the branch picker (§10).
+  await expect(page.getByRole("button", { name: m.chat_branch_previous() })).toBeVisible({
+    timeout: 15_000,
+  });
+
+  // --- Delete: the conversation and everything it carried go (§16) ---
+  await page.getByRole("button", { name: m.chat_conversations() }).click();
+
+  const row = page.locator("nav a[href^='/chat?c=']").first();
+  await expect(row).toBeVisible();
+
+  await page.getByRole("button", { name: /^Slet|^Delete/ }).first().click();
+  await page.getByRole("button", { name: m.chat_delete_conversation_confirm() }).click();
+
+  // Nothing left to open into, and nothing left to find on a reload.
+  await expect(page.locator("nav a[href^='/chat?c=']")).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByText(m.chat_empty_body())).toBeVisible();
+});
+
 test("a wrong code is refused with the same message as an unknown one", async ({ page }) => {
   await page.goto("/login");
 
