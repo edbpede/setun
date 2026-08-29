@@ -43,6 +43,13 @@
       "when": 1787689044144,
       "tag": "0005_phase_6_onboarding",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1787964894425,
+      "tag": "0006_danish_search_folding",
+      "breakpoints": true
     }
   ]
 }

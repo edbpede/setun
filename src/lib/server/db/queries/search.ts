@@ -22,6 +22,28 @@ import type { MessagePart } from "../schema";
 /** Appendix A: `unicode61` with `remove_diacritics 2`, so Danish text searches forgivingly. */
 export const SEARCH_TOKENIZER = "unicode61 remove_diacritics 2";
 
+/**
+ * Fold the Danish letters the tokenizer cannot (PRD §18, Appendix A).
+ *
+ * `unicode61 remove_diacritics 2` folds combining marks — å→a, so "far" finds
+ * "får" — but æ and ø are atomic Unicode letters with no decomposition, so the
+ * tokenizer leaves them and "saetning" never found "sætning". Danish readers
+ * type ae/oe on keyboards without the special letters; folding them here, on
+ * both the indexed text and the query, makes the two spellings one token.
+ *
+ * å is deliberately left to the tokenizer: folding it to aa would break the å→a
+ * equivalence the tokenizer already provides (and its test). Applied to a second
+ * indexed column so the original text survives for clean snippets, this is the
+ * TypeScript twin of the SQL fold in migration 0006.
+ */
+export function foldDanish(text: string): string {
+  return text
+    .replaceAll("æ", "ae")
+    .replaceAll("Æ", "AE")
+    .replaceAll("ø", "oe")
+    .replaceAll("Ø", "OE");
+}
+
 export const SEARCH_TABLE = "search_index";
 
 /** What produced an indexed row. Both are the student's own text or their model's. */
@@ -67,11 +89,14 @@ export function indexableText(parts: readonly MessagePart[]): string {
  * results rather than as an error.
  */
 export function toMatchExpression(raw: string): string | null {
-  const tokens = raw.match(/[\p{L}\p{N}_]+/gu);
+  const tokens = foldDanish(raw).match(/[\p{L}\p{N}_]+/gu);
   if (!tokens || tokens.length === 0) return null;
 
+  // Every token is scoped to the `folded` column, so a query matches the folded
+  // index and never the raw `body` — which exists only to give `snippet()` an
+  // unfolded excerpt to render.
   return tokens
-    .map((token, i) => (i === tokens.length - 1 ? `"${token}"*` : `"${token}"`))
+    .map((token, i) => `folded : ${i === tokens.length - 1 ? `"${token}"*` : `"${token}"`}`)
     .join(" ");
 }
 
@@ -92,8 +117,8 @@ export function indexMessage(
   if (body.length === 0) return;
 
   db.run(
-    sql`insert into ${sql.identifier(SEARCH_TABLE)} (body, kind, sourceId, conversationId, studentId)
-        select ${body}, 'message', ${input.messageId}, id, studentId
+    sql`insert into ${sql.identifier(SEARCH_TABLE)} (body, folded, kind, sourceId, conversationId, studentId)
+        select ${body}, ${foldDanish(body)}, 'message', ${input.messageId}, id, studentId
         from conversation where id = ${input.conversationId}`,
   );
 }
@@ -111,8 +136,8 @@ export function indexConversationTitle(
   if (input.title.trim().length === 0) return;
 
   db.run(
-    sql`insert into ${sql.identifier(SEARCH_TABLE)} (body, kind, sourceId, conversationId, studentId)
-        select ${input.title}, 'title', id, id, studentId
+    sql`insert into ${sql.identifier(SEARCH_TABLE)} (body, folded, kind, sourceId, conversationId, studentId)
+        select ${input.title}, ${foldDanish(input.title)}, 'title', id, id, studentId
         from conversation where id = ${input.conversationId}`,
   );
 }
