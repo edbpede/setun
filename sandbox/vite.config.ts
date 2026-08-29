@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 
@@ -33,25 +35,47 @@ const RUNTIMES = [
   "svelte-disclose-version",
   "svelte-flags-legacy",
   "svelte-flags-async",
-  "svelte-compiler",
   "unocss",
 ] as const;
 
-const runtimeInputs = Object.fromEntries(
-  RUNTIMES.map((name) => [`runtimes/${name}`, `${root}src/runtimes/${name}.ts`]),
-);
+/**
+ * The Svelte compiler is built alone, and deliberately not with the others.
+ *
+ * The worker loads it from a blob URL, and a worker has no import map — so it
+ * has to be one self-contained file, with no reference to a sibling chunk that
+ * a blob URL could not resolve. Building it in its own pass is what makes it
+ * one: with a single input there is nothing for Rollup to share it with.
+ *
+ * Safe here and nowhere else. Duplicating a few kilobytes of shared code into a
+ * build-time tool costs nothing; doing the same to `react` would give an
+ * artifact two Reacts, and hooks would stop working.
+ */
+const COMPILER = "svelte-compiler";
+
+const entryInput = (name: string) => [`runtimes/${name}`, `${root}src/runtimes/${name}.ts`];
+
+const runtimeInputs = Object.fromEntries(RUNTIMES.map(entryInput));
+const compilerInput = Object.fromEntries([entryInput(COMPILER)]);
 
 /**
- * The sandbox is built in two passes (see `build:sandbox`).
+ * The sandbox is built in three passes (see `build:sandbox`).
  *
  * The runner has to end up as a single self-contained script inlined into
  * `index.html`, which means `inlineDynamicImports` — and Rollup only allows that
- * for a build with exactly one input. The pinned runtimes are eleven separate
+ * for a build with exactly one input. The pinned runtimes are ten separate
  * entries by design, because an artifact's import map names them individually.
- * One pass cannot be both, so each pass builds what it needs and the runtimes
- * pass is told not to empty the directory the runner pass just filled.
+ * The Svelte compiler is a third pass for the reason given above `COMPILER`.
+ * No pass can be another, so each builds what it needs, and only the first is
+ * allowed to empty the directory the others add to.
  */
-const target = process.env.SETUN_SANDBOX_BUILD_TARGET === "runtimes" ? "runtimes" : "runner";
+type Target = "runner" | "runtimes" | "compiler";
+
+const target: Target =
+  process.env.SETUN_SANDBOX_BUILD_TARGET === "runtimes"
+    ? "runtimes"
+    : process.env.SETUN_SANDBOX_BUILD_TARGET === "compiler"
+      ? "compiler"
+      : "runner";
 
 /** Matches the Caddy site block; overridden for the end-to-end run. */
 const port = Number(process.env.SETUN_SANDBOX_PORT ?? 5174);
@@ -127,7 +151,7 @@ export default defineConfig({
     // Outside `build/`: adapter-node empties that directory on every application
     // build, and the two builds are independent by design (§6).
     outDir: `${repository}build-sandbox`,
-    // Only the first pass clears the directory; the second adds to it.
+    // Only the first pass clears the directory; the other two add to it.
     emptyOutDir: target === "runner",
     target: "es2022",
     // Vite's preload helper rewrites dynamic imports to reference a
@@ -143,11 +167,16 @@ export default defineConfig({
       // effects: nothing in this build imports them, because what imports them
       // is an artifact's import map at runtime.
       preserveEntrySignatures: "strict",
-      input: target === "runtimes" ? { ...runtimeInputs } : { index: `${root}index.html` },
+      input:
+        target === "runtimes"
+          ? { ...runtimeInputs }
+          : target === "compiler"
+            ? { ...compilerInput }
+            : { index: `${root}index.html` },
       output: {
         // One chunk, so the compiler worker travels inside the inlined runner
         // instead of behind a fetch an opaque origin is not allowed to make.
-        inlineDynamicImports: target === "runner",
+        inlineDynamicImports: target === "runner" || target === "compiler",
         entryFileNames: (chunk) =>
           chunk.name.startsWith("runtimes/") ? "[name].js" : "assets/[name]-[hash].js",
         chunkFileNames: "assets/[name]-[hash].js",
@@ -160,6 +189,142 @@ export default defineConfig({
   server: { port, strictPort: true, cors: false, headers: HEADERS },
   preview: { port, strictPort: true, cors: false, headers: HEADERS },
   plugins: [
+    {
+      /**
+       * Emit the compiler's WebAssembly under a name that can be written down.
+       *
+       * It used to arrive through `esbuild-wasm/esbuild.wasm?url` in the worker,
+       * which both hashed the filename and told esbuild to fetch it. Neither is
+       * wanted now: the sandbox does not fetch its own files at all — the
+       * application does, on its behalf, from the table in
+       * `src/lib/artifacts/assets.ts` — and that table cannot name a file with a
+       * build hash in it. Emitting it here keeps it out of the module graph and
+       * gives it a fixed address. It is pinned to the `esbuild-wasm` version in
+       * package.json and ships with the build, so nothing needs busting.
+       */
+      name: "setun-sandbox-esbuild-wasm",
+      buildStart() {
+        if (target !== "runner") return;
+
+        const resolved = createRequire(import.meta.url).resolve("esbuild-wasm/esbuild.wasm");
+        this.emitFile({
+          type: "asset",
+          fileName: "assets/esbuild.wasm",
+          source: readFileSync(resolved),
+        });
+      },
+    },
+    {
+      /**
+       * Make the runtime graph loadable from blob URLs, and say how (PRD §13).
+       *
+       * The pinned runtimes are one code-split graph: `react` and
+       * `react-dom/client` share React itself, `svelte` and
+       * `svelte/internal/client` share the client runtime. That sharing is not
+       * incidental — duplicate it and an artifact gets two Reacts, whose hooks
+       * do not work together — so the emitted files reference each other, and
+       * Rollup writes those references as relative paths.
+       *
+       * A relative specifier cannot resolve from a blob URL: there is no
+       * hierarchical base to resolve it against. And a blob URL is what these
+       * become, because the artifact's document has an opaque origin of its own
+       * and may fetch neither the sandbox host nor a blob the runner made.
+       *
+       * So each reference is rewritten to a `setun:` specifier, which an import
+       * map can carry, and the manifest records what resolves to what. Nothing
+       * is duplicated and nothing is fetched from inside the sandbox.
+       */
+      name: "setun-sandbox-runtime-graph",
+      generateBundle(_options, bundle) {
+        if (target !== "runtimes") return;
+
+        const specifier = (file: string) => `setun:${file.split("/").pop()}`;
+
+        /**
+         * Where a chunk sits relative to the file that imports it.
+         *
+         * Exactly as Rollup writes it, which is the string being replaced: a
+         * sibling in the same directory is `./name.js`, not `../assets/name.js`.
+         */
+        const relative = (from: string, to: string) => {
+          const fromDirectory = from.split("/").slice(0, -1);
+          const toParts = to.split("/");
+          const file = toParts.pop() ?? to;
+
+          let shared = 0;
+          while (
+            shared < fromDirectory.length &&
+            shared < toParts.length &&
+            fromDirectory[shared] === toParts[shared]
+          ) {
+            shared += 1;
+          }
+
+          const up = "../".repeat(fromDirectory.length - shared);
+          const down = toParts.slice(shared).join("/");
+          const prefix = `${up}${down ? `${down}/` : ""}`;
+          return prefix ? `${prefix}${file}` : `./${file}`;
+        };
+
+        const entries: Record<string, { file: string; needs: string[] }> = {};
+        const chunks: Record<string, string> = {};
+
+        for (const item of Object.values(bundle)) {
+          if (item.type !== "chunk") continue;
+
+          for (const imported of item.imports) {
+            item.code = item.code
+              .split(relative(item.fileName, imported))
+              .join(specifier(imported));
+          }
+
+          if (item.isEntry) continue;
+          chunks[specifier(item.fileName)] = item.fileName;
+        }
+
+        // Transitive, because a chunk may import another: an entry that fetched
+        // only its direct imports would load a module graph with a hole in it.
+        const closure = (fileName: string, seen = new Set<string>()): string[] => {
+          const item = bundle[fileName];
+          if (item?.type !== "chunk") return [];
+
+          for (const imported of item.imports) {
+            if (seen.has(imported)) continue;
+            seen.add(imported);
+            closure(imported, seen);
+          }
+
+          return [...seen].map(specifier);
+        };
+
+        for (const item of Object.values(bundle)) {
+          if (item.type !== "chunk" || !item.isEntry) continue;
+          const name = item.fileName.replace(/^runtimes\//, "").replace(/\.js$/, "");
+          entries[name] = { file: item.fileName, needs: closure(item.fileName) };
+        }
+
+        // The bare names an artifact may import. React and Svelte only — no
+        // other framework is hosted (§13).
+        const specifiers: Record<string, string> = {
+          react: "react",
+          "react/jsx-runtime": "react-jsx-runtime",
+          "react/jsx-dev-runtime": "react-jsx-runtime",
+          "react-dom": "react-dom",
+          "react-dom/client": "react-dom-client",
+          svelte: "svelte",
+          "svelte/internal/client": "svelte-internal-client",
+          "svelte/internal/disclose-version": "svelte-disclose-version",
+          "svelte/internal/flags/legacy": "svelte-flags-legacy",
+          "svelte/internal/flags/async": "svelte-flags-async",
+        };
+
+        this.emitFile({
+          type: "asset",
+          fileName: "runtimes/manifest.json",
+          source: JSON.stringify({ specifiers, entries, chunks }, null, 2),
+        });
+      },
+    },
     {
       name: "setun-sandbox-runtime-paths",
       /**

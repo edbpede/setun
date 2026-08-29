@@ -29,6 +29,39 @@ export async function mountArtifact(
       frame.style.cssText = "position:fixed;inset:0;width:100%;height:100%;z-index:99999";
       document.body.appendChild(frame);
 
+      // The sandbox does not fetch its own pinned files: its origin is opaque,
+      // and the application serves them on its behalf (see
+      // src/lib/artifacts/assets.ts). This harness stands in for the
+      // application, so it has to answer the same way ArtifactFrame does —
+      // including the path check, which is the whole of the bound.
+      const safe = /^(?:runtimes|assets)\/[A-Za-z0-9][A-Za-z0-9._-]*\.(?:js|json|wasm)$/;
+
+      window.addEventListener("message", (event) => {
+        if (event.source !== frame.contentWindow) return;
+        const data = event.data as { channel?: string; type?: string; path?: string };
+        if (data?.channel !== "setun-artifact" || data.type !== "need-asset") return;
+
+        const path = data.path ?? "";
+        void (async () => {
+          try {
+            if (!safe.test(path)) throw new Error(`refused ${path}`);
+            const response = await fetch(`${origin}/${path}`);
+            if (!response.ok) throw new Error(String(response.status));
+            const bytes = await response.arrayBuffer();
+            frame.contentWindow?.postMessage(
+              { channel: "setun-artifact", type: "asset", path, ok: true, bytes },
+              "*",
+              [bytes],
+            );
+          } catch (cause) {
+            frame.contentWindow?.postMessage(
+              { channel: "setun-artifact", type: "asset", path, ok: false, message: String(cause) },
+              "*",
+            );
+          }
+        })();
+      });
+
       await new Promise<void>((resolve) => {
         window.addEventListener("message", function ready(event) {
           if (event.source !== frame.contentWindow) return;

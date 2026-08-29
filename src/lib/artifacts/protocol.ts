@@ -1,3 +1,4 @@
+import { isSandboxAssetPath } from "./assets";
 import { type ArtifactLanguage, isArtifactLanguage } from "./types";
 
 /**
@@ -27,7 +28,28 @@ export type HostMessage =
       readonly language: ArtifactLanguage;
       readonly source: string;
     }
-  | { readonly channel: typeof ARTIFACT_CHANNEL; readonly type: "clear" };
+  | { readonly channel: typeof ARTIFACT_CHANNEL; readonly type: "clear" }
+  /**
+   * An asset the sandbox asked for, fetched from the sandbox origin here.
+   *
+   * The buffer is transferred rather than copied — the compiler's WebAssembly is
+   * thirteen megabytes, and a structured clone of it on every artifact would be
+   * a visible pause on the two-core machines this is for (§20).
+   */
+  | {
+      readonly channel: typeof ARTIFACT_CHANNEL;
+      readonly type: "asset";
+      readonly path: string;
+      readonly ok: true;
+      readonly bytes: ArrayBuffer;
+    }
+  | {
+      readonly channel: typeof ARTIFACT_CHANNEL;
+      readonly type: "asset";
+      readonly path: string;
+      readonly ok: false;
+      readonly message: string;
+    };
 
 /** Runner → application. */
 export type SandboxMessage =
@@ -49,6 +71,19 @@ export type SandboxMessage =
       readonly type: "failed";
       readonly runId: string;
       readonly message: string;
+    }
+  /**
+   * A pinned file the sandbox needs and will not fetch for itself (§13, §14).
+   *
+   * The path is checked against `isSandboxAssetPath` before anything is read, so
+   * this asks the application for a file in one of two directories on the
+   * sandbox origin and can name nothing else — see `assets.ts` for that bound,
+   * and for why the sandbox does not simply fetch the file itself.
+   */
+  | {
+      readonly channel: typeof ARTIFACT_CHANNEL;
+      readonly type: "need-asset";
+      readonly path: string;
     };
 
 /** What the artifact's own document posts to the runner. */
@@ -73,6 +108,28 @@ export function asHostMessage(value: unknown): HostMessage | null {
   if (!record) return null;
 
   if (record.type === "clear") return { channel: ARTIFACT_CHANNEL, type: "clear" };
+
+  if (record.type === "asset" && isSandboxAssetPath(record.path)) {
+    if (record.ok === true && record.bytes instanceof ArrayBuffer) {
+      return {
+        channel: ARTIFACT_CHANNEL,
+        type: "asset",
+        path: record.path,
+        ok: true,
+        bytes: record.bytes,
+      };
+    }
+    if (record.ok === false) {
+      return {
+        channel: ARTIFACT_CHANNEL,
+        type: "asset",
+        path: record.path,
+        ok: false,
+        message: typeof record.message === "string" ? record.message : "",
+      };
+    }
+    return null;
+  }
 
   if (
     record.type === "render" &&
@@ -100,6 +157,10 @@ export function asSandboxMessage(value: unknown): SandboxMessage | null {
   switch (record.type) {
     case "ready":
       return { channel: ARTIFACT_CHANNEL, type: "ready" };
+    case "need-asset":
+      return isSandboxAssetPath(record.path)
+        ? { channel: ARTIFACT_CHANNEL, type: "need-asset", path: record.path }
+        : null;
     case "compiling":
     case "rendered":
       return typeof record.runId === "string"

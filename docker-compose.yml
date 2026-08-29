@@ -35,6 +35,13 @@ services:
       # adapter assumes https and rejects every form POST that arrives over a
       # different scheme than it guessed. Always the application origin.
       ORIGIN: ${SETUN_APP_ORIGIN:?set in .env}
+      # Every request arrives through Caddy, so the socket's peer address is
+      # Caddy's and identical for all of them. Left unset, the per-IP axis of the
+      # rate limiters degrades to a single global bucket that one busy classroom
+      # can exhaust for everyone. Caddy's `reverse_proxy` appends exactly one
+      # X-Forwarded-For hop, which is what the depth names.
+      ADDRESS_HEADER: x-forwarded-for
+      XFF_DEPTH: "1"
       SETUN_DATABASE_PATH: /data/db/setun.sqlite
       SETUN_STORAGE_PATH: /data/storage
       SETUN_BACKUP_PATH: /data/backups

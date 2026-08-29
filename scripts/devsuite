@@ -11,13 +11,22 @@ docker-compose.yml):
   cpa       CLIProxyAPI, the model gateway, a pinned container on :8317 —
             opt-in with `--with-cpa`, because it needs Docker and an operator's
             filled-in cpa/config.yaml
+  caddy     the proxy tier, a pinned container on :8080 reading the
+            repository's own Caddyfile — part of `--production`, because that
+            flag means "the way a deployment runs it" and a deployment has one
   database  SQLite, a file rather than a service; there is no process to run,
             so the suite owns *where the file lives* instead
 
-Caddy is deliberately absent. In deployment it terminates TLS for two public
-hostnames and serves `build-sandbox/` statically; locally Vite already serves
-both origins on their own ports, and the Caddyfile needs real hostnames and
-certificates. Running it here would prove nothing the two dev servers do not.
+Two shapes, then. Without `--production` the two Vite servers answer directly on
+their own ports, which is the fast loop. With it, Caddy sits in front on two
+`*.localhost` hostnames and serves `build-sandbox/` itself, so the static
+server, the response headers, the origin shape and the proxy hop are the ones a
+deployment actually has rather than Vite's approximations of them. `--no-caddy`
+takes it back out for a machine without Docker.
+
+Only TLS is left behind: the site addresses carry an explicit `http://`, which
+is what tells Caddy to skip ACME. Everything else in the Caddyfile is read here
+exactly as it is read in deployment, because it is the same file.
 
 Written in Python 3 with the standard library alone: the unified log view
 multiplexes several live process streams into one re-rendered, aligned view,
@@ -65,7 +74,14 @@ COMPOSE_FILE = Path(__file__).resolve().parent / "devsuite.compose.yml"
 DEFAULT_INSTANCE = "dev"
 EPHEMERAL_PREFIX = "ephemeral-"
 
-DEFAULT_PORTS = {"app": 5173, "sandbox": 5174, "cpa": 8317}
+DEFAULT_PORTS = {"app": 5173, "sandbox": 5174, "cpa": 8317, "caddy": 8080}
+
+# The hostnames the local Caddy answers on. `*.localhost` resolves to loopback
+# in every browser and in macOS's own resolver, so two genuinely separate
+# origins cost no /etc/hosts entry — and separate origins are the artifact
+# isolation mechanism (PRD §14), not a detail of how they are addressed.
+CADDY_APP_HOST = "setun.localhost"
+CADDY_SANDBOX_HOST = "sandbox.setun.localhost"
 
 # `sandbox` is the longest service name; a fixed column keeps every log line in
 # the same place whichever services happen to be running.
@@ -142,6 +158,7 @@ SERVICE_COLOUR = {
     "app": "38;5;33",  # blue
     "sandbox": "38;5;134",  # purple
     "cpa": "38;5;29",  # teal
+    "caddy": "38;5;136",  # amber
     "suite": "38;5;244",  # grey — the supervisor's own voice
 }
 
@@ -406,6 +423,7 @@ class RunState(TypedDict, total=False):
     log_level: str
     with_cpa: bool
     production: bool
+    caddy: bool
     compose_project: str
     services: dict[str, ServiceState]
     # The educator the running children were spawned with, and whether its
@@ -808,15 +826,33 @@ def educator_credentials(
     return username, (None if supplied else stored.get(password_key))
 
 
+def origins(ports: dict[str, int], *, caddy: bool) -> tuple[str, str]:
+    """
+    The two origins a browser actually uses, application first.
+
+    Behind Caddy they are the deployment's shape — two hostnames on one port,
+    which is also what the Caddyfile's site addresses and its `frame-ancestors`
+    read. Without it they are the two Vite servers on their own ports. Every
+    caller wants the same answer, so none of them may build it by hand.
+    """
+    if caddy:
+        return (
+            f"http://{CADDY_APP_HOST}:{ports['caddy']}",
+            f"http://{CADDY_SANDBOX_HOST}:{ports['caddy']}",
+        )
+    return f"http://localhost:{ports['app']}", f"http://localhost:{ports['sandbox']}"
+
+
 def child_environment(
     instance: Instance,
     ports: dict[str, int],
     level: str,
     resolved_secrets: dict[str, str],
     bootstrap_token_path: Path | None = None,
+    *,
+    caddy: bool = False,
 ) -> dict[str, str]:
-    app_origin = f"http://localhost:{ports['app']}"
-    sandbox_origin = f"http://localhost:{ports['sandbox']}"
+    app_origin, sandbox_origin = origins(ports, caddy=caddy)
 
     environment = dict(os.environ)
     environment.update(resolved_secrets)
@@ -845,6 +881,27 @@ def child_environment(
             "FORCE_COLOR": "0",
         }
     )
+
+    if caddy:
+        environment.update(
+            {
+                # Read by the Caddyfile as its two site addresses, and by its CSP
+                # as the sources it names. One variable serves both because a
+                # site address with a scheme is also a valid CSP host-source.
+                "SETUN_APP_HOSTNAME": app_origin,
+                "SETUN_SANDBOX_HOSTNAME": sandbox_origin,
+                # The application is a host process here, not a container on
+                # Caddy's network, so `reverse_proxy` needs a route back out.
+                "SETUN_APP_UPSTREAM": f"host.docker.internal:{ports['app']}",
+                "SETUN_CADDY_PORT": str(ports["caddy"]),
+                # Behind a proxy every request carries Caddy's socket address, so
+                # the per-IP axis of the rate limiters would be one global bucket.
+                # `reverse_proxy` appends exactly one hop, which is the depth.
+                # docker-compose.yml sets the same pair for the same reason.
+                "ADDRESS_HEADER": "x-forwarded-for",
+                "XFF_DEPTH": "1",
+            }
+        )
 
     if bootstrap_token_path is not None:
         # The application always prints the first-run token to its own log, and
@@ -997,6 +1054,11 @@ def sandbox_service(level: str, port: int) -> Service:
     """
     The sandbox is always served from its build, never from Vite's dev server.
 
+    This service exists only where Caddy does not. With `--production` the same
+    `build-sandbox/` directory is mounted into Caddy and served by the same
+    `file_server` a deployment uses, so running Vite's preview server beside it
+    would be a second answer to a question that already has one.
+
     Not a performance choice — the dev server cannot serve a working sandbox at
     all. The runner document is sandboxed without `allow-same-origin`, so its
     origin is opaque, and a document with an opaque origin may not fetch a
@@ -1093,6 +1155,15 @@ def cpa_service(project: str, port: int) -> Service:
     return Service(
         name="cpa",
         argv=compose_argv(project, "logs", "--follow", "--no-log-prefix", "cpa"),
+        port=port,
+        containerised=True,
+    )
+
+
+def caddy_service(project: str, port: int) -> Service:
+    return Service(
+        name="caddy",
+        argv=compose_argv(project, "logs", "--follow", "--no-log-prefix", "caddy"),
         port=port,
         containerised=True,
     )
@@ -1233,6 +1304,33 @@ def check_cpa_prerequisites() -> None:
         )
 
 
+def check_caddy_prerequisites() -> None:
+    """
+    Caddy needs the same Compose that CPA does, and says so in its own terms.
+
+    Separate from `check_cpa_prerequisites` because the way out is different:
+    CPA is opted *in* to and can simply be dropped, while Caddy comes with
+    `--production` and is opted *out* of.
+    """
+    command = compose_command()
+    if command is None or not daemon_reachable(command):
+        reason = (
+            "no Docker Compose command found"
+            if command is None
+            else f"`{' '.join(command)}` cannot reach a Docker engine"
+        )
+        fail(
+            f"--production runs the deployment's Caddy, and {reason}",
+            hint=(
+                "Caddy is what makes the local stack match a deployment: the same image,\n"
+                "the repository's own Caddyfile, two hostnames and a real proxy hop.\n"
+                "  brew install docker-compose\n"
+                f"{engine_hint()}\n"
+                "Or run `--production --no-caddy` for the build on two Vite servers."
+            ),
+        )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Health
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1277,6 +1375,10 @@ def probe(service: Service, *, deep: bool = False) -> str:
     Startup wants the first — Vite binds its port a moment before it will serve
     anything. The steady-state loop wants the second, because an HTTP GET every
     few seconds is a request the application would log forever.
+
+    Caddy is asked over TCP alone. It answers HTTP only on the two hostnames its
+    site addresses name, so a request to `localhost:<port>` gets a 404 from a
+    perfectly healthy proxy — a liveness question is the one it can answer.
     """
     if deep and service.name in ("app", "sandbox"):
         return "up" if http_answers(service.port) else "down"
@@ -1302,12 +1404,14 @@ class Supervisor:
         production: bool,
         environment: dict[str, str],
         lock: InstanceLock,
+        caddy: bool = False,
     ) -> None:
         self.instance: Instance = instance
         self.ports: dict[str, int] = ports
         self.level: str = level
         self.with_cpa: bool = with_cpa
         self.production: bool = production
+        self.caddy: bool = caddy
         self.environment: dict[str, str] = environment
         self.renderer: Renderer = Renderer(OUT, level)
         self.queue: Queue[Line] = Queue()
@@ -1390,7 +1494,9 @@ class Supervisor:
     def start_stack(self) -> None:
         self.instance.materialise()
 
-        names = ["suite", "app", "sandbox"] + (["cpa"] if self.with_cpa else [])
+        names = ["suite", "app"]
+        names += ["caddy"] if self.caddy else ["sandbox"]
+        names += ["cpa"] if self.with_cpa else []
         self.open_logs(names)
 
         self.emit(
@@ -1399,26 +1505,38 @@ class Supervisor:
         )
 
         if self.with_cpa:
-            self.emit("suite", "starting cpa container")
-            result = subprocess.run(
-                compose_argv(self.instance.compose_project, "up", "--detach", "cpa"),
-                cwd=REPO,
-                env={**self.environment, "SETUN_CPA_PORT": str(self.ports["cpa"])},
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode != 0:
-                detail = (result.stderr or result.stdout).strip()
-                self.emit("suite", f"error: docker compose up failed — {detail}")
-                raise RuntimeError("cpa failed to start")
+            self.compose_up("cpa")
             self.spawn(cpa_service(self.instance.compose_project, self.ports["cpa"]))
 
         self.build_artifacts()
 
         self.spawn(app_service(self.level, self.ports["app"], built=self.production))
-        self.spawn(sandbox_service(self.level, self.ports["sandbox"]))
+
+        if self.caddy:
+            # After the build, not before: Caddy's `file_server` is pointed at
+            # `build-sandbox/`, and starting it against a half-written directory
+            # would serve a runner from the previous build.
+            self.compose_up("caddy")
+            self.spawn(caddy_service(self.instance.compose_project, self.ports["caddy"]))
+        else:
+            self.spawn(sandbox_service(self.level, self.ports["sandbox"]))
 
         self.write_state()
+
+    def compose_up(self, name: str) -> None:
+        """Bring one containerised service up, or fail the whole start."""
+        self.emit("suite", f"starting {name} container")
+        result = subprocess.run(
+            compose_argv(self.instance.compose_project, "up", "--detach", name),
+            cwd=REPO,
+            env={**self.environment, "SETUN_CPA_PORT": str(self.ports["cpa"])},
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()
+            self.emit("suite", f"error: docker compose up {name} failed — {detail}")
+            raise RuntimeError(f"{name} failed to start")
 
     def build_artifacts(self) -> None:
         """
@@ -1460,6 +1578,7 @@ class Supervisor:
             "log_level": self.level,
             "with_cpa": self.with_cpa,
             "production": self.production,
+            "caddy": self.caddy,
             "compose_project": self.instance.compose_project,
             "services": {
                 service.name: {
@@ -1562,8 +1681,15 @@ class Supervisor:
         for service in self.services:
             self._terminate(service, force=force)
 
-        if self.with_cpa:
-            self.emit("suite", "stopping cpa container")
+        if self.with_cpa or self.caddy:
+            containers = ", ".join(
+                name for name, on in (("cpa", self.with_cpa), ("caddy", self.caddy)) if on
+            )
+            self.emit("suite", f"stopping {containers} container(s)")
+            # `down` takes the whole Compose project, which is this instance's
+            # own — the project name carries the instance name, so nothing
+            # another instance owns is inside it.
+            #
             # An ephemeral instance takes its volume with it; a persistent one
             # keeps CPA's enrolment between runs. `force` shortens the wait —
             # it does not change what survives, because a hard stop is still
@@ -1647,17 +1773,23 @@ def banner(
     with_cpa: bool,
     production: bool,
     ctrl_c: str,
+    caddy: bool = False,
 ) -> None:
     rule = OUT.dim("─" * 66)
     mode = OUT.bold(instance.mode)
+    app_origin, sandbox_origin = origins(ports, caddy=caddy)
     print(rule)
     print(f"  {OUT.bold('Setun dev suite')}  {OUT.dim('·')}  instance {OUT.bold(instance.name)} ({mode})  {OUT.dim('·')}  log level {OUT.bold(level)}")
     build = OUT.bold("production build") if production else OUT.dim("dev server")
-    print(f"  {OUT.paint('app'.ljust(NAME_COLUMN), SERVICE_COLOUR['app'])} http://localhost:{ports['app']} {OUT.dim('·')} {build}")
-    print(f"  {OUT.paint('sandbox'.ljust(NAME_COLUMN), SERVICE_COLOUR['sandbox'])} http://localhost:{ports['sandbox']} {OUT.dim('·')} {OUT.dim('built (always)')}")
+    print(f"  {OUT.paint('app'.ljust(NAME_COLUMN), SERVICE_COLOUR['app'])} {app_origin} {OUT.dim('·')} {build}")
+    served = OUT.dim("built · served by caddy") if caddy else OUT.dim("built (always)")
+    print(f"  {OUT.paint('sandbox'.ljust(NAME_COLUMN), SERVICE_COLOUR['sandbox'])} {sandbox_origin} {OUT.dim('·')} {served}")
+    if caddy:
+        upstream = OUT.dim("upstream host.docker.internal:" + str(ports["app"]))
+        print(f"  {OUT.paint('caddy'.ljust(NAME_COLUMN), SERVICE_COLOUR['caddy'])} :{ports['caddy']} {OUT.dim('(container)')} {OUT.dim('·')} {upstream}")
     if with_cpa:
         print(f"  {OUT.paint('cpa'.ljust(NAME_COLUMN), SERVICE_COLOUR['cpa'])} http://127.0.0.1:{ports['cpa']} {OUT.dim('(container)')}")
-    for label, value in sign_in_rows(instance, ports):
+    for label, value in sign_in_rows(instance, ports, caddy=caddy):
         print(f"  {OUT.dim(label.ljust(NAME_COLUMN))} {value}")
     print(f"  {OUT.dim('data'.ljust(NAME_COLUMN))} {OUT.dim(relative(instance.data))}")
     print(f"  {OUT.dim('logs'.ljust(NAME_COLUMN))} {OUT.dim(relative(instance.logs))}")
@@ -1666,7 +1798,9 @@ def banner(
     _ = sys.stdout.flush()
 
 
-def sign_in_rows(instance: Instance, ports: dict[str, int]) -> list[tuple[str, str]]:
+def sign_in_rows(
+    instance: Instance, ports: dict[str, int], *, caddy: bool = False
+) -> list[tuple[str, str]]:
     """
     Where an operator signs in, and as whom.
 
@@ -1676,11 +1810,11 @@ def sign_in_rows(instance: Instance, ports: dict[str, int]) -> list[tuple[str, s
     instance and all need the same answer, and the alternative is reading a
     gitignored JSON file by hand.
 
-    `http://localhost:5173` is the *student* login and asks for an access code,
-    so it is never the answer to this question — the row names /educator/login,
-    or /setup where the wizard still owns the installation.
+    The application origin's root is the *student* login and asks for an access
+    code, so it is never the answer to this question — the row names
+    /educator/login, or /setup where the wizard still owns the installation.
     """
-    origin = f"http://localhost:{ports['app']}"
+    origin, _ = origins(ports, caddy=caddy)
     config = instance.read_config()
 
     if config.get("first_run"):
@@ -1742,7 +1876,9 @@ def read_bootstrap_token(instance: Instance, wait: float) -> BootstrapToken | No
         time.sleep(0.2)
 
 
-def announce_first_run(instance: Instance, ports: dict[str, int], wait: float) -> None:
+def announce_first_run(
+    instance: Instance, ports: dict[str, int], wait: float, *, caddy: bool = False
+) -> None:
     """
     Put the bootstrap token where the operator is actually looking.
 
@@ -1753,7 +1889,7 @@ def announce_first_run(instance: Instance, ports: dict[str, int], wait: float) -
     secret, because the log it comes from is the same log the suite is already
     rendering.
     """
-    origin = f"http://localhost:{ports['app']}"
+    origin, _ = origins(ports, caddy=caddy)
     minutes = BOOTSTRAP_TOKEN_TTL_SECONDS // 60
     token = read_bootstrap_token(instance, wait)
     if token is None:
@@ -1799,7 +1935,7 @@ def reap_stale(instance: Instance, *, announce: bool = True) -> None:
         except ProcessLookupError:
             pass
 
-    if state.get("with_cpa") and compose_command():
+    if (state.get("with_cpa") or state.get("caddy")) and compose_command():
         arguments = ["down"] + (["--volumes"] if state.get("mode") == "ephemeral" else [])
         _ = subprocess.run(
             compose_argv(state.get("compose_project", instance.compose_project), *arguments),
@@ -1834,8 +1970,10 @@ class Options(Protocol):
     port: int | None
     sandbox_port: int | None
     cpa_port: int | None
+    caddy_port: int | None
     with_cpa: bool
     production: bool
+    no_caddy: bool
     first_run: bool
     detach: bool
     force: bool
@@ -1933,7 +2071,20 @@ def resolve_ports(options: Options, config: InstanceConfig) -> dict[str, int]:
         "app": options.port or stored.get("app") or DEFAULT_PORTS["app"],
         "sandbox": options.sandbox_port or stored.get("sandbox") or DEFAULT_PORTS["sandbox"],
         "cpa": options.cpa_port or stored.get("cpa") or DEFAULT_PORTS["cpa"],
+        "caddy": options.caddy_port or stored.get("caddy") or DEFAULT_PORTS["caddy"],
     }
+
+
+def caddy_wanted(options: Options) -> bool:
+    """
+    Caddy is what `--production` means at the proxy tier, and `--no-caddy` opts out.
+
+    Not offered without `--production`: Caddy would then be proxying Vite's dev
+    server, whose host allowlist and HMR socket both assume they are addressed
+    directly. That is a fight with no prize — the reason to put Caddy in front is
+    to reproduce a build, and the dev server is not one.
+    """
+    return options.production and not options.no_caddy
 
 
 def log_names(instance: Instance) -> set[str]:
@@ -1992,8 +2143,11 @@ def attach_to_running(options: Options, instance: Instance) -> int:
     # rather than from this command's flags, which it is not in a position to
     # apply.
     config = instance.read_config()
-    ports = config.get("ports") or dict(DEFAULT_PORTS)
+    # Merged rather than taken whole: an instance.json written before a port was
+    # introduced has no entry for it, and every caller reads the map by key.
+    ports = {**DEFAULT_PORTS, **(config.get("ports") or {})}
     state = instance.read_state() or {}
+    running_caddy = bool(state.get("caddy", False))
     banner(
         instance,
         ports,
@@ -2001,11 +2155,12 @@ def attach_to_running(options: Options, instance: Instance) -> int:
         "cpa" in (state.get("services") or {}),
         bool(state.get("production", False)),
         "detaches; the stack keeps running",
+        caddy=running_caddy,
     )
     if config.get("first_run"):
         # Already running, so the token file is either there or was never
         # written; nothing to wait for.
-        announce_first_run(instance, ports, wait=0.0)
+        announce_first_run(instance, ports, wait=0.0, caddy=running_caddy)
 
     return command_logs(options, instance=instance)
 
@@ -2021,8 +2176,11 @@ def command_start(options: Options) -> int:
     reap_stale(instance)
 
     _ = require_binary("bun", hint="The stack runs on Bun 1.4 or newer — https://bun.com")
+    caddy = caddy_wanted(options)
     if options.with_cpa:
         check_cpa_prerequisites()
+    if caddy:
+        check_caddy_prerequisites()
 
     # Before anything is created on disk: a start that cannot bind must leave
     # no instance directory behind for the next command to trip over.
@@ -2033,7 +2191,10 @@ def command_start(options: Options) -> int:
     ports = resolve_ports(options, config)
     level = chosen_level(options)
 
-    services = ["app", "sandbox"] + (["cpa"] if options.with_cpa else [])
+    # Caddy serves the sandbox itself, so with it in front there is no second
+    # Vite server and nothing wants the sandbox port.
+    services = ["app"] + (["caddy"] if caddy else ["sandbox"])
+    services += ["cpa"] if options.with_cpa else []
     check_ports(ports, services)
 
     # Nothing is written until the lock is held. Two concurrent starts on one
@@ -2097,7 +2258,7 @@ def command_start(options: Options) -> int:
     if options.with_cpa:
         warn_on_gateway_key_mismatch(resolved["SETUN_CPA_LISTENER_KEY"])
 
-    environment = child_environment(instance, ports, level, resolved, token_path)
+    environment = child_environment(instance, ports, level, resolved, token_path, caddy=caddy)
 
     if options.detach:
         return _start_detached(
@@ -2109,10 +2270,11 @@ def command_start(options: Options) -> int:
             environment,
             lock,
             first_run,
+            caddy,
         )
 
     supervisor = Supervisor(
-        instance, ports, level, options.with_cpa, options.production, environment, lock
+        instance, ports, level, options.with_cpa, options.production, environment, lock, caddy
     )
 
     banner(
@@ -2122,6 +2284,7 @@ def command_start(options: Options) -> int:
         options.with_cpa,
         options.production,
         "stops the stack" + (" and destroys it" if instance.mode == "ephemeral" else ""),
+        caddy=caddy,
     )
 
     try:
@@ -2142,7 +2305,7 @@ def command_start(options: Options) -> int:
     if first_run:
         # After health rather than on the banner: the application mints on its
         # first request, and the health probe is that request.
-        announce_first_run(instance, ports, BOOTSTRAP_TOKEN_WAIT_SECONDS)
+        announce_first_run(instance, ports, BOOTSTRAP_TOKEN_WAIT_SECONDS, caddy=caddy)
 
     return supervisor.run()
 
@@ -2165,6 +2328,7 @@ def _start_detached(
     environment: dict[str, str],
     lock: InstanceLock,
     first_run: bool = False,
+    caddy: bool = False,
 ) -> int:
     """
     Fork a supervisor into its own session and return once it reports healthy.
@@ -2195,14 +2359,20 @@ def _start_detached(
                 ),
             )
         banner(
-            instance, ports, level, with_cpa, production, "n/a — detached; `devsuite stop` ends it"
+            instance,
+            ports,
+            level,
+            with_cpa,
+            production,
+            "n/a — detached; `devsuite stop` ends it",
+            caddy=caddy,
         )
         if first_run:
             # The child reported healthy, so its first request has been served
             # and the token is already on disk. This is the only place a
             # detached start can show it at all: the log it was printed to is a
             # file nobody is watching.
-            announce_first_run(instance, ports, BOOTSTRAP_TOKEN_WAIT_SECONDS)
+            announce_first_run(instance, ports, BOOTSTRAP_TOKEN_WAIT_SECONDS, caddy=caddy)
         note(f"supervisor detached (pid {pid}) — attach with `./scripts/devsuite logs`")
         return 0
 
@@ -2220,7 +2390,7 @@ def _start_detached(
     status = 1
     try:
         supervisor = Supervisor(
-            instance, ports, level, with_cpa, production, environment, lock
+            instance, ports, level, with_cpa, production, environment, lock, caddy
         )
         try:
             supervisor.start_stack()
@@ -2347,7 +2517,7 @@ def command_kill(options: Options) -> int:
         except ProcessLookupError:
             pass
 
-    if state.get("with_cpa") and compose_command():
+    if (state.get("with_cpa") or state.get("caddy")) and compose_command():
         project = state.get("compose_project", instance.compose_project)
         _ = subprocess.run(
             compose_argv(project, "kill"), cwd=REPO, capture_output=True, text=True
@@ -2401,7 +2571,7 @@ def command_status(options: Options) -> int:
 
     running = instance_is_running(instance)
     config = instance.read_config()
-    ports = config.get("ports", DEFAULT_PORTS)
+    ports = {**DEFAULT_PORTS, **(config.get("ports") or {})}
 
     if not running:
         stale = instance.read_state() is not None
@@ -2423,7 +2593,7 @@ def command_status(options: Options) -> int:
     print(headline)
 
     entries: dict[str, ServiceState] = state.get("services") or {}
-    for name in ("app", "sandbox", "cpa"):
+    for name in ("app", "sandbox", "caddy", "cpa"):
         if name not in entries:
             continue
         entry = entries[name]
@@ -2725,14 +2895,18 @@ DESCRIPTION = """\
 Setun development suite — start, stop and watch the whole local stack.
 
   app       SvelteKit application       :5173   bun run dev
-  sandbox   artifact origin             :5174   bun run dev:sandbox
+  sandbox   artifact origin             :5174   built, served by vite preview
   cpa       CLIProxyAPI gateway         :8317   container, opt-in (--with-cpa)
                                                 Docker Desktop or Colima; either the
                                                 `docker compose` plugin or standalone
                                                 `docker-compose` will do
+  caddy     proxy tier                  :8080   container, part of --production
   database  SQLite file, per instance   —       no process to run
 
-Caddy is deployment-only: locally Vite serves both origins directly.
+--production replaces the two Vite ports with the deployment's own topology: the
+adapter-node build behind the repository's Caddyfile, on http://setun.localhost:8080
+and http://sandbox.setun.localhost:8080, with build-sandbox/ served by Caddy's own
+file_server. TLS is the only piece left out. --no-caddy opts back out.
 """
 
 EPILOG = """\
@@ -2742,7 +2916,7 @@ modes
                       Ctrl-C and on crash
 
 signing in            every start, resume and attach prints where to sign in for
-                      the instance's own port. http://localhost:5173 is the
+                      the instance's own origin. That origin's root is the
                       *student* login and asks for an access code; the educator
                       entry point is /educator/login, panel at /educator.
                       A generated educator signs in as educator / educator, read
@@ -2785,6 +2959,7 @@ examples
   ./scripts/devsuite start                       # persistent 'dev', attached
   ./scripts/devsuite start --ephemeral -vv       # throwaway, trace logging
   ./scripts/devsuite start --with-cpa --detach   # full stack in the background
+  ./scripts/devsuite start --production          # the deployment topology, Caddy included
   ./scripts/devsuite start --first-run \
       --persistent setup --port 6173 --sandbox-port 6174   # exercise the wizard
   ./scripts/devsuite logs app                    # follow one service
@@ -2830,6 +3005,9 @@ def add_lifecycle_flags(parser: argparse.ArgumentParser) -> None:
     _ = parser.add_argument("--sandbox-port", type=int, help="artifact origin port (default 5174)")
     _ = parser.add_argument("--cpa-port", type=int, help="gateway port (default 8317)")
     _ = parser.add_argument(
+        "--caddy-port", type=int, help="proxy port, both origins (default 8080)"
+    )
+    _ = parser.add_argument(
         "--with-cpa",
         action="store_true",
         help=(
@@ -2841,11 +3019,23 @@ def add_lifecycle_flags(parser: argparse.ArgumentParser) -> None:
         "--production",
         action="store_true",
         help=(
-            "run the application the way a deployment does: `bun run build` and the "
-            "adapter-node server, instead of the Vite dev server. Slower to start and "
-            "no hot reload, and the only way to reproduce behaviour that differs "
-            "between a dev server and a build. The artifact sandbox is always built, "
-            "with or without this flag"
+            "run the whole stack the way a deployment does: `bun run build` and the "
+            "adapter-node server instead of the Vite dev server, behind the "
+            "deployment's own Caddy on http://setun.localhost:8080 and "
+            "http://sandbox.setun.localhost:8080. Slower to start and no hot reload, "
+            "and the only way to reproduce behaviour that differs between a dev "
+            "server and a build. The artifact sandbox is always built, with or "
+            "without this flag"
+        ),
+    )
+    _ = parser.add_argument(
+        "--no-caddy",
+        action="store_true",
+        help=(
+            "with --production, leave Caddy out and serve the two origins from the "
+            "app and a Vite preview on their own ports, as without --production. For "
+            "a machine with no Docker engine; the proxy hop, the static server and "
+            "the response headers are then not a deployment's"
         ),
     )
     _ = parser.add_argument(
@@ -2875,10 +3065,13 @@ def build_parser() -> argparse.ArgumentParser:
         force=False,
         detach=False,
         with_cpa=False,
+        production=False,
+        no_caddy=False,
         first_run=False,
         port=None,
         sandbox_port=None,
         cpa_port=None,
+        caddy_port=None,
         persistent=None,
         ephemeral=False,
         verbose=0,

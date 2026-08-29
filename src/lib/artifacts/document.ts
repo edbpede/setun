@@ -49,30 +49,62 @@ window.__setunReady=function(){post("mounted","")};
 })();</script>`;
 }
 
-/** The self-hosted utility CSS runtime; no public CDN is contacted (§13). */
-function unocss(origin: string): string {
-  return `<script type="module" src="${origin}/runtimes/unocss.js"></script>`;
+/**
+ * The module graph this document carries, as source rather than as addresses.
+ *
+ * Source, because this document cannot fetch anything. It has an opaque origin
+ * of its own — distinct from the runner's, since the stage frame is sandboxed on
+ * its own account — so it can read neither the sandbox origin's files nor a blob
+ * URL the runner made. What it *can* do is make blob URLs of its own, which is
+ * what these become. See `assets.ts` for how they get here.
+ *
+ * `modules` is keyed by whatever the build calls a file — a `setun:` chunk
+ * specifier, or an entry name — and `imports` maps every specifier an importer
+ * may write to one of those keys. Two specifiers pointing at one key share a
+ * blob URL, and therefore share a module instance: `react/jsx-runtime` and
+ * `react/jsx-dev-runtime` must not become two Reacts.
+ */
+export interface RuntimeSources {
+  /** Module key → its source. */
+  readonly modules: Readonly<Record<string, string>>;
+  /** Specifier an importer may write → the module key that satisfies it. */
+  readonly imports: Readonly<Record<string, string>>;
+  /** Specifiers to import for their effect alone, before the artifact runs. */
+  readonly sideEffects?: readonly string[];
 }
 
 /**
- * Bare specifiers the compiled module may name, mapped to the pinned runtimes
- * this origin serves (§13). React and Svelte only — no other framework is hosted.
+ * The import map, over blob URLs this document makes for itself (§13).
+ *
+ * A blob URL is only knowable at run time, so the map cannot be static markup:
+ * an inline script builds the URLs, appends the map, and only then appends the
+ * module that names those specifiers. Order is the whole of it — an import map
+ * added after a module script has begun loading is ignored — which is why the
+ * harness is appended from inside this same script rather than written into the
+ * body and left to the parser.
+ *
+ * Every runtime is registered under the specifiers that resolve to it, so the
+ * bare names a model writes (`react`, `svelte/internal/client`) are unchanged.
  */
-export function importMap(origin: string): string {
-  const imports = {
-    react: `${origin}/runtimes/react.js`,
-    "react/jsx-runtime": `${origin}/runtimes/react-jsx-runtime.js`,
-    "react/jsx-dev-runtime": `${origin}/runtimes/react-jsx-runtime.js`,
-    "react-dom": `${origin}/runtimes/react-dom.js`,
-    "react-dom/client": `${origin}/runtimes/react-dom-client.js`,
-    svelte: `${origin}/runtimes/svelte.js`,
-    "svelte/internal/client": `${origin}/runtimes/svelte-internal-client.js`,
-    "svelte/internal/disclose-version": `${origin}/runtimes/svelte-disclose-version.js`,
-    "svelte/internal/flags/legacy": `${origin}/runtimes/svelte-flags-legacy.js`,
-    "svelte/internal/flags/async": `${origin}/runtimes/svelte-flags-async.js`,
-  };
+function modules(runtimes: RuntimeSources, harness: string): string {
+  const sideEffects = (runtimes.sideEffects ?? []).filter(
+    (specifier) => runtimes.imports[specifier],
+  );
 
-  return `<script type="importmap">${escapeScript(JSON.stringify({ imports }))}</script>`;
+  return `<script>(function(){
+var sources=${escapeScript(JSON.stringify(runtimes.modules))};
+var specifiers=${escapeScript(JSON.stringify(runtimes.imports))};
+var effects=${escapeScript(JSON.stringify(sideEffects))};
+var urls={};
+for (var key in sources) urls[key]=URL.createObjectURL(new Blob([sources[key]],{type:"text/javascript"}));
+var imports={};
+for (var specifier in specifiers) imports[specifier]=urls[specifiers[specifier]];
+var map=document.createElement("script");map.type="importmap";map.textContent=JSON.stringify({imports:imports});document.head.appendChild(map);
+var run=function(source){var tag=document.createElement("script");tag.type="module";tag.textContent=source;document.head.appendChild(tag)};
+for (var i=0;i<effects.length;i++) run("import "+JSON.stringify(effects[i])+";");
+var harness=${escapeScript(JSON.stringify(harness))};
+if (harness) run(harness);
+})();</script>`;
 }
 
 /**
@@ -90,10 +122,13 @@ function escapeScript(value: string): string {
 export function staticDocument(input: {
   language: Extract<ArtifactLanguage, "html" | "svg">;
   source: string;
-  origin: string;
+  runtimes: RuntimeSources;
   runId: string;
 }): string {
-  const head = `${preamble(input.runId)}\n${unocss(input.origin)}`;
+  // A static artifact runs no module of its own, so the only thing the graph is
+  // here for is UnoCSS — but it goes through the same script all the same, since
+  // that runtime is itself a code-split entry with chunks to resolve.
+  const head = `${preamble(input.runId)}\n${modules(input.runtimes, "")}`;
   const ack = "<script>window.__setunReady&&window.__setunReady();</script>";
 
   if (input.language === "svg") {
@@ -240,7 +275,7 @@ export function compiledDocument(input: {
   framework: "react" | "svelte";
   /** ES module source, already through `esbuild-wasm` or the Svelte compiler. */
   module: string;
-  origin: string;
+  runtimes: RuntimeSources;
   runId: string;
 }): string {
   const mount =
@@ -251,8 +286,8 @@ createRoot(root).render(createElement(pick(module)));`
       : `const { mount } = await import("svelte");
 mount(pick(module), { target: root });`;
 
-  const harness = `<script type="module">
-const source = ${escapeScript(JSON.stringify(input.module))};
+  const harness = `
+const source = ${JSON.stringify(input.module)};
 const root = document.getElementById("setun-root");
 const pick = (m) => {
   const component = m.default ?? m.App ?? Object.values(m).find((v) => typeof v === "function");
@@ -264,17 +299,19 @@ try {
   ${mount}
   window.__setunReady && window.__setunReady();
 } catch (error) {
-  parent.postMessage({ channel: "setun-artifact", type: "runtime-error", runId: ${escapeScript(JSON.stringify(input.runId))}, message: String((error && error.message) || error) }, "*");
+  parent.postMessage({ channel: "setun-artifact", type: "runtime-error", runId: ${JSON.stringify(input.runId)}, message: String((error && error.message) || error) }, "*");
 }
-</script>`;
+`;
 
+  // Everything after the preamble is appended by one script, in one order: the
+  // import map first, then the modules that resolve against it. A module script
+  // in the markup — UnoCSS's, as it used to be — would begin loading before the
+  // map existed, and a map added after that point is ignored.
   return `<!doctype html><html><head><meta charset="utf-8">
 ${preamble(input.runId)}
-${importMap(input.origin)}
-${unocss(input.origin)}
 <style>html,body{margin:0}</style>
 </head><body><div id="setun-root"></div>
-${harness}
+${modules(input.runtimes, harness)}
 </body></html>`;
 }
 
