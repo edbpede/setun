@@ -1,5 +1,5 @@
 import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
-import type { AttachmentMediaType } from "./attachment";
+import type { AttachmentMediaType } from "../../../attachments";
 import { createdAt, primaryId, updatedAt } from "./helpers";
 
 /**

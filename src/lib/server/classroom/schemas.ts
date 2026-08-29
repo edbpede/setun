@@ -1,9 +1,8 @@
 import * as v from "valibot";
+import { ATTACHMENT_MEDIA_TYPES } from "$lib/attachments";
 import * as m from "$lib/paraglide/messages";
-
 import { BUDGET_PRESET_NAMES } from "../agent/budgets";
 import {
-  ATTACHMENT_MEDIA_TYPES,
   CLASSROOM_STATES,
   GATEWAY_DIALECTS,
   INTERFACE_LANGUAGES,

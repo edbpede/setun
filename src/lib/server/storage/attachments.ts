@@ -1,5 +1,4 @@
 import type { AttachmentKind } from "../db/schema";
-import { ATTACHMENT_MEDIA_TYPES } from "../db/schema";
 
 /**
  * Attachment validation (PRD §10, §21).

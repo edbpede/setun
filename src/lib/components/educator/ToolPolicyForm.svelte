@@ -1,10 +1,10 @@
 <script lang="ts">
 import { type SuperValidated, superForm } from "sveltekit-superforms";
 import type * as v from "valibot";
+import { ATTACHMENT_MEDIA_TYPES, type AttachmentMediaType } from "$lib/attachments";
 import FieldError from "$lib/components/ui/FieldError.svelte";
 import * as m from "$lib/paraglide/messages";
 import type { ToolPolicySchema } from "$lib/server/classroom/schemas";
-import { ATTACHMENT_MEDIA_TYPES, type AttachmentMediaType } from "$lib/server/db/schema";
 
 /**
  * What a class may do with tools, skills and files (PRD §11, §12, §15).

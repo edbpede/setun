@@ -57,26 +57,3 @@ export const attachment = sqliteTable(
 );
 
 export type Attachment = typeof attachment.$inferSelect;
-
-/**
- * Every media type the attachment sniffer can produce — the whole set an
- * educator's allowlist can usefully contain (§10).
- *
- * Here rather than beside the sniffer because the classroom column that holds
- * the allowlist is typed by it, and a schema cannot import from the storage
- * layer that imports from the schema.
- *
- * The educator's control is bounded by this rather than by free text: a type
- * `sniffMediaType` cannot return is an allowlist entry that never matches, which
- * is a control that decides nothing. Adding a format means adding a signature in
- * `storage/attachments.ts`, and this list follows from it.
- */
-export const ATTACHMENT_MEDIA_TYPES = [
-  "image/png",
-  "image/jpeg",
-  "image/webp",
-  "image/gif",
-  "text/plain",
-] as const;
-
-export type AttachmentMediaType = (typeof ATTACHMENT_MEDIA_TYPES)[number];
