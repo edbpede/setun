@@ -1,10 +1,14 @@
 import type { AppDatabase } from "../db/client";
+import { countArtifacts } from "../db/queries/artifacts";
+import { deleteClassroom } from "../db/queries/classrooms";
+import { countConversations } from "../db/queries/conversations";
 import { studentFiles } from "../db/queries/retention";
 import { removeStudentFromIndex } from "../db/queries/search";
 import { invalidateOwnerSessions } from "../db/queries/sessions";
 import {
   clearStudentDisplayName,
   deleteStudent,
+  listClassroomStudents,
   setStudentAttachments,
   setStudentStatus,
 } from "../db/queries/students";
@@ -84,6 +88,64 @@ export async function purgeStudent(
   if (!deleteStudent(db, input)) return false;
 
   removeStudentFromIndex(db, input.studentId);
+  for (const file of doomed) await files.remove(file.storagePath);
+
+  return true;
+}
+
+/** What a classroom deletion would take with it, for the confirmation (§16). */
+export interface ClassroomDeletionScope {
+  readonly students: number;
+  readonly conversations: number;
+  readonly creations: number;
+}
+
+/**
+ * Count what is about to go, so the educator is told before they confirm (§16).
+ *
+ * Counts only. Nothing a pupil wrote reaches the panel — §16 gives the educator
+ * no interface for that, and "three conversations" is what makes the decision,
+ * not what is in them.
+ */
+export function classroomDeletionScope(
+  db: AppDatabase,
+  classroomId: string,
+): ClassroomDeletionScope {
+  const students = listClassroomStudents(db, classroomId, { includeRemoved: true });
+  const studentIds = students.map((student) => student.id);
+
+  return {
+    students: students.length,
+    conversations: studentIds.length === 0 ? 0 : countConversations(db, studentIds),
+    creations: studentIds.length === 0 ? 0 : countArtifacts(db, studentIds),
+  };
+}
+
+/**
+ * Permanent deletion of a whole classroom (§16).
+ *
+ * The container of everything `purgeStudent` deletes, and it cleans up the same
+ * two things the cascade cannot reach — the search index and the stored bytes —
+ * for every pupil in the room, `includeRemoved` so a pupil taken off the roster
+ * is not left behind as orphaned rows and files.
+ *
+ * Both are read before the delete, because the rows naming them are about to
+ * cascade away, and both are applied after it, so a refused delete leaves
+ * nothing half-removed.
+ *
+ * Returns false when no such classroom exists.
+ */
+export async function purgeClassroom(
+  db: AppDatabase,
+  files: FileStore,
+  classroomId: string,
+): Promise<boolean> {
+  const students = listClassroomStudents(db, classroomId, { includeRemoved: true });
+  const doomed = students.flatMap((student) => studentFiles(db, student.id));
+
+  if (!deleteClassroom(db, classroomId)) return false;
+
+  for (const student of students) removeStudentFromIndex(db, student.id);
   for (const file of doomed) await files.remove(file.storagePath);
 
   return true;

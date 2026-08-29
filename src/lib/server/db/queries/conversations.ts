@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, count, desc, eq, inArray } from "drizzle-orm";
 import type { AppDatabase } from "../client";
 import { type Conversation, conversation } from "../schema";
 import { indexConversationTitle, removeConversationFromIndex } from "./search";
@@ -103,4 +103,22 @@ export function deleteConversation(
   if (deleted.length > 0) removeConversationFromIndex(db, input.conversationId);
 
   return deleted.length > 0;
+}
+
+/**
+ * How many conversations a set of pupils holds between them.
+ *
+ * A count, not a listing: the panel is told what a deletion would take with it,
+ * and §16 gives the educator no interface for what is in them.
+ */
+export function countConversations(db: AppDatabase, studentIds: readonly string[]): number {
+  if (studentIds.length === 0) return 0;
+
+  return (
+    db
+      .select({ total: count() })
+      .from(conversation)
+      .where(inArray(conversation.studentId, [...studentIds]))
+      .get()?.total ?? 0
+  );
 }

@@ -1,6 +1,7 @@
 <script lang="ts">
 import AllowlistEditor from "$lib/components/educator/AllowlistEditor.svelte";
 import BudgetForm from "$lib/components/educator/BudgetForm.svelte";
+import DangerZone from "$lib/components/educator/DangerZone.svelte";
 import PolicyForm from "$lib/components/educator/PolicyForm.svelte";
 import ScheduleEditor from "$lib/components/educator/ScheduleEditor.svelte";
 import SkillGrants from "$lib/components/educator/SkillGrants.svelte";
@@ -21,6 +22,8 @@ let { data, form }: PageProps = $props();
 const forceLoggedOut = $derived(
   form && "forceLoggedOut" in form ? (form.forceLoggedOut as number) : null,
 );
+
+const deleteMismatch = $derived(form !== null && form !== undefined && "confirmMismatch" in form);
 </script>
 
 <div class="flex max-w-4xl flex-col gap-8">
@@ -41,4 +44,10 @@ const forceLoggedOut = $derived(
   <SkillGrants skills={data.skills} students={data.students} />
 
   <StudentSkillOversight skills={data.studentSkills} />
+
+  <DangerZone
+    classroomName={data.classroom.name}
+    scope={data.deletionScope}
+    mismatch={deleteMismatch}
+  />
 </div>

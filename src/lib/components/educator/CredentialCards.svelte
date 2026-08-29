@@ -1,6 +1,7 @@
 <script lang="ts">
 import type { CredentialCard } from "$lib/credentials";
 import * as m from "$lib/paraglide/messages";
+import type { Locale } from "$lib/paraglide/runtime";
 
 /**
  * Printable credential cards (PRD §7, §17).
@@ -17,9 +18,21 @@ import * as m from "$lib/paraglide/messages";
 interface Props {
   cards: CredentialCard[];
   classroomName: string;
+  /**
+   * The classroom's interface language (§17).
+   *
+   * The card is cut out and handed to a pupil, so what is printed on it is
+   * addressed to them and belongs in the language of the room — not in whichever
+   * language the educator happens to be running the panel in. The chrome around
+   * it is the educator's and stays in theirs.
+   */
+  locale: Locale;
 }
 
-let { cards, classroomName }: Props = $props();
+let { cards, classroomName, locale }: Props = $props();
+
+// Paraglide takes an explicit locale per call; the ambient one is the reader's.
+const cardLocale = $derived({ locale });
 </script>
 
 {#if cards.length > 0}
@@ -45,7 +58,9 @@ let { cards, classroomName }: Props = $props();
           </span>
           <span class="text-sm font-semibold text-foreground">{card.label}</span>
           <code class="select-all break-all font-mono text-sm text-foreground">{card.code}</code>
-          <span class="text-[0.6875rem] text-muted-foreground">{m.educator_card_help()}</span>
+          <span class="text-[0.6875rem] text-muted-foreground">
+            {m.educator_card_help({}, cardLocale)}
+          </span>
         </li>
       {/each}
     </ul>

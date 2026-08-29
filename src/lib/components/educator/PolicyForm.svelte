@@ -2,6 +2,7 @@
 import { type SuperValidated, superForm } from "sveltekit-superforms";
 import type * as v from "valibot";
 import { enhance as formEnhance } from "$app/forms";
+import FieldError from "$lib/components/ui/FieldError.svelte";
 import * as m from "$lib/paraglide/messages";
 import type { ClassroomPolicySchema } from "$lib/server/classroom/schemas";
 
@@ -62,9 +63,7 @@ const field = "rounded-md border border-input bg-background px-3 py-2 text-sm te
       <span class="text-xs text-muted-foreground">
         {m.educator_classroom_instructions_help()}
       </span>
-      {#if $errors.classroomInstructions}
-        <span class="text-xs text-destructive">{$errors.classroomInstructions}</span>
-      {/if}
+      <FieldError message={$errors.classroomInstructions} />
     </label>
 
     <div class="grid gap-3 sm:grid-cols-2">
@@ -92,9 +91,7 @@ const field = "rounded-md border border-input bg-background px-3 py-2 text-sm te
           bind:value={$form.sessionSlidingDays}
           class="h-9 {field}"
         />
-        {#if $errors.sessionSlidingDays}
-          <span class="text-xs text-destructive">{$errors.sessionSlidingDays}</span>
-        {/if}
+        <FieldError message={$errors.sessionSlidingDays} />
       </label>
 
       <label class="flex flex-col gap-1">
@@ -105,9 +102,27 @@ const field = "rounded-md border border-input bg-background px-3 py-2 text-sm te
           bind:value={$form.conversationRetentionDays}
           class="h-9 {field}"
         />
-        {#if $errors.conversationRetentionDays}
-          <span class="text-xs text-destructive">{$errors.conversationRetentionDays}</span>
-        {/if}
+        <FieldError message={$errors.conversationRetentionDays} />
+      </label>
+
+      <!--
+        Creations are a portfolio and outlive the conversations that produced
+        them (§16), so this one may be absent altogether: an empty field keeps
+        them until the pupil deletes them, which is the default. Without a
+        control the column existed and no educator could reach it.
+      -->
+      <label class="flex flex-col gap-1">
+        <span class="text-xs text-muted-foreground">
+          {m.educator_creation_retention_label()}
+        </span>
+        <input
+          name="creationRetentionDays"
+          type="number"
+          bind:value={$form.creationRetentionDays}
+          class="h-9 {field}"
+        />
+        <span class="text-xs text-muted-foreground">{m.educator_creation_retention_hint()}</span>
+        <FieldError message={$errors.creationRetentionDays} />
       </label>
     </div>
 

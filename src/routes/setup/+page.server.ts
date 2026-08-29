@@ -252,6 +252,8 @@ export const load: PageServerLoad = async ({ cookies, url }) => {
     /** Enough of the alias for the classroom step to ask the §16 question. */
     alias: alias ? { name: alias.name, dataProtection: alias.dataProtection } : null,
     classroomName: classroom?.name ?? null,
+    /** The card handed to a pupil is addressed to them, in the room's language (§17). */
+    classroomLanguage: classroom?.interfaceLanguage ?? ("da" as const),
     educatorForm: await superValidate(
       { username: "", password: "", confirmPassword: "" },
       educatorAdapter,

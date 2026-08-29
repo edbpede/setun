@@ -3,6 +3,7 @@ import { enhance } from "$app/forms";
 import CredentialCards from "$lib/components/educator/CredentialCards.svelte";
 import type { CredentialCard } from "$lib/credentials";
 import * as m from "$lib/paraglide/messages";
+import type { Locale } from "$lib/paraglide/runtime";
 
 /**
  * Step 5 — a first batch of pupils (PRD §7, §17).
@@ -22,10 +23,12 @@ import * as m from "$lib/paraglide/messages";
 interface Props {
   cards: CredentialCard[];
   classroomName: string;
+  /** The classroom's interface language — what the printed card is written in (§17). */
+  classroomLanguage: Locale;
   alreadyProvisioned: boolean;
 }
 
-let { cards, classroomName, alreadyProvisioned }: Props = $props();
+let { cards, classroomName, classroomLanguage, alreadyProvisioned }: Props = $props();
 
 const field = "h-10 rounded-md border border-input bg-background px-3 text-sm text-foreground";
 </script>
@@ -52,7 +55,7 @@ const field = "h-10 rounded-md border border-input bg-background px-3 text-sm te
     </button>
   </form>
 
-  <CredentialCards {cards} {classroomName} />
+  <CredentialCards {cards} {classroomName} locale={classroomLanguage} />
 
   <div class="flex flex-wrap gap-2">
     <a

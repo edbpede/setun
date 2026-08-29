@@ -1,10 +1,10 @@
-import { error, fail as kitFail } from "@sveltejs/kit";
+import { error, fail as kitFail, redirect } from "@sveltejs/kit";
 import { fail, superValidate } from "sveltekit-superforms";
 import { valibot } from "sveltekit-superforms/adapters";
 import * as v from "valibot";
 import { BUDGET_PRESETS, budgetsOf, matchPreset } from "$lib/server/agent/budgets";
 import { requireEducatorPage } from "$lib/server/auth/guards";
-import { getDb } from "$lib/server/boot";
+import { getDb, getFileStore } from "$lib/server/boot";
 import { resolveRoster } from "$lib/server/classroom/roster";
 import {
   AliasIdSchema,
@@ -21,6 +21,7 @@ import {
   ToolPolicySchema,
 } from "$lib/server/classroom/schemas";
 import { classroomStateChannel } from "$lib/server/classroom/state-channel";
+import { classroomDeletionScope, purgeClassroom } from "$lib/server/classroom/students";
 import {
   allowAlias,
   disallowAlias,
@@ -153,6 +154,9 @@ export const load: PageServerLoad = async ({ params }) => {
     // never stored (see BUDGET_PRESETS), so it is derived by comparison; a
     // hand-edit yields null, which the picker renders as "Custom".
     activePreset: matchPreset(budgetsOf(classroom)),
+    // Counts only, so the deletion confirmation can say what it takes with it.
+    // Nothing a pupil wrote reaches the panel (§16).
+    deletionScope: classroomDeletionScope(db, classroom.id),
     policyForm: await superValidate(
       {
         classroomInstructions: classroom.classroomInstructions ?? "",
@@ -160,6 +164,7 @@ export const load: PageServerLoad = async ({ params }) => {
         sessionPolicy: classroom.sessionPolicy,
         sessionSlidingDays: classroom.sessionSlidingDays,
         conversationRetentionDays: classroom.conversationRetentionDays,
+        creationRetentionDays: classroom.creationRetentionDays,
       },
       policyAdapter,
       { id: "policy" },
@@ -169,6 +174,7 @@ export const load: PageServerLoad = async ({ params }) => {
         permissionMode: classroom.permissionMode,
         skillAuthoringPolicy: classroom.skillAuthoringPolicy,
         attachmentsEnabled: classroom.attachmentsEnabled,
+        attachmentTypes: classroom.attachmentTypes,
         attachmentImageMaxBytes: classroom.attachmentImageMaxBytes,
         attachmentTextMaxBytes: classroom.attachmentTextMaxBytes,
         attachmentMaxPerMessage: classroom.attachmentMaxPerMessage,
@@ -447,6 +453,41 @@ export const actions: Actions = {
     const classroom = classroomFor(params.classroomId);
 
     return { forceLoggedOut: invalidateClassroomSessions(getDb(), classroom.id) };
+  },
+
+  /**
+   * Permanent deletion of the whole classroom (§16).
+   *
+   * The container of everything the roster's per-pupil deletion removes, and
+   * until now the one thing the panel could not remove at all: a room set up by
+   * mistake, or one whose year has ended, stayed on the dashboard for good.
+   *
+   * The same friction the pupil deletion uses — the educator retypes the name —
+   * because the same thing is true of it and more so: nothing here is
+   * recoverable, and this is every pupil in the room at once. The confirmation
+   * is told the counts first, so "delete the class" is a decision made knowing
+   * what it takes with it.
+   *
+   * Redirects to the dashboard: the page this action was submitted from no
+   * longer describes anything.
+   */
+  deleteClassroom: async ({ request, params, locals }) => {
+    requireEducatorPage(locals);
+    const classroom = classroomFor(params.classroomId);
+
+    const body = await request.formData();
+    const confirmName = body.get("confirmName");
+    if (typeof confirmName !== "string" || confirmName.trim() !== classroom.name) {
+      return kitFail(400, { confirmMismatch: true });
+    }
+
+    await purgeClassroom(getDb(), getFileStore(), classroom.id);
+
+    // Every tab watching this room is told it is gone; the status resolver
+    // reports an absent classroom as closed, so a pupil mid-lesson is refused
+    // rather than left waiting on a room that no longer exists (§6, §8).
+    classroomStateChannel.publish(classroom.id);
+    redirect(303, "/educator");
   },
 
   disallowAlias: async ({ request, params, locals }) => {

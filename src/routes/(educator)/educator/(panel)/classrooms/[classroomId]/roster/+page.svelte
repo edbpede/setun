@@ -23,7 +23,11 @@ const confirmMismatch = $derived(
 </script>
 
 <div class="flex max-w-4xl flex-col gap-8">
-  <CredentialCards {cards} classroomName={data.classroom.name} />
+  <CredentialCards
+    {cards}
+    classroomName={data.classroom.name}
+    locale={data.classroom.interfaceLanguage}
+  />
 
   <section class="flex flex-col gap-3">
     <h2 class="text-sm font-medium text-foreground">{m.educator_provision_title()}</h2>
