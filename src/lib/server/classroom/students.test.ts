@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -115,5 +115,25 @@ describe("purgeClassroom (§16, §21)", () => {
     const { db, files } = await populated();
 
     expect(await purgeClassroom(db, files, crypto.randomUUID())).toBe(false);
+  });
+
+  it("records the path of a file it could not remove, which nothing else names now", async () => {
+    const { db, files, classroom, storagePath } = await populated();
+    // The row naming this path has just cascaded away, so a discarded `false`
+    // would leave the bytes on the volume with nothing pointing at them (§16).
+    const refuses = { remove: async () => false } as unknown as FileStore;
+
+    const logged: unknown[][] = [];
+    const errors = spyOn(console, "error").mockImplementation((...parts: unknown[]) => {
+      logged.push(parts);
+    });
+    try {
+      expect(await purgeClassroom(db, refuses, classroom.id)).toBe(true);
+    } finally {
+      errors.mockRestore();
+    }
+
+    expect(logged).toEqual([["purge left stored files behind", { paths: [storagePath] }]]);
+    expect(await files.read(storagePath)).not.toBeNull();
   });
 });
