@@ -59,7 +59,10 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       # The same directory `bun run build:sandbox` writes and the deployment
       # mounts, served by the same file_server. No Vite in the path at all.
-      - ./build-sandbox:/srv/sandbox:ro
+      #
+      # The suite always sets SETUN_SANDBOX_BUILD_DIR, to this instance's own
+      # build; the default keeps the file readable on its own terms.
+      - ${SETUN_SANDBOX_BUILD_DIR:-./build-sandbox}:/srv/sandbox:ro
 
 volumes:
   cpa-auth:

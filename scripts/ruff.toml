@@ -1,0 +1,40 @@
+# Lint and format settings for `scripts/lib/devsuite`, the only Python in the
+# repository. Scoped to scripts/ rather than the repository root: Ruff walks up
+# from the file it is checking, so this covers the package and nothing else.
+#
+# See .agents/rules/python-3_14-core.md for the stack these settings come from.
+
+line-length = 100
+target-version = "py314"
+src = ["lib"]
+
+[lint]
+select = [
+  "E", "W",  # pycodestyle
+  "F",       # Pyflakes
+  "I",       # isort
+  "UP",      # pyupgrade
+  "B",       # flake8-bugbear
+  "BLE",     # flake8-blind-except
+  "SIM",     # flake8-simplify
+  "C4",      # flake8-comprehensions
+  "PTH",     # flake8-use-pathlib
+  "DTZ",     # flake8-datetimez
+  "RET",     # flake8-return
+  "PIE",     # flake8-pie
+  "TID",     # flake8-tidy-imports
+  "ARG",     # flake8-unused-arguments
+  "ANN",     # flake8-annotations
+  "RUF",     # Ruff-specific
+]
+ignore = [
+  "E501",    # line length is the formatter's job
+  "ANN401",  # explicit Any where it is genuinely the answer
+]
+
+[lint.isort]
+known-first-party = ["devsuite"]
+
+[format]
+quote-style = "double"
+docstring-code-format = true

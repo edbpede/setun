@@ -1,0 +1,7 @@
+{
+  "//": "Type checking for the dev suite, per .agents/rules/python-3_14-core.md. Placed here rather than in scripts/ because this directory is the package's import root: scripts/devsuite puts it on sys.path, so `devsuite.layout` is an absolute import and not an implicitly relative one.",
+  "pythonVersion": "3.14",
+  "typeCheckingMode": "recommended",
+  "include": ["devsuite"],
+  "reportMissingTypeStubs": false
+}
