@@ -7,8 +7,14 @@
 # network, replace the `tls` line in each block with `tls internal` to use Caddy's
 # internal CA.
 
+# Quoted, because the variable is optional on both sides: docker-compose.yml
+# passes `${SETUN_ACME_EMAIL:-}` and scripts/devsuite has no address to give at
+# all. Unquoted, an unset variable leaves `email` with no argument, which Caddy
+# rejects at parse time — the server never starts, and the message names this
+# line rather than the empty variable behind it. Quoted, it is one empty
+# argument and ACME simply registers without a contact address.
 {
-	email {$SETUN_ACME_EMAIL}
+	email "{$SETUN_ACME_EMAIL}"
 }
 
 # Application origin.
