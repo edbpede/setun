@@ -69,6 +69,7 @@ export async function executeTurn(input: ExecuteTurnInput): Promise<void> {
   const { db, turnId } = input;
   const signal = liveTurns.register(turnId);
   const buffer = new TurnBuffer(db, turnId);
+  const startedAt = performance.now();
 
   const parts: MessagePart[] = [];
   const imageIds: string[] = [];
@@ -118,6 +119,7 @@ export async function executeTurn(input: ExecuteTurnInput): Promise<void> {
     }
 
     persistOutcome({ ...input, parts, imageIds, usage, status });
+    logTurn(input, { status, usage, startedAt });
   } catch (cause) {
     // The loop converts failures into events, so reaching here means the
     // persistence path itself failed. Terminate the turn rather than leaving a
@@ -126,6 +128,7 @@ export async function executeTurn(input: ExecuteTurnInput): Promise<void> {
     buffer.append({ type: "done", reason: "error" });
     finishTurn(db, { turnId, status: "failed" });
     log.error("turn execution failed", { turnId, cause: describeCause(cause) });
+    logTurn(input, { status: "failed", usage, startedAt });
   } finally {
     liveTurns.end(turnId);
   }
@@ -219,6 +222,45 @@ function collect(args: {
     default:
       break;
   }
+}
+
+/**
+ * One line per turn, at `info` (PRD §16, §21).
+ *
+ * A pilot classroom at the default level logged nothing about the thirty-nine
+ * completions it served: an operator could see errors and the boot banner, and
+ * had no way to tell a working stack from an idle one, or a slow model from a
+ * slow network.
+ *
+ * §16 names exactly what may be here — "internal identifiers, request
+ * identifiers, model aliases, latency, status, and token counts" — and this is
+ * that list and nothing else. No prompt, no answer, no tool argument, no tool
+ * result, no filename: a turn's content never reaches a log at any level, and
+ * the way to keep that true is for the line to be built from named fields rather
+ * than from anything the turn produced.
+ */
+function logTurn(
+  input: ExecuteTurnInput,
+  outcome: { status: string; usage: TurnUsage; startedAt: number },
+): void {
+  log.info({
+    event: "turn",
+    turnId: input.turnId,
+    conversationId: input.conversationId,
+    studentId: input.studentId,
+    classroomId: input.classroomId,
+    // The alias, which is what §16 permits — never the gateway model identifier
+    // behind it, which is deployment configuration rather than a turn's fact.
+    modelAlias: input.alias.name,
+    modelAliasId: input.alias.id,
+    status: outcome.status,
+    durationMs: Math.round(performance.now() - outcome.startedAt),
+    inputTokens: outcome.usage.inputTokens,
+    outputTokens: outcome.usage.outputTokens,
+    toolCalls: outcome.usage.toolCalls,
+    // True when Setun estimated the figures because the gateway never reported.
+    usageEstimated: outcome.usage.estimated,
+  });
 }
 
 /**
