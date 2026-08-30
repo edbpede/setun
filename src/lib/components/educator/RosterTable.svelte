@@ -32,6 +32,8 @@ interface Props {
 
 let { students, confirmMismatch = null }: Props = $props();
 
+let deleteConfirmations = $state<Record<string, string>>({});
+
 const numbers = $derived(new Intl.NumberFormat(getLocale()));
 const money = $derived(
   new Intl.NumberFormat(getLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
@@ -206,12 +208,16 @@ const smallButton =
                 <input
                   name="confirmLabel"
                   autocomplete="off"
+                  value={deleteConfirmations[student.id] ?? ""}
+                  oninput={(event) =>
+                    (deleteConfirmations[student.id] = event.currentTarget.value)}
                   class="h-8 w-40 rounded-md border border-input bg-background px-2 text-xs text-foreground"
                 />
               </label>
               <button
                 type="submit"
-                class="h-8 rounded-md border border-destructive px-2.5 text-xs font-medium text-destructive hover:bg-destructive hover:text-destructive-foreground"
+                disabled={(deleteConfirmations[student.id]?.trim() ?? "") !== student.label}
+                class="h-8 rounded-md border border-destructive px-2.5 text-xs font-medium text-destructive hover:bg-destructive hover:text-destructive-foreground disabled:opacity-50"
               >
                 {m.educator_student_delete()}
               </button>

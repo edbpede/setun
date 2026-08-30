@@ -56,6 +56,21 @@ describe("RosterTable", () => {
       .toBeInTheDocument();
   });
 
+  it("enables permanent deletion only for the exact pupil label", async () => {
+    render(RosterTable, { students: [BASE] });
+
+    const confirmation = page.getByRole("textbox", {
+      name: m.educator_student_delete_confirm_label({ label: BASE.label }),
+    });
+    const deleteButton = page.getByRole("button", { name: m.educator_student_delete() });
+
+    await expect.element(deleteButton).toBeDisabled();
+    await confirmation.fill("wrong");
+    await expect.element(deleteButton).toBeDisabled();
+    await confirmation.fill(` ${BASE.label} `);
+    await expect.element(deleteButton).toBeEnabled();
+  });
+
   it("offers switching on rather than off for a pupil already disabled", async () => {
     render(RosterTable, { students: [{ ...BASE, status: "disabled" }] });
 
