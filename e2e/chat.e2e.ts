@@ -83,6 +83,23 @@ test("a student logs in, chats with a streaming answer, and logs out", async ({ 
   await expect(page).toHaveURL(/\/login/);
 });
 
+test("the chat header fits a narrow phone viewport", async ({ page }) => {
+  const { code } = await provisionStudent();
+  await page.setViewportSize({ width: 390, height: 844 });
+
+  await page.goto("/login");
+  await page.getByLabel(m.login_code_label()).fill(code);
+  await page.getByRole("button", { name: m.login_submit() }).click();
+  await expect(page).toHaveURL(/\/chat/);
+
+  await expect(page.getByRole("button", { name: m.chat_sign_out() })).toBeVisible();
+  const widths = await page.evaluate(() => ({
+    viewport: window.innerWidth,
+    document: document.documentElement.scrollWidth,
+  }));
+  expect(widths.document).toBeLessThanOrEqual(widths.viewport);
+});
+
 /**
  * The three pupil controls that had no route to them at all (§10, §16, §22).
  *
