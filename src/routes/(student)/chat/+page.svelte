@@ -561,8 +561,10 @@ async function abort(): Promise<void> {
     No persistent application header: usable height on the target device is
     roughly 640 pixels, so the chrome is one compact strip (PRD §20).
   -->
-  <header class="flex items-center justify-between gap-3 border-b border-border px-3 py-2">
-    <div class="flex items-center gap-2 min-w-0">
+  <header
+    class="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2"
+  >
+    <div class="flex w-full min-w-0 items-center gap-2 sm:w-auto sm:flex-1">
       <!-- Opens the conversation list. Touch-sized, because the device is a touchscreen (§20). -->
       <button
         type="button"
@@ -578,7 +580,9 @@ async function abort(): Promise<void> {
       </span>
     </div>
 
-    <div class="flex shrink-0 items-center gap-2">
+    <div
+      class="flex w-full min-w-0 flex-wrap items-center gap-2 sm:w-auto sm:shrink-0 sm:flex-nowrap"
+    >
       <!--
         Which model this conversation is using (§9).
         Read-only, because an alias is bound to a conversation when it is created
