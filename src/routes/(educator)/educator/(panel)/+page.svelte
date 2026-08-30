@@ -21,6 +21,8 @@ let { data }: PageProps = $props();
 const { form, errors, enhance: formEnhance, submitting } = superForm(data.form);
 </script>
 
+<svelte:head><title>{m.educator_panel_title()} · {m.app_name()}</title></svelte:head>
+
 <div class="flex max-w-3xl flex-col gap-8">
   <section class="flex flex-col gap-3">
     <h1 class="text-base font-semibold text-foreground">{m.educator_dashboard_title()}</h1>

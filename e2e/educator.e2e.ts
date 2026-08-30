@@ -170,3 +170,19 @@ test("a removed pupil leaves the roster, and a disabled one cannot sign in (§16
   await page.getByRole("link", { name: m.educator_show_removed() }).click();
   await expect(page.getByText(m.educator_status_removed(), { exact: true })).toBeVisible();
 });
+
+test("deleting a classroom restores the dashboard title", async ({ page }) => {
+  await signIn(page);
+
+  const name = `E2E delete ${Date.now()}`;
+  await page.getByLabel(m.educator_classroom_name_label()).fill(name);
+  await page.getByRole("button", { name: m.educator_create_classroom() }).click();
+  await expect(page).toHaveURL(/\/educator\/classrooms\//);
+
+  await page.getByRole("link", { name: m.educator_nav_settings() }).click();
+  await page.getByLabel(m.educator_delete_classroom_confirm_label()).fill(name);
+  await page.getByRole("button", { name: m.educator_delete_classroom_submit() }).click();
+
+  await expect(page).toHaveURL(/\/educator$/);
+  await expect(page).toHaveTitle(`${m.educator_panel_title()} · ${m.app_name()}`);
+});
