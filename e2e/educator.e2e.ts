@@ -1,4 +1,5 @@
 import { type Browser, expect, type Page, test } from "@playwright/test";
+import { EDUCATOR_RECOVERY_COMMAND } from "../src/lib/educator-recovery";
 import * as m from "../src/lib/paraglide/messages";
 import { E2E_EDUCATOR_PASSWORD, E2E_EDUCATOR_USERNAME } from "../playwright.config";
 import { clearLoginWindow } from "./support/login-window";
@@ -61,6 +62,16 @@ async function codeSignsIn(browser: Browser, code: string): Promise<boolean> {
   await context.close();
   return signedIn;
 }
+
+test("credential recovery guidance is educator-only", async ({ page }) => {
+  await page.goto("/educator/login");
+  await page.getByText(m.educator_recovery_action()).click();
+  await expect(page.getByText(EDUCATOR_RECOVERY_COMMAND)).toBeVisible();
+
+  await page.goto("/login");
+  await expect(page.getByText(m.educator_recovery_action())).toHaveCount(0);
+  await expect(page.getByText(EDUCATOR_RECOVERY_COMMAND)).toHaveCount(0);
+});
 
 test("an educator creates a classroom, provisions pupils, opens, locks and rotates (§17, §22)", async ({
   page,
