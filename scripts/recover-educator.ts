@@ -123,11 +123,7 @@ export async function runEducatorRecoveryCli(
       return EXIT_INTERRUPTED;
     }
     if (error instanceof EducatorRecoveryError) {
-      terminal.writeError(
-        error.reason === "no_educator"
-          ? "No educator account exists. Complete first-run setup instead."
-          : "The educator account state is inconsistent; no changes were made.",
-      );
+      terminal.writeError("No educator account exists. Complete first-run setup instead.");
       return EXIT_FAILURE;
     }
 
@@ -159,7 +155,7 @@ function configuredSeed(environment: NodeJS.ProcessEnv): { username: string; pas
   return username === undefined || password === undefined ? undefined : { username, password };
 }
 
-function processTerminal(
+export function processTerminal(
   input: ReadStream = process.stdin,
   output: WriteStream = process.stdout,
   error: WriteStream = process.stderr,
@@ -169,6 +165,7 @@ function processTerminal(
 
     return new Promise((resolve, reject) => {
       let value = "";
+      let escapeState: "none" | "escape" | "control" = "none";
       const wasRaw = input.isRaw;
       output.write(prompt);
       input.setRawMode(true);
@@ -186,6 +183,20 @@ function processTerminal(
 
       const onData = (chunk: string | Buffer) => {
         for (const character of String(chunk)) {
+          if (character === "\u001b") {
+            escapeState = "escape";
+            continue;
+          }
+          if (escapeState === "escape") {
+            if (character === "[" || character === "O") {
+              escapeState = "control";
+              continue;
+            }
+            escapeState = "none";
+          } else if (escapeState === "control") {
+            if (character >= "@" && character <= "~") escapeState = "none";
+            continue;
+          }
           if (character === "\u0003" || character === "\u0004") {
             finish(undefined, new InterruptedError());
             return;
