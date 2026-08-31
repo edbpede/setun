@@ -187,8 +187,58 @@ route to `/setup`. Open the application URL, enter the token, and follow the wiz
 
 The token expires after 15 minutes; restarting the app issues a new one. If
 `SETUN_EDUCATOR_SEED_USERNAME` and `SETUN_EDUCATOR_SEED_PASSWORD` are both set, Setun seeds that
-account at boot and skips the wizard. Updating the seeded password and restarting is also the
-recovery path for a forgotten educator password.
+account at boot and skips the wizard. Updating the seeded credential and restarting remains a
+supported recovery path for forgotten educator credentials.
+
+## Educator credential recovery
+
+The educator login page shows a generic command that an operator with shell access can run against
+the live database. The browser never performs the reset, and recovery needs neither manual SQL nor
+an application restart.
+
+From the deployment directory, use the interactive mode to enter a new educator username and a new
+password. Both password prompts hide terminal input:
+
+```sh
+docker compose exec app bun /app/recover-educator.js
+```
+
+To have Setun generate a 256-bit password instead, run:
+
+```sh
+docker compose exec app bun /app/recover-educator.js --generate
+```
+
+The generated password is printed exactly once, on its own terminal line after the database commit.
+Setun does not copy it to the clipboard or write it to a log or configuration file. Save it before
+closing the terminal; if it is lost, run recovery again. The new username is always collected by the
+prompt, so neither credential belongs in shell history or a process listing.
+
+For a source-based installation or manual development server, run the matching package scripts from
+the repository root:
+
+```sh
+bun run recover:educator
+bun run recover:educator -- --generate
+```
+
+The application must already be running on an existing, migrated database. Compose supplies the
+container with the same database path and seed environment automatically. For a direct invocation,
+run from the same configured environment as the application: `SETUN_DATABASE_PATH` must identify the
+live database, and the command must see the same `SETUN_EDUCATOR_SEED_*` values when they are used.
+Bun loads the repository's `.env` automatically. The command refuses a missing database, a partial
+seed pair, a non-interactive terminal, and any password supplied as an argument.
+
+Recovery updates the one educator row and invalidates every live educator session in one immediate
+SQLite transaction. Pupil sessions and all classroom data, conversations, artifacts, files, and
+backups are untouched. Exit status `0` means success, `1` an operational failure with no committed
+change, `2` invalid usage or input, and `130` cancellation.
+
+Boot-time seeds remain backward compatible. A CLI recovery stores only an Argon2id hash identifying
+the seed pair that it superseded, so restarting with that unchanged pair cannot silently restore the
+old credentials. Changing either seed value and restarting is treated as an intentional seed-based
+reset, updates the same educator row, and invalidates educator sessions. Leaving both variables blank
+keeps the recovered credential under CLI control; the recovery command never edits `.env` itself.
 
 ## Configuration notes
 
