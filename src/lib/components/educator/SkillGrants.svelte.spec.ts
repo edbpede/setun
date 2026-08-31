@@ -14,14 +14,29 @@ const SKILL = {
 };
 
 describe("SkillGrants", () => {
-  it("names the inverse action after a whole-class grant", async () => {
-    render(SkillGrants, { skills: [{ ...SKILL, classWide: true }], students: [] });
+  it.each([
+    {
+      classWide: true,
+      label: m.educator_skill_grant_remove(),
+      absentLabel: m.educator_skill_grant_class(),
+      action: "?/revokeSkill",
+    },
+    {
+      classWide: false,
+      label: m.educator_skill_grant_class(),
+      absentLabel: m.educator_skill_grant_remove(),
+      action: "?/grantSkill",
+    },
+  ])(
+    "maps class-wide state to the $action action",
+    async ({ classWide, label, absentLabel, action }) => {
+      render(SkillGrants, { skills: [{ ...SKILL, classWide }], students: [] });
 
-    const remove = page.getByRole("button", { name: m.educator_skill_grant_remove() });
-    await expect.element(remove).toBeInTheDocument();
-    await expect.element(remove).toHaveAttribute("type", "submit");
-    await expect
-      .element(page.getByRole("button", { name: m.educator_skill_grant_class() }))
-      .not.toBeInTheDocument();
-  });
+      const submit = page.getByRole("button", { name: label });
+      await expect.element(submit).toBeInTheDocument();
+      await expect.element(submit).toHaveAttribute("type", "submit");
+      expect(submit.element().closest("form")?.getAttribute("action")).toBe(action);
+      await expect.element(page.getByRole("button", { name: absentLabel })).not.toBeInTheDocument();
+    },
+  );
 });
