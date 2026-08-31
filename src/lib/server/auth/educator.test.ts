@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "bun:test";
 import type { AppDatabase } from "../db/client";
 import { createClassroom } from "../db/queries/classrooms";
 import { createStudent } from "../db/queries/students";
-import { loginAttempt } from "../db/schema";
+import { educator, loginAttempt } from "../db/schema";
 import { createTestDatabase } from "../db/testing";
 import {
   attemptEducatorLogin,
@@ -84,6 +84,30 @@ describe("seedEducator", () => {
       password: "a-new-password",
     });
     expect(withNew.ok).toBe(true);
+  });
+
+  it("collapses rows created by legacy configured-username changes", async () => {
+    await seedEducator(db, { username: "old-configured", password: PASSWORD });
+    const configuredPassword = "current-configured-password";
+    const configured = db
+      .insert(educator)
+      .values({
+        username: "current-configured",
+        passwordHash: await Bun.password.hash(configuredPassword, { algorithm: "argon2id" }),
+        createdAt: new Date(Date.now() + 1_000),
+        updatedAt: new Date(Date.now() + 1_000),
+      })
+      .returning()
+      .get();
+
+    const result = await seedEducator(db, {
+      username: configured.username,
+      password: configuredPassword,
+    });
+
+    expect(result.seeded).toBe(false);
+    expect(result.educator.id).toBe(configured.id);
+    expect(db.select().from(educator).all()).toEqual([result.educator]);
   });
 });
 

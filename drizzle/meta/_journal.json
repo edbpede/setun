@@ -57,6 +57,13 @@
       "when": 1788033200000,
       "tag": "0007_danish_aa_folding",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1788188504195,
+      "tag": "0008_hot_psylocke",
+      "breakpoints": true
     }
   ]
 }

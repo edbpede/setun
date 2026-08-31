@@ -1,3 +1,4 @@
+import { and, asc, desc, eq, isNull, ne } from "drizzle-orm";
 import type { AppDatabase } from "../db/client";
 import {
   createEducator,
@@ -7,7 +8,8 @@ import {
   updateEducatorCredential,
 } from "../db/queries/educators";
 import { findSessionByDigest, touchSession } from "../db/queries/sessions";
-import type { Educator } from "../db/schema";
+import { type Educator, educator as educatorTable, session as sessionTable } from "../db/schema";
+import { hashEducatorPassword, matchesConfiguredEducatorSeed } from "./credentials";
 import { digestFailureDelayMs, recordDigestAttempt } from "./rate-limit";
 import {
   createSession,
@@ -22,7 +24,8 @@ import {
  * "Educator authentication is separate and conventional: a single account seeded
  * from deployment configuration at first boot, password hashed with
  * `Bun.password` (argon2id), with its own session namespace and a sliding 7-day
- * expiry. There is no in-application password recovery."
+ * expiry. Credential recovery is operator-assisted and never runs in the web
+ * application.
  *
  * Separate from student auth in every dimension that matters: a different
  * credential kind, a different session `ownerKind`, and a different resolver.
@@ -70,17 +73,7 @@ async function getDecoyHash(): Promise<string> {
   return decoyHash;
 }
 
-/**
- * argon2id, as §7 requires.
- *
- * One function decides the algorithm, because there are now two paths that
- * create the operator account — deployment configuration, and the first-run
- * wizard — and an algorithm chosen twice is an algorithm that can be chosen
- * differently.
- */
-export function hashEducatorPassword(password: string): Promise<string> {
-  return Bun.password.hash(password, { algorithm: "argon2id" });
-}
+export { hashEducatorPassword } from "./credentials";
 
 export interface SeedEducatorResult {
   readonly seeded: boolean;
@@ -90,9 +83,9 @@ export interface SeedEducatorResult {
 /**
  * Create or update the operator account from deployment configuration.
  *
- * Idempotent by username, and updating on a changed password is the documented
- * recovery path: "a forgotten educator password is reset by re-seeding the
- * credential in deployment configuration and restarting" (§7, §6.2).
+ * Updating the configured pair and restarting remains a supported recovery
+ * path. The existing row is updated in place even when the username changes,
+ * preserving the single-educator invariant.
  *
  * The stored hash is salted, so an unchanged password still hashes to a new
  * value — comparing hashes cannot detect a no-op. Verifying can, and leaving the
@@ -102,26 +95,140 @@ export async function seedEducator(
   db: AppDatabase,
   input: { username: string; password: string },
 ): Promise<SeedEducatorResult> {
-  const existing = findEducatorByUsername(db, input.username);
+  reconcileLegacyEducators(db, input.username);
 
-  if (existing && (await Bun.password.verify(input.password, existing.passwordHash))) {
-    return { seeded: false, educator: existing };
+  for (;;) {
+    const existing = getFirstEducator(db);
+
+    if (
+      existing?.supersededSeedHash &&
+      (await matchesConfiguredEducatorSeed(input, existing.supersededSeedHash))
+    ) {
+      const unchanged = db.transaction(
+        (tx) => {
+          const current = tx
+            .select()
+            .from(educatorTable)
+            .orderBy(asc(educatorTable.createdAt))
+            .get();
+          return current && sameEducatorState(current, existing)
+            ? { seeded: false as const, educator: current }
+            : null;
+        },
+        { behavior: "immediate" },
+      );
+      if (unchanged) return unchanged;
+      continue;
+    }
+
+    const credentialMatches =
+      existing?.username === input.username &&
+      (await Bun.password.verify(input.password, existing.passwordHash));
+    const passwordHash = credentialMatches
+      ? existing.passwordHash
+      : await hashEducatorPassword(input.password);
+
+    const result = db.transaction(
+      (tx): SeedEducatorResult | null => {
+        const current = tx.select().from(educatorTable).orderBy(asc(educatorTable.createdAt)).get();
+        if (!sameEducatorState(current, existing)) return null;
+
+        if (!current) {
+          const created = tx
+            .insert(educatorTable)
+            .values({ username: input.username, passwordHash })
+            .returning()
+            .get();
+          return { seeded: true, educator: created };
+        }
+
+        if (credentialMatches) {
+          if (current.supersededSeedHash === null) {
+            return { seeded: false, educator: current };
+          }
+
+          const cleared = tx
+            .update(educatorTable)
+            .set({ supersededSeedHash: null, updatedAt: new Date() })
+            .where(eq(educatorTable.id, current.id))
+            .returning()
+            .get();
+          return { seeded: false, educator: cleared };
+        }
+
+        const now = new Date();
+        const updated = tx
+          .update(educatorTable)
+          .set({
+            username: input.username,
+            passwordHash,
+            supersededSeedHash: null,
+            updatedAt: now,
+          })
+          .where(eq(educatorTable.id, current.id))
+          .returning()
+          .get();
+
+        tx.update(sessionTable)
+          .set({ invalidatedAt: now })
+          .where(and(eq(sessionTable.ownerKind, "educator"), isNull(sessionTable.invalidatedAt)))
+          .run();
+
+        return { seeded: true, educator: updated };
+      },
+      { behavior: "immediate" },
+    );
+
+    if (result) return result;
   }
+}
 
-  const passwordHash = await hashEducatorPassword(input.password);
-  return { seeded: true, educator: createEducator(db, { username: input.username, passwordHash }) };
+/** Collapse rows created by the old username-keyed seeding behavior. */
+function reconcileLegacyEducators(db: AppDatabase, configuredUsername: string): void {
+  db.transaction(
+    (tx) => {
+      const accounts = tx
+        .select()
+        .from(educatorTable)
+        .orderBy(
+          desc(educatorTable.updatedAt),
+          desc(educatorTable.createdAt),
+          asc(educatorTable.id),
+        )
+        .all();
+      if (accounts.length <= 1) return;
+
+      const current =
+        accounts.find((account) => account.username === configuredUsername) ?? accounts[0];
+
+      const now = new Date();
+      tx.delete(educatorTable).where(ne(educatorTable.id, current.id)).run();
+      tx.update(sessionTable)
+        .set({ invalidatedAt: now })
+        .where(and(eq(sessionTable.ownerKind, "educator"), isNull(sessionTable.invalidatedAt)))
+        .run();
+    },
+    { behavior: "immediate" },
+  );
+}
+
+function sameEducatorState(left: Educator | undefined, right: Educator | undefined): boolean {
+  if (!left || !right) return left === right;
+  return (
+    left.id === right.id &&
+    left.username === right.username &&
+    left.passwordHash === right.passwordHash &&
+    left.supersededSeedHash === right.supersededSeedHash
+  );
 }
 
 /**
  * Create or replace *the* operator account — the first-run wizard's first step
  * (PRD §6.2, §7).
  *
- * Deliberately not `seedEducator`. That one keys on the username, which is right
- * for deployment configuration: an operator who changes the configured name
- * should get an account under it. Here the opposite is right — the wizard's
- * account step is re-runnable, and an operator who goes back and corrects a typo
- * in the username must end up with one account, not two. So an existing row is
- * updated in place and only an empty table is inserted into (§7).
+ * The wizard's account step is re-runnable, and an operator who goes back and
+ * corrects a typo in the username must end up with one account, not two. So an
+ * existing row is updated in place and only an empty table is inserted into (§7).
  */
 export async function establishEducator(
   db: AppDatabase,
@@ -192,11 +299,35 @@ export async function attemptEducatorLogin(
 
   if (!educator || !verified) return settle(FAILURE);
 
-  return settle({
-    ok: true,
-    educator,
-    session: createSession(db, { ownerKind: "educator", ownerId: educator.id }),
-  });
+  const authenticated = db.transaction(
+    (tx): EducatorLoginResult => {
+      const current = tx
+        .select()
+        .from(educatorTable)
+        .where(eq(educatorTable.id, educator.id))
+        .get();
+
+      // Recovery may have replaced the hash while Argon2id verification was in
+      // flight. Requiring the exact verified state inside the session insert's
+      // transaction makes reset and login serialize in the safe order.
+      if (
+        !current ||
+        current.username !== educator.username ||
+        current.passwordHash !== educator.passwordHash
+      ) {
+        return FAILURE;
+      }
+
+      return {
+        ok: true,
+        educator: current,
+        session: createSession(tx, { ownerKind: "educator", ownerId: current.id }),
+      };
+    },
+    { behavior: "immediate" },
+  );
+
+  return settle(authenticated);
 }
 
 /**

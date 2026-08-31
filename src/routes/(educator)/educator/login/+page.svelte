@@ -1,6 +1,7 @@
 <script lang="ts">
 import { enhance } from "$app/forms";
 import SetunMark from "$lib/components/brand/SetunMark.svelte";
+import EducatorRecoveryPanel from "$lib/components/educator/EducatorRecoveryPanel.svelte";
 import * as m from "$lib/paraglide/messages";
 import type { PageProps } from "./$types";
 
@@ -57,4 +58,6 @@ let { form }: PageProps = $props();
       {m.educator_login_submit()}
     </button>
   </form>
+
+  <EducatorRecoveryPanel />
 </main>
