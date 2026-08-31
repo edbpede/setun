@@ -80,7 +80,9 @@ const field = "h-8 rounded-md border border-input bg-background px-2 text-xs tex
                 "disabled:opacity-50",
               ]}
             >
-              {m.educator_skill_grant_class()}
+              {skill.classWide
+                ? m.educator_skill_grant_remove()
+                : m.educator_skill_grant_class()}
             </button>
           </form>
         </div>
