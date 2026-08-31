@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, ne } from "drizzle-orm";
 import type { AppDatabase } from "../db/client";
 import {
   createEducator,
@@ -95,6 +95,8 @@ export async function seedEducator(
   db: AppDatabase,
   input: { username: string; password: string },
 ): Promise<SeedEducatorResult> {
+  reconcileLegacyEducators(db, input.username);
+
   for (;;) {
     const existing = getFirstEducator(db);
 
@@ -179,6 +181,35 @@ export async function seedEducator(
 
     if (result) return result;
   }
+}
+
+/** Collapse rows created by the old username-keyed seeding behavior. */
+function reconcileLegacyEducators(db: AppDatabase, configuredUsername: string): void {
+  db.transaction(
+    (tx) => {
+      const accounts = tx
+        .select()
+        .from(educatorTable)
+        .orderBy(
+          desc(educatorTable.updatedAt),
+          desc(educatorTable.createdAt),
+          asc(educatorTable.id),
+        )
+        .all();
+      if (accounts.length <= 1) return;
+
+      const current =
+        accounts.find((account) => account.username === configuredUsername) ?? accounts[0];
+
+      const now = new Date();
+      tx.delete(educatorTable).where(ne(educatorTable.id, current.id)).run();
+      tx.update(sessionTable)
+        .set({ invalidatedAt: now })
+        .where(and(eq(sessionTable.ownerKind, "educator"), isNull(sessionTable.invalidatedAt)))
+        .run();
+    },
+    { behavior: "immediate" },
+  );
 }
 
 function sameEducatorState(left: Educator | undefined, right: Educator | undefined): boolean {

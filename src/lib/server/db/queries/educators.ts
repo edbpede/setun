@@ -1,4 +1,4 @@
-import { asc, eq } from "drizzle-orm";
+import { asc, desc, eq } from "drizzle-orm";
 import type { AppDatabase } from "../client";
 import { type Educator, educator } from "../schema";
 
@@ -42,11 +42,16 @@ export function getEducatorById(db: AppDatabase, educatorId: string): Educator |
  * named one: the first-run wizard's resume derivation, and the session it issues
  * when setup finishes (PRD §6.2, §7).
  *
- * Ordered rather than merely first-found, so corrupted legacy state is handled
- * deterministically while recovery refuses to mutate it.
+ * Older versions could create another row when the configured username changed.
+ * Prefer the most recently changed row so legacy state resolves to the account
+ * from the latest deployment configuration.
  */
 export function getFirstEducator(db: AppDatabase): Educator | undefined {
-  return db.select().from(educator).orderBy(asc(educator.createdAt)).get();
+  return db
+    .select()
+    .from(educator)
+    .orderBy(desc(educator.updatedAt), desc(educator.createdAt), asc(educator.id))
+    .get();
 }
 
 /**

@@ -1,9 +1,9 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, ne } from "drizzle-orm";
 import type { AppDatabase } from "../db/client";
 import { educator, session } from "../db/schema";
 import { hashConfiguredEducatorSeed, hashEducatorPassword } from "./credentials";
 
-export type EducatorRecoveryFailure = "no_educator" | "multiple_educators";
+export type EducatorRecoveryFailure = "no_educator";
 
 export class EducatorRecoveryError extends Error {
   constructor(readonly reason: EducatorRecoveryFailure) {
@@ -40,20 +40,26 @@ export async function recoverEducatorCredential(
   const passwordHash = await hashEducatorPassword(input.password);
   const supersededSeedHash = input.configuredSeed
     ? await hashConfiguredEducatorSeed(input.configuredSeed)
-    : null;
+    : undefined;
 
   return db.transaction(
     (tx) => {
-      const accounts = tx.select().from(educator).limit(2).all();
+      const accounts = tx
+        .select()
+        .from(educator)
+        .orderBy(desc(educator.updatedAt), desc(educator.createdAt), asc(educator.id))
+        .all();
       if (accounts.length === 0) throw new EducatorRecoveryError("no_educator");
-      if (accounts.length !== 1) throw new EducatorRecoveryError("multiple_educators");
 
       const account = accounts[0];
+      if (accounts.length > 1) {
+        tx.delete(educator).where(ne(educator.id, account.id)).run();
+      }
       tx.update(educator)
         .set({
           username: input.username,
           passwordHash,
-          supersededSeedHash,
+          ...(supersededSeedHash === undefined ? {} : { supersededSeedHash }),
           updatedAt: new Date(),
         })
         .where(eq(educator.id, account.id))

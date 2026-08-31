@@ -57,6 +57,28 @@ describe("recoverEducatorCredential", () => {
     ).toBe(true);
   });
 
+  it("collapses legacy educator rows during recovery", async () => {
+    db.insert(educator)
+      .values({
+        username: "newer-legacy-educator",
+        passwordHash: await Bun.password.hash("newer-legacy-password", {
+          algorithm: "argon2id",
+        }),
+        createdAt: new Date(Date.now() + 1_000),
+        updatedAt: new Date(Date.now() + 1_000),
+      })
+      .run();
+
+    await recoverEducatorCredential(db, {
+      username: NEW_USERNAME,
+      password: NEW_PASSWORD,
+    });
+
+    const accounts = db.select().from(educator).all();
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0].username).toBe(NEW_USERNAME);
+  });
+
   it("invalidates every educator session and preserves student state", async () => {
     const account = db.select().from(educator).get();
     if (!account) throw new Error("expected an educator");
@@ -155,6 +177,25 @@ describe("boot-time educator seed reconciliation", () => {
     expect(reseeded.educator.username).toBe(NEW_USERNAME);
     expect(await Bun.password.verify(NEW_PASSWORD, reseeded.educator.passwordHash)).toBe(true);
     expect(db.select().from(educator).all()).toHaveLength(1);
+  });
+
+  it("preserves the superseded seed marker across seedless recovery", async () => {
+    await recoverEducatorCredential(db, {
+      username: NEW_USERNAME,
+      password: NEW_PASSWORD,
+      configuredSeed: { username: OLD_USERNAME, password: OLD_PASSWORD },
+    });
+    const marker = db.select().from(educator).get()?.supersededSeedHash;
+
+    await recoverEducatorCredential(db, {
+      username: "second-recovery",
+      password: "second-recovery-password",
+    });
+
+    expect(db.select().from(educator).get()?.supersededSeedHash).toBe(marker);
+    const reseeded = await seedEducator(db, { username: OLD_USERNAME, password: OLD_PASSWORD });
+    expect(reseeded.seeded).toBe(false);
+    expect(reseeded.educator.username).toBe("second-recovery");
   });
 
   it("keeps changed deployment seeds as a supported recovery path", async () => {
