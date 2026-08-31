@@ -1,7 +1,14 @@
 import * as v from "valibot";
 import * as m from "$lib/paraglide/messages";
+import {
+  EDUCATOR_PASSWORD_MAX_LENGTH,
+  EDUCATOR_PASSWORD_MIN_LENGTH,
+  EDUCATOR_USERNAME_MAX_LENGTH,
+} from "../auth/credentials";
 import { ianaTimezone } from "../classroom/schemas";
 import { INTERFACE_LANGUAGES, SESSION_POLICIES } from "../db/schema";
+
+export { EDUCATOR_PASSWORD_MIN_LENGTH } from "../auth/credentials";
 
 /**
  * Validation for the first-run wizard's forms (PRD §5, §6.2, §7, §8).
@@ -47,8 +54,6 @@ export const RecoverSchema = v.object({
  * is the only knob that meaningfully moves the work an attacker must do, and a
  * rule demanding a symbol mostly produces a password with a symbol on the end.
  */
-export const EDUCATOR_PASSWORD_MIN_LENGTH = 12;
-
 /**
  * The operator account, as the wizard collects it.
  *
@@ -63,14 +68,14 @@ export const SetupEducatorSchema = v.pipe(
       v.string(),
       v.trim(),
       v.minLength(1, m.validation_username_required()),
-      v.maxLength(200),
+      v.maxLength(EDUCATOR_USERNAME_MAX_LENGTH),
     ),
     password: v.pipe(
       v.string(),
       v.minLength(EDUCATOR_PASSWORD_MIN_LENGTH, m.validation_password_too_short()),
-      v.maxLength(1_000),
+      v.maxLength(EDUCATOR_PASSWORD_MAX_LENGTH),
     ),
-    confirmPassword: v.pipe(v.string(), v.maxLength(1_000)),
+    confirmPassword: v.pipe(v.string(), v.maxLength(EDUCATOR_PASSWORD_MAX_LENGTH)),
   }),
   v.forward(
     v.check((input) => input.password === input.confirmPassword, m.validation_passwords_differ()),

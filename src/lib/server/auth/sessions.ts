@@ -74,7 +74,7 @@ export function mintSessionToken(): string {
 }
 
 export function createSession(
-  db: AppDatabase,
+  db: Pick<AppDatabase, "insert">,
   input: { ownerKind: SessionOwnerKind; ownerId: string; now?: Date },
 ): IssuedSession {
   const token = mintSessionToken();

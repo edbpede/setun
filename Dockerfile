@@ -7,6 +7,7 @@ RUN bun install --frozen-lockfile
 
 COPY . .
 RUN bun --bun run build
+RUN bun build ./scripts/recover-educator.ts --target=bun --outfile=/app/recover-educator.js
 
 FROM oven/bun:1.4-alpine AS runtime
 WORKDIR /app
@@ -16,6 +17,9 @@ COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --production
 
 COPY --from=build /app/build ./build
+# Boot migrations and the operator recovery entry point must exist without source files.
+COPY --from=build /app/drizzle ./drizzle
+COPY --from=build /app/recover-educator.js ./recover-educator.js
 # The production entry installs the process guard before adapter-node listens.
 COPY server.js server-guard.js ./
 

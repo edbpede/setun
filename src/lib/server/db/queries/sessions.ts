@@ -10,7 +10,7 @@ import { type Session, session, student } from "../schema";
  */
 
 export function createSessionRow(
-  db: AppDatabase,
+  db: Pick<AppDatabase, "insert">,
   input: {
     tokenDigest: string;
     ownerKind: "student" | "educator";

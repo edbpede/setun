@@ -5,10 +5,8 @@ import { type Educator, educator } from "../schema";
 /**
  * The operator account (PRD §7, §19).
  *
- * A single row in practice, but the table is keyed by username rather than
- * pinned to one row: the recovery path re-seeds from deployment configuration,
- * and an operator who changes the configured username should get an account
- * rather than a constraint violation.
+ * A single row by application invariant. Credential changes update that row in
+ * place, including when the username changes.
  *
  * No function here accepts or returns a plaintext password — hashing happens in
  * `$lib/server/auth/educator` before it reaches the database (§7, §21).
@@ -44,8 +42,8 @@ export function getEducatorById(db: AppDatabase, educatorId: string): Educator |
  * named one: the first-run wizard's resume derivation, and the session it issues
  * when setup finishes (PRD §6.2, §7).
  *
- * Ordered rather than merely first-found, so two boots agree on which row that
- * is if a re-seed under a changed username ever left a second one behind.
+ * Ordered rather than merely first-found, so corrupted legacy state is handled
+ * deterministically while recovery refuses to mutate it.
  */
 export function getFirstEducator(db: AppDatabase): Educator | undefined {
   return db.select().from(educator).orderBy(asc(educator.createdAt)).get();
