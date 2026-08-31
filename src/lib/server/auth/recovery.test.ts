@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
@@ -137,24 +137,30 @@ describe("recoverEducatorCredential", () => {
   it("works through a second WAL connection while the application connection stays open", async () => {
     const root = mkdtempSync(join(tmpdir(), "setun-recovery-"));
     const path = join(root, "setun.sqlite");
-    const applicationDb = createDatabase(path);
-    applyMigrations(applicationDb);
-    await seedEducator(applicationDb, { username: OLD_USERNAME, password: OLD_PASSWORD });
+    let applicationDb: AppDatabase | undefined;
+    let recoveryDb: AppDatabase | undefined;
 
-    const recoveryDb = createDatabase(path);
-    await recoverEducatorCredential(recoveryDb, {
-      username: NEW_USERNAME,
-      password: NEW_PASSWORD,
-    });
+    try {
+      applicationDb = createDatabase(path);
+      applyMigrations(applicationDb);
+      await seedEducator(applicationDb, { username: OLD_USERNAME, password: OLD_PASSWORD });
 
-    const login = await attemptEducatorLogin(applicationDb, {
-      username: NEW_USERNAME,
-      password: NEW_PASSWORD,
-    });
-    expect(login.ok).toBe(true);
+      recoveryDb = createDatabase(path);
+      await recoverEducatorCredential(recoveryDb, {
+        username: NEW_USERNAME,
+        password: NEW_PASSWORD,
+      });
 
-    recoveryDb.$client.close();
-    applicationDb.$client.close();
+      const login = await attemptEducatorLogin(applicationDb, {
+        username: NEW_USERNAME,
+        password: NEW_PASSWORD,
+      });
+      expect(login.ok).toBe(true);
+    } finally {
+      recoveryDb?.$client.close();
+      applicationDb?.$client.close();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
