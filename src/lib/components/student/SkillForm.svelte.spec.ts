@@ -87,13 +87,16 @@ describe("SkillForm", () => {
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(new Response(JSON.stringify({ type: "success", status: 200 })));
 
-    form({ onsaved });
-    await page.getByLabelText(m.student_skill_name_label()).fill("min-stil");
-    await page.getByLabelText(m.student_skill_body_label()).fill("Svar altid med en analogi.");
-    await page.getByRole("button", { name: m.student_skill_save() }).click();
+    try {
+      form({ onsaved });
+      await page.getByLabelText(m.student_skill_name_label()).fill("min-stil");
+      await page.getByLabelText(m.student_skill_body_label()).fill("Svar altid med en analogi.");
+      await page.getByRole("button", { name: m.student_skill_save() }).click();
 
-    await expect.poll(() => onsaved.mock.calls.length).toBe(1);
-    fetch.mockRestore();
+      await expect.poll(() => onsaved.mock.calls.length).toBe(1);
+    } finally {
+      fetch.mockRestore();
+    }
   });
 
   it("says that a version will wait for approval before the pupil saves it (§12)", async () => {
