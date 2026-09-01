@@ -7,6 +7,11 @@ import * as m from "$lib/paraglide/messages";
 import { SkillSchema } from "$lib/server/classroom/schemas";
 import SkillForm from "./SkillForm.svelte";
 
+vi.mock("$app/forms", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("$app/forms")>()),
+  applyAction: vi.fn(),
+}));
+
 /**
  * The pupil's skill-authoring form (plan 3.9, PRD §12, §22).
  *
@@ -21,6 +26,7 @@ function form(
   overrides: {
     editingId?: string | null;
     needsApproval?: boolean;
+    onsaved?: () => void;
     seed?: Record<string, string>;
   } = {},
 ) {
@@ -32,6 +38,7 @@ function form(
     editingId: overrides.editingId ?? null,
     needsApproval: overrides.needsApproval ?? false,
     oncancel,
+    onsaved: overrides.onsaved,
   });
 
   return { oncancel };
@@ -72,6 +79,21 @@ describe("SkillForm", () => {
     await page.getByRole("button", { name: m.student_skill_cancel() }).click();
 
     expect(oncancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a successful save once", async () => {
+    const onsaved = vi.fn();
+    const fetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify({ type: "success", status: 200 })));
+
+    form({ onsaved });
+    await page.getByLabelText(m.student_skill_name_label()).fill("min-stil");
+    await page.getByLabelText(m.student_skill_body_label()).fill("Svar altid med en analogi.");
+    await page.getByRole("button", { name: m.student_skill_save() }).click();
+
+    await expect.poll(() => onsaved.mock.calls.length).toBe(1);
+    fetch.mockRestore();
   });
 
   it("says that a version will wait for approval before the pupil saves it (§12)", async () => {

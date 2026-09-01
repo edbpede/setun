@@ -27,12 +27,18 @@ interface Props {
   /** Set when the classroom requires the educator to approve each version (§12). */
   needsApproval?: boolean;
   oncancel?: () => void;
+  onsaved?: () => void;
 }
 
-let { data, editingId = null, needsApproval = false, oncancel }: Props = $props();
+let { data, editingId = null, needsApproval = false, oncancel, onsaved }: Props = $props();
 
 // svelte-ignore state_referenced_locally
-const { form, errors, enhance, submitting } = superForm(data, { id: "skill" });
+const { form, errors, enhance, submitting } = superForm(data, {
+  id: "skill",
+  onResult({ result }) {
+    if (result.type === "success") onsaved?.();
+  },
+});
 
 const field = "rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground";
 </script>
