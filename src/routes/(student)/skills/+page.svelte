@@ -75,6 +75,7 @@ const button =
           editingId={editing}
           needsApproval={data.policy === "pre-approval"}
           oncancel={cancel}
+          onsaved={cancel}
         />
       {/key}
     {/if}
