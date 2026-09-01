@@ -96,7 +96,7 @@ test("the definition of done, start to finish (§25)", async ({ page, browser })
   await page.getByRole("button", { name: m.educator_provision_submit() }).click();
   await expect(page.getByText(m.educator_cards_once())).toBeVisible();
 
-  const code = (await page.locator("code").allInnerTexts())[0];
+  const code = (await page.locator("[data-slip-code]").allTextContents())[0];
   expect(code).toMatch(/^[0-9A-Z]{4}(-[0-9A-Z]{4}){5}$/);
 
   // --- …and presses Open classroom ---

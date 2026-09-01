@@ -162,9 +162,29 @@ const smallButton =
               <button type="submit" class={smallButton}>{m.educator_save()}</button>
             </form>
 
-            <form method="POST" action="?/rotate" use:enhance>
+            <form
+              method="POST"
+              action="?/rotate"
+              use:enhance
+              class="flex max-w-xs flex-col gap-1"
+            >
               <input type="hidden" name="studentId" value={student.id} />
-              <button type="submit" class={smallButton}>{m.educator_student_rotate()}</button>
+              <button
+                type="submit"
+                onclick={(event) => {
+                  if (!window.confirm(m.educator_slip_rotate_confirm({ label: student.label }))) {
+                    event.preventDefault();
+                  }
+                }}
+                class={smallButton}
+              >
+                {m.educator_slip_create()}
+              </button>
+              {#if student.status !== "active"}
+                <span class="text-[0.6875rem] text-muted-foreground">
+                  {m.educator_slip_inactive()}
+                </span>
+              {/if}
             </form>
 
             {#if student.displayName}

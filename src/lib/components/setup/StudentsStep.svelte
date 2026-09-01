@@ -23,12 +23,13 @@ import type { Locale } from "$lib/paraglide/runtime";
 interface Props {
   cards: CredentialCard[];
   classroomName: string;
+  appOrigin: string;
   /** The classroom's interface language — what the printed card is written in (§17). */
   classroomLanguage: Locale;
   alreadyProvisioned: boolean;
 }
 
-let { cards, classroomName, classroomLanguage, alreadyProvisioned }: Props = $props();
+let { cards, classroomName, appOrigin, classroomLanguage, alreadyProvisioned }: Props = $props();
 
 const field = "h-10 rounded-md border border-input bg-background px-3 text-sm text-foreground";
 </script>
@@ -55,7 +56,7 @@ const field = "h-10 rounded-md border border-input bg-background px-3 text-sm te
     </button>
   </form>
 
-  <CredentialCards {cards} {classroomName} locale={classroomLanguage} />
+  <CredentialCards {cards} {classroomName} {appOrigin} locale={classroomLanguage} />
 
   <div class="flex flex-wrap gap-2">
     <a

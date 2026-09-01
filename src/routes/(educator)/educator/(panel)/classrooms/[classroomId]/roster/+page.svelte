@@ -2,7 +2,7 @@
 import { enhance } from "$app/forms";
 import CredentialCards from "$lib/components/educator/CredentialCards.svelte";
 import RosterTable from "$lib/components/educator/RosterTable.svelte";
-import type { CredentialCard } from "$lib/credentials";
+import type { CredentialBatch } from "$lib/credentials";
 import * as m from "$lib/paraglide/messages";
 import type { PageProps } from "./$types";
 
@@ -14,8 +14,13 @@ import type { PageProps } from "./$types";
  */
 let { data, form }: PageProps = $props();
 
-const cards = $derived(
-  form && "cards" in form ? ((form.cards ?? []) as CredentialCard[]) : ([] as CredentialCard[]),
+const batch = $derived(
+  form && "batch" in form
+    ? ((form.batch as CredentialBatch | undefined) ?? null)
+    : (null as CredentialBatch | null),
+);
+const slipIssueFailure = $derived(
+  form && "slipIssueFailure" in form ? form.slipIssueFailure : null,
 );
 const confirmMismatch = $derived(
   form && "confirmMismatch" in form ? ((form.confirmMismatch as string | null) ?? null) : null,
@@ -24,9 +29,11 @@ const confirmMismatch = $derived(
 
 <div class="flex max-w-4xl flex-col gap-8">
   <CredentialCards
-    {cards}
+    cards={batch?.cards ?? []}
     classroomName={data.classroom.name}
     locale={data.classroom.interfaceLanguage}
+    appOrigin={data.appOrigin}
+    scope={batch?.scope ?? "classroom"}
   />
 
   <section class="flex flex-col gap-3">
@@ -52,6 +59,36 @@ const confirmMismatch = $derived(
         {m.educator_provision_submit()}
       </button>
     </form>
+  </section>
+
+  <section class="flex flex-col gap-3 border-t border-border pt-6">
+    <h2 class="text-sm font-medium text-foreground">{m.educator_slips_title()}</h2>
+    <p class="text-xs text-muted-foreground">{m.educator_slip_security()}</p>
+
+    <form
+      method="POST"
+      action="?/rotateClassroom"
+      use:enhance
+    >
+      <button
+        type="submit"
+        disabled={data.activeStudentCount === 0}
+        onclick={(event) => {
+          if (!window.confirm(m.educator_slip_bulk_confirm({ count: data.activeStudentCount }))) {
+            event.preventDefault();
+          }
+        }}
+        class="h-9 rounded-md border border-input px-4 text-sm font-medium text-foreground hover:bg-secondary disabled:opacity-50"
+      >
+        {m.educator_slip_bulk_submit({ count: data.activeStudentCount })}
+      </button>
+    </form>
+
+    {#if data.activeStudentCount === 0 || slipIssueFailure === "empty"}
+      <p class="text-xs text-muted-foreground">{m.educator_slip_bulk_empty()}</p>
+    {:else if slipIssueFailure === "stale"}
+      <p class="text-xs text-destructive" role="alert">{m.educator_slip_bulk_stale()}</p>
+    {/if}
   </section>
 
   <RosterTable students={data.students} {confirmMismatch} />
