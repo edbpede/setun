@@ -1,4 +1,5 @@
 import { type Browser, expect, type Page, test } from "@playwright/test";
+import { accessSlipFilename } from "../src/lib/access-slips";
 import { EDUCATOR_RECOVERY_COMMAND } from "../src/lib/educator-recovery";
 import * as m from "../src/lib/paraglide/messages";
 import { E2E_EDUCATOR_PASSWORD, E2E_EDUCATOR_USERNAME } from "../playwright.config";
@@ -85,26 +86,60 @@ test("an educator creates a classroom, provisions pupils, opens, locks and rotat
   await expect(page).toHaveURL(/\/educator\/classrooms\//);
 
   const classroomUrl = page.url();
+  const appOrigin = new URL(classroomUrl).origin;
+
+  // A direct action POST is educator-guarded, not protected only by hidden UI.
+  const unauthenticated = await browser.newContext();
+  const unauthenticatedIssue = await unauthenticated.request.post(
+    `${classroomUrl}/roster?/rotateClassroom`,
+    { form: {}, headers: { origin: appOrigin }, maxRedirects: 0 },
+  );
+  expect(unauthenticatedIssue.status()).toBe(200);
+  expect(await unauthenticatedIssue.json()).toEqual({
+    type: "redirect",
+    status: 303,
+    location: "/educator/login",
+  });
+  await unauthenticated.close();
 
   // --- Provision a batch, and read the cards ---
   await page.getByRole("link", { name: m.educator_nav_roster() }).click();
-  await page.getByLabel(m.educator_provision_count_label()).fill("3");
+  await page.getByLabel(m.educator_provision_count_label()).fill("9");
   await page.getByRole("button", { name: m.educator_provision_submit() }).click();
 
   // "The code is shown at provisioning and rotation only" (§7): the cards are in
   // this response and nowhere else.
   await expect(page.getByText(m.educator_cards_once())).toBeVisible();
-  const cards = page.locator("li", { has: page.locator("code") });
-  const codes = await cards.locator("code").allInnerTexts();
-  expect(codes).toHaveLength(3);
+  const codes = await page.locator("[data-slip-code]").allTextContents();
+  expect(codes).toHaveLength(9);
 
   // Distinct codes from a CSPRNG, not a sequence (§7, §21).
-  expect(new Set(codes).size).toBe(3);
+  expect(new Set(codes).size).toBe(9);
 
   // The card names the pupil it belongs to, so the rotation below can name the
   // same one rather than trusting two lists to be in the same order.
-  const labels = await cards.locator("span.font-semibold").allInnerTexts();
-  expect(labels).toHaveLength(3);
+  const labels = await page.locator("[data-slip-label]").allTextContents();
+  expect(labels).toHaveLength(9);
+
+  // Fragment-assisted sign-in uses the unchanged login action, and the bearer
+  // fragment is gone by the time authentication completes.
+  const qrContext = await browser.newContext();
+  const qrPage = await qrContext.newPage();
+  await qrPage.goto(`/login#code=${encodeURIComponent(codes[1])}`);
+  await expect(qrPage).toHaveURL(/\/chat/);
+  expect(new URL(qrPage.url()).hash).toBe("");
+  const studentIssue = await qrPage.request.post(`${classroomUrl}/roster?/rotateClassroom`, {
+    form: {},
+    headers: { origin: appOrigin },
+    maxRedirects: 0,
+  });
+  expect(studentIssue.status()).toBe(200);
+  expect(await studentIssue.json()).toEqual({
+    type: "redirect",
+    status: 303,
+    location: "/educator/login",
+  });
+  await qrContext.close();
 
   // --- The code works, at the login endpoint ---
   expect(await codeSignsIn(browser, codes[0])).toBe(true);
@@ -112,7 +147,25 @@ test("an educator creates a classroom, provisions pupils, opens, locks and rotat
   // --- Reloading the roster does not show a code again (§7) ---
   await page.reload();
   await expect(page.getByText(m.educator_cards_once())).toHaveCount(0);
-  await expect(page.locator("code")).toHaveCount(0);
+  await expect(page.locator("[data-slip-code]")).toHaveCount(0);
+
+  // A valid educator session still cannot smuggle a student ID across classes.
+  const firstStudentId = await page
+    .locator('input[name="studentId"]')
+    .first()
+    .getAttribute("value");
+  expect(firstStudentId).toBeTruthy();
+  await page.goto("/educator");
+  await page
+    .getByLabel(m.educator_classroom_name_label())
+    .fill(`E2E cross-class ${Date.now()}`);
+  await page.getByRole("button", { name: m.educator_create_classroom() }).click();
+  const crossClassIssue = await page.request.post(`${page.url()}/roster?/rotate`, {
+    form: { studentId: firstStudentId ?? "" },
+    headers: { origin: appOrigin },
+    maxRedirects: 0,
+  });
+  expect(crossClassIssue.status()).toBe(404);
 
   // --- Open, then lock ---
   await page.goto(classroomUrl);
@@ -124,19 +177,61 @@ test("an educator creates a classroom, provisions pupils, opens, locks and rotat
 
   // --- Rotate: the new code works and the old one is refused (§7, §21) ---
   await page.goto(`${classroomUrl}/roster`);
+  page.once("dialog", (dialog) => dialog.accept());
   await page
     .getByRole("listitem")
     .filter({ hasText: labels[0] })
-    .getByRole("button", { name: m.educator_student_rotate() })
+    .getByRole("button", { name: m.educator_slip_create() })
     .click();
   await expect(page.getByText(m.educator_cards_once())).toBeVisible();
 
-  const rotated = (await page.locator("code").allInnerTexts())[0];
+  const rotated = (await page.locator("[data-slip-code]").allTextContents())[0];
   expect(rotated).not.toBe(codes[0]);
 
   // The rotated code is the credential now; the one it replaced is not.
   expect(await codeSignsIn(browser, rotated)).toBe(true);
   expect(await codeSignsIn(browser, codes[0])).toBe(false);
+
+  // --- Rotate the server-selected active classroom as one batch ---
+  page.once("dialog", (dialog) => dialog.accept());
+  await page
+    .getByRole("button", { name: m.educator_slip_bulk_submit({ count: 9 }) })
+    .click();
+  await expect(page.locator("[data-slip-code]")).toHaveCount(9);
+  const classroomCodes = await page.locator("[data-slip-code]").allTextContents();
+  expect(classroomCodes).toHaveLength(9);
+  expect(await codeSignsIn(browser, rotated)).toBe(false);
+  expect(await codeSignsIn(browser, classroomCodes[0])).toBe(true);
+
+  // The PDF is generated in the browser from the two visible A4 SVG pages.
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: m.educator_slip_download() }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe(
+    accessSlipFilename({ scope: "classroom", classroomName: CLASSROOM }),
+  );
+  const stream = await download.createReadStream();
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+  const pdf = Buffer.concat(chunks).toString("latin1");
+  expect(pdf.startsWith("%PDF-")).toBe(true);
+  expect(pdf.trimEnd().endsWith("%%EOF")).toBe(true);
+  expect(pdf.match(/\/Type\s*\/Page\b/g)).toHaveLength(2);
+
+  await page.emulateMedia({ media: "print" });
+  await expect(page.getByRole("button", { name: m.educator_slip_download() })).toBeHidden();
+  await expect(page.getByRole("navigation")).toBeHidden();
+  const printPages = await page.locator(".access-slip-page").evaluateAll((elements) =>
+    elements.map((element) => ({
+      width: getComputedStyle(element).width,
+      height: getComputedStyle(element).height,
+      breakAfter: getComputedStyle(element).breakAfter,
+    })),
+  );
+  expect(printPages).toHaveLength(2);
+  expect(Number.parseFloat(printPages[0]?.width ?? "0")).toBeCloseTo(793.7, 0);
+  expect(Number.parseFloat(printPages[0]?.height ?? "0")).toBeCloseTo(1122.5, 0);
+  expect(printPages[0]?.breakAfter).toBe("page");
 });
 
 test("a removed pupil leaves the roster, and a disabled one cannot sign in (§16, §21)", async ({
@@ -154,11 +249,10 @@ test("a removed pupil leaves the roster, and a disabled one cannot sign in (§16
   await page.getByRole("button", { name: m.educator_provision_submit() }).click();
   await expect(page.getByText(m.educator_cards_once())).toBeVisible();
 
-  const cards = page.locator("li", { has: page.locator("code") });
-  const codes = await cards.locator("code").allInnerTexts();
+  const codes = await page.locator("[data-slip-code]").allTextContents();
   // By label rather than by position: the roster is ordered by label and the
   // cards by the order they were minted, which are not the same order.
-  const labels = await cards.locator("span.font-semibold").allInnerTexts();
+  const labels = await page.locator("[data-slip-label]").allTextContents();
 
   // Disabling stops the credential working at once (§7, §21).
   await page

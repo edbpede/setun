@@ -1,6 +1,7 @@
 <script lang="ts">
 import {
   type AccessSlipScope,
+  accessSlipFilename,
   accessSlipLoginUrl,
   createQrPath,
   paginateAccessSlips,
@@ -26,6 +27,8 @@ interface Props {
 let { cards, classroomName, locale, appOrigin, scope = "classroom" }: Props = $props();
 
 let previewRoot = $state<HTMLDivElement>();
+let downloading = $state(false);
+let pdfFailed = $state(false);
 
 const cardLocale = $derived({ locale });
 const loginAddress = $derived(new URL("/login", appOrigin).toString());
@@ -41,6 +44,37 @@ const prepared = $derived.by(() => {
   });
   return { pages: paginateAccessSlips(slips), qrFailed };
 });
+const filename = $derived(
+  accessSlipFilename({
+    scope,
+    classroomName,
+    nickname: cards.length === 1 ? cards[0]?.label : undefined,
+  }),
+);
+
+async function downloadPdf(): Promise<void> {
+  downloading = true;
+  pdfFailed = false;
+  try {
+    if (!previewRoot) throw new Error("access-slip preview is unavailable");
+    const pageElements = previewRoot.querySelectorAll<SVGSVGElement>("svg[data-access-slip-page]");
+    const { createAccessSlipPdf } = await import("$lib/access-slip-pdf");
+    const blob = await createAccessSlipPdf([...pageElements]);
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.hidden = true;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  } catch {
+    pdfFailed = true;
+  } finally {
+    downloading = false;
+  }
+}
 </script>
 
 {#if cards.length > 0}
@@ -63,6 +97,14 @@ const prepared = $derived.by(() => {
           >
             {m.educator_print()}
           </button>
+          <button
+            type="button"
+            onclick={downloadPdf}
+            disabled={downloading}
+            class="h-9 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
+          >
+            {downloading ? m.educator_slip_downloading() : m.educator_slip_download()}
+          </button>
         </div>
       </div>
 
@@ -70,6 +112,9 @@ const prepared = $derived.by(() => {
       <p class="text-xs text-muted-foreground">{m.educator_slip_security()}</p>
       {#if prepared.qrFailed}
         <p class="text-xs text-destructive" role="alert">{m.educator_slip_qr_warning()}</p>
+      {/if}
+      {#if pdfFailed}
+        <p class="text-xs text-destructive" role="alert">{m.educator_slip_pdf_failed()}</p>
       {/if}
     </div>
 
