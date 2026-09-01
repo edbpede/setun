@@ -1,13 +1,10 @@
+import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import type { AppDatabase } from "../db/client";
-import {
-  createStudent,
-  listClassroomStudents,
-  updateStudentCredential,
-} from "../db/queries/students";
+import { createStudent, listClassroomStudents } from "../db/queries/students";
 import type { Student } from "../db/schema";
+import { session, student as studentTable } from "../db/schema";
 import { digestCode, type GeneratedCode, generateCode } from "./codes";
 import { generateLabel } from "./pseudonyms";
-import { invalidateAllSessionsFor } from "./sessions";
 import type { WordlistLocale } from "./wordlists";
 
 /**
@@ -23,6 +20,10 @@ export interface ProvisionedStudent {
   /** Display this once, then it is gone (§7). */
   readonly code: GeneratedCode;
 }
+
+export type ClassroomCredentialRotation =
+  | { readonly status: "rotated"; readonly students: ProvisionedStudent[] }
+  | { readonly status: "empty" | "stale"; readonly students: [] };
 
 /**
  * Provision a batch (§17).
@@ -114,18 +115,135 @@ export async function rotateStudentCredential(
   input: { studentId: string; classroomId: string; pepper: string },
 ): Promise<GeneratedCode | null> {
   const code = generateCode();
+  const credentialDigest = await digestCode(code.normalised, input.pepper);
 
-  // Classroom-scoped: an educator's URL must not be a way to reissue a code for
-  // a pupil in another class, and a mismatched pair updates nothing (§21).
-  const updated = updateStudentCredential(db, {
-    studentId: input.studentId,
-    classroomId: input.classroomId,
-    credentialDigest: await digestCode(code.normalised, input.pepper),
-    credentialHint: code.hint,
-  });
+  const updated = db.transaction(
+    (tx) => {
+      // Classroom-scoped: an educator's URL must not be a way to reissue a code
+      // for a pupil in another class, and a mismatched pair updates nothing.
+      const changed = tx
+        .update(studentTable)
+        .set({ credentialDigest, credentialHint: code.hint, updatedAt: new Date() })
+        .where(
+          and(
+            eq(studentTable.id, input.studentId),
+            eq(studentTable.classroomId, input.classroomId),
+          ),
+        )
+        .returning({ id: studentTable.id })
+        .get();
+      if (!changed) return false;
+
+      tx.update(session)
+        .set({ invalidatedAt: new Date() })
+        .where(
+          and(
+            eq(session.ownerKind, "student"),
+            eq(session.ownerId, input.studentId),
+            isNull(session.invalidatedAt),
+          ),
+        )
+        .run();
+      return true;
+    },
+    { behavior: "immediate" },
+  );
   if (!updated) return null;
 
-  invalidateAllSessionsFor(db, { ownerKind: "student", ownerId: input.studentId });
-
   return code;
+}
+
+/**
+ * Rotate every active credential in one classroom as one all-or-nothing issue.
+ *
+ * The roster is selected here, never supplied by the browser. Expensive HMACs
+ * are prepared before taking SQLite's writer reservation, then an immediate
+ * transaction verifies that the active roster and its credentials still match
+ * the snapshot before changing any row. A concurrent status or credential
+ * change therefore aborts the whole issue instead of producing a mixed sheet.
+ */
+export async function rotateActiveClassroomCredentials(
+  db: AppDatabase,
+  input: { classroomId: string; pepper: string },
+): Promise<ClassroomCredentialRotation> {
+  const snapshot = listClassroomStudents(db, input.classroomId).filter(
+    (student) => student.status === "active",
+  );
+  if (snapshot.length === 0) return { status: "empty", students: [] };
+
+  const prepared = await Promise.all(
+    snapshot.map(async (student) => {
+      const code = generateCode();
+      return {
+        student,
+        code,
+        digest: await digestCode(code.normalised, input.pepper),
+      };
+    }),
+  );
+
+  return db.transaction(
+    (tx): ClassroomCredentialRotation => {
+      const current = tx
+        .select({
+          id: studentTable.id,
+          label: studentTable.label,
+          credentialDigest: studentTable.credentialDigest,
+        })
+        .from(studentTable)
+        .where(
+          and(eq(studentTable.classroomId, input.classroomId), eq(studentTable.status, "active")),
+        )
+        .orderBy(asc(studentTable.label))
+        .all();
+
+      const unchanged =
+        current.length === snapshot.length &&
+        current.every(
+          (row, index) =>
+            row.id === snapshot[index]?.id &&
+            row.label === snapshot[index]?.label &&
+            row.credentialDigest === snapshot[index]?.credentialDigest,
+        );
+      if (!unchanged) return { status: "stale", students: [] };
+
+      const now = new Date();
+      for (const item of prepared) {
+        tx.update(studentTable)
+          .set({ credentialDigest: item.digest, credentialHint: item.code.hint, updatedAt: now })
+          .where(
+            and(
+              eq(studentTable.id, item.student.id),
+              eq(studentTable.classroomId, input.classroomId),
+              eq(studentTable.status, "active"),
+              eq(studentTable.credentialDigest, item.student.credentialDigest),
+            ),
+          )
+          .run();
+      }
+
+      tx.update(session)
+        .set({ invalidatedAt: now })
+        .where(
+          and(
+            eq(session.ownerKind, "student"),
+            isNull(session.invalidatedAt),
+            inArray(
+              session.ownerId,
+              snapshot.map((student) => student.id),
+            ),
+          ),
+        )
+        .run();
+
+      return {
+        status: "rotated",
+        students: prepared.map(({ student, code }) => ({
+          student,
+          code,
+        })),
+      };
+    },
+    { behavior: "immediate" },
+  );
 }
