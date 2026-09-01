@@ -1,6 +1,5 @@
 import { describe, expect, it } from "bun:test";
 import type { AppDatabase } from "../db/client";
-import { allowAlias } from "../db/queries/classroom-aliases";
 import {
   allowTool,
   listMcpTools,
@@ -9,7 +8,6 @@ import {
   syncMcpTools,
   upsertMcpServer,
 } from "../db/queries/mcp";
-import { createAlias } from "../db/queries/model-aliases";
 import { createSkill, grantSkill } from "../db/queries/skills";
 import type { PermissionMode } from "../db/schema";
 import { createTestDatabase, seedTestFixtures } from "../db/testing";
