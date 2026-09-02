@@ -66,6 +66,11 @@ describe("StreamingMessage", () => {
       .toBeVisible();
     await expect.element(page.getByText("Her er siden:")).toBeVisible();
 
+    // The stub appearing is half of it. A partial leak — the card above the
+    // markup it stood in for — would satisfy every assertion around this one,
+    // and is the regression the stub exists to prevent.
+    expect(document.body.textContent).not.toContain("<h1>");
+
     turn.apply({ type: "text-delta", text: "</h1>\n```\nFærdig." }, 1);
 
     await expect
@@ -73,6 +78,10 @@ describe("StreamingMessage", () => {
       .not.toBeInTheDocument();
     await expect.element(page.getByText("Min side")).toBeVisible();
     await expect.element(page.getByText("Færdig.")).toBeVisible();
+
+    // Closed, the fence body is still the card's and not the prose's.
+    expect(document.body.textContent).not.toContain("<h1>");
+    expect(document.body.textContent).not.toContain("</h1>");
   });
 
   it("never renders model output as live HTML", async () => {
