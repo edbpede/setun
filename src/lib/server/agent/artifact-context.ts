@@ -1,6 +1,6 @@
 import { artifactLanguage } from "../../artifacts/detect";
 import { fencedBlocks } from "../../artifacts/fences";
-import { effectiveArtifactKey } from "../../artifacts/identity";
+import { effectiveArtifactKey, normaliseArtifactKey } from "../../artifacts/identity";
 import type { ArtifactLanguage, BuildStatus, VersionAuthor } from "../../artifacts/types";
 import type { AppDatabase } from "../db/client";
 import { listConversationVersions } from "../db/queries/artifacts";
@@ -145,6 +145,12 @@ export function formatArtifactState(state: readonly ArtifactStateLine[]): string
  * ordinary code block, an empty fence, a deleted or expired artifact), a block
  * whose artifact's current source is not on this path at all, and a block in the
  * same message as that current source.
+ *
+ * The index is keyed by source text, and two artifacts can hold the same text —
+ * so a block is matched against its *own* artifact first, by the id it carries
+ * or by the id the part names. Without that, a block belonging to one artifact
+ * can be elided against another artifact's later copy: the placeholder names the
+ * wrong id, and the source the model still needs is gone from the path.
  */
 export function elideSupersededArtifacts(
   path: readonly Pick<Message, "role" | "parts">[],
@@ -166,15 +172,17 @@ export function elideSupersededArtifacts(
   });
 
   return path.map((message, at) => {
-    // The ref that decides this source's fate: the first whose artifact has its
-    // current version further down the path.
-    const superseded = (source: string): ArtifactSourceRef | null =>
-      refsFor(source).find((ref) => (currentAt.get(ref.artifactId) ?? -1) > at) ?? null;
+    // The ref that decides this source's fate: the block's own artifact, if its
+    // current version is further down the path.
+    const superseded = (source: string, identity: BlockIdentity): ArtifactSourceRef | null =>
+      refsFor(source)
+        .filter((ref) => owns(ref, identity))
+        .find((ref) => (currentAt.get(ref.artifactId) ?? -1) > at) ?? null;
 
     let changed = false;
     const parts = message.parts.map((part): MessagePart => {
       if (part.type === "artifact-edit") {
-        const ref = superseded(part.source);
+        const ref = superseded(part.source, { artifactId: part.artifactId });
         if (!ref) return part;
 
         changed = true;
@@ -189,9 +197,13 @@ export function elideSupersededArtifacts(
       let rewritten = false;
 
       for (const block of [...fencedBlocks(part.text)].reverse()) {
-        if (!artifactLanguage(block.language)) continue;
+        const language = artifactLanguage(block.language);
+        if (!language) continue;
 
-        const ref = superseded(block.source);
+        const ref = superseded(block.source, {
+          key: normaliseArtifactKey(block.attributes.id),
+          language,
+        });
         if (!ref) continue;
 
         lines.splice(block.line, block.endLine - block.line + 1, placeholder(ref));
@@ -205,6 +217,27 @@ export function elideSupersededArtifacts(
 
     return changed ? { ...message, parts } : message;
   });
+}
+
+/**
+ * What a block says about which artifact it is, in the order that settles it.
+ *
+ * The id the part names is exact; the id on a fence is what the model itself
+ * wrote; the tag is all a block written before ids carries.
+ */
+type BlockIdentity =
+  | { readonly artifactId: string; readonly key?: undefined; readonly language?: undefined }
+  | {
+      readonly artifactId?: undefined;
+      readonly key: string | null;
+      readonly language: ArtifactLanguage;
+    };
+
+function owns(ref: ArtifactSourceRef, identity: BlockIdentity): boolean {
+  if (identity.artifactId !== undefined) return ref.artifactId === identity.artifactId;
+  if (identity.key !== null) return ref.key === identity.key;
+
+  return ref.language === identity.language;
 }
 
 /** Every artifact source a message holds, from either kind of part. */

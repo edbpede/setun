@@ -282,6 +282,35 @@ describe("elideSupersededArtifacts", () => {
     });
   });
 
+  it("elides a block against its own artifact, not another holding the same text", () => {
+    // Two artifacts can hold byte-identical source — a pupil asking for "the
+    // same page again under a new id" is the ordinary way. The index is keyed by
+    // text, so without the id the wrong artifact decides both blocks' fate.
+    assistantTurn("```html id=side\n<p>ens</p>\n```");
+    assistantTurn("```html id=kopi\n<p>ens</p>\n```");
+    // Only `side` moves on; `kopi` still holds the shared text as its current
+    // source and must reach the model in full.
+    assistantTurn("```html id=side\n<p>ny</p>\n```");
+
+    const elided = elideSupersededArtifacts(
+      path(
+        assistant("```html id=side\n<p>ens</p>\n```"),
+        assistant("```html id=kopi\n<p>ens</p>\n```"),
+        assistant("```html id=side\n<p>ny</p>\n```"),
+      ),
+      context().index,
+    );
+
+    expect(elided[0].parts[0]).toEqual({
+      type: "text",
+      text: "[artifact id=side (html) revision 1 — superseded; the current version appears later in this conversation]",
+    });
+    expect(elided[1].parts[0]).toEqual({
+      type: "text",
+      text: "```html id=kopi\n<p>ens</p>\n```",
+    });
+  });
+
   it("does nothing at all when the conversation has built nothing", () => {
     const given = path(user("hej"), assistant("```html\n<p>en</p>\n```"));
 
