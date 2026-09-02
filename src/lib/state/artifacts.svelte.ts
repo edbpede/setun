@@ -153,6 +153,10 @@ export class ArtifactWorkspace {
 
     this.hydrated = true;
     this.hydratedFor = conversationId;
+    // The badge belongs to the list it was raised over. A page load or a switch
+    // replaces that list wholesale, so an artifact the pupil never looked at in
+    // the conversation they have left must not go on badging the Build button.
+    if (fresh) this.unseen = null;
     /**
      * A draft on some *other* artifact is work the pupil is in the middle of,
      * and following the model's write would take the editor out from under them.

@@ -531,11 +531,21 @@ async function deleteConversation(conversationId: string): Promise<void> {
  * The pupil's route from "here is the page" to the page is one tap. An artifact
  * the conversation no longer holds — deleted from the gallery, or on a branch
  * that is not on screen — simply does nothing rather than opening an empty panel.
+ *
+ * Tapping the card of the artifact already on screen only brings the panel
+ * forward. `show` resets the editor, and in split view the pupil can reach a
+ * card while they are typing into that very artifact — so re-showing it would
+ * throw away the draft rather than show them anything they were not already
+ * looking at. A closed panel is a different matter: it holds no running source,
+ * so reopening it is what puts the artifact back on screen.
  */
 function openArtifact(artifactId: string): void {
   if (!artifacts.items.some((item) => item.id === artifactId)) return;
 
+  const showing = artifacts.visible && artifacts.openId === artifactId;
   artifacts.visible = true;
+  if (showing) return;
+
   artifacts.show(artifactId);
 }
 
@@ -548,6 +558,11 @@ function openArtifact(artifactId: string): void {
  * it covers the composer; a split panel does not, so it stays.
  */
 function askForHelp(): void {
+  // A question, sent now, as text. An edit in progress would send it as a
+  // sibling of some earlier prompt, and image mode would draw the sentence
+  // instead of answering it (§10, §15).
+  composer.editingMessageId = null;
+  composer.mode = "text";
   composer.setDraft(m.artifact_fix_request());
   if (artifacts.layout !== "split") artifacts.close();
 }

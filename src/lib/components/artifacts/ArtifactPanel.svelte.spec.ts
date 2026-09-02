@@ -401,6 +401,24 @@ describe("following the model's writes", () => {
     expect(workspace.visible).toBe(false);
   });
 
+  it("drops the unseen badge when the list it was raised over is replaced", () => {
+    const workspace = new ArtifactWorkspace();
+    workspace.replace([artifact()], "c1");
+    workspace.select("artifact-1");
+    workspace.edit("<p>jeg skriver</p>");
+    workspace.replace(
+      [artifact(), { ...artifact(), id: "artifact-2", latest: { ...artifact().latest, id: "v2" } }],
+      "c1",
+    );
+    expect(workspace.unseen).toBe("artifact-2");
+
+    // Another conversation's artifacts. The badge would otherwise go on
+    // pointing at an artifact this list does not hold (§13).
+    workspace.replace([{ ...artifact(), id: "artifact-9" }], "c2");
+
+    expect(workspace.unseen).toBeNull();
+  });
+
   it("follows the first block written of two writes in one turn", () => {
     const workspace = new ArtifactWorkspace();
     workspace.replace([artifact()]);
