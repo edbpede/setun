@@ -198,6 +198,22 @@ test("a component that throws while rendering is a failure, not a late throw", a
   expect(await sandboxMessageTypes(page)).not.toContain("rendered");
 });
 
+test("a component that throws a falsy value is a failure too", async ({ page }) => {
+  test.setTimeout(90_000);
+  await page.goto("/login");
+
+  await mountArtifact(page, {
+    language: "tsx",
+    source: ["export default function App() {", "  throw null;", "}"].join("\n"),
+  });
+
+  // `throw null` is legal. A harness that decided on the caught value rather
+  // than on whether the crash handler fired read it as no crash at all, acked
+  // the mount, and told the pupil a component that rendered nothing had run.
+  await expect.poll(() => sandboxMessageTypes(page), { timeout: 60_000 }).toContain("failed");
+  expect(await sandboxMessageTypes(page)).not.toContain("rendered");
+});
+
 /** A page that keeps a running total in `localStorage`, which is what a game does. */
 const SCORE_KEEPER = [
   "<!doctype html><html><body><p id=\"out\">…</p><script>",
