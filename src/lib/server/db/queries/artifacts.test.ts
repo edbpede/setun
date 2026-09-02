@@ -150,24 +150,22 @@ describe("listConversationVersions", () => {
 
     // Grouped by artifact, each group by ascending revision: the caller folds
     // this in one pass and takes the last row of each group as the current one.
-    const expected = [artifact.id, quiz.id].sort();
-    expect(rows.map((row) => [row.artifact.id, row.version.revision])).toEqual(
-      expected[0] === artifact.id
-        ? [
-            [artifact.id, 1],
-            [artifact.id, 2],
-            [quiz.id, 1],
-            [quiz.id, 2],
-            [quiz.id, 3],
-          ]
-        : [
-            [quiz.id, 1],
-            [quiz.id, 2],
-            [quiz.id, 3],
-            [artifact.id, 1],
-            [artifact.id, 2],
-          ],
-    );
+    // Which group comes first is `artifact.createdAt`, so the assertion asks
+    // about the grouping rather than predicting the order of the two.
+    const groups = rows.reduce<Record<string, number[]>>((held, row) => {
+      held[row.artifact.id] = [...(held[row.artifact.id] ?? []), row.version.revision];
+      return held;
+    }, {});
+
+    expect(groups).toEqual({ [artifact.id]: [1, 2], [quiz.id]: [1, 2, 3] });
+
+    // And each artifact's rows are contiguous, which is what the one-pass fold
+    // needs: collapsing consecutive repeats leaves one entry per artifact.
+    const contiguous = rows
+      .map((row) => row.artifact.id)
+      .filter((id, index, all) => id !== all[index - 1]);
+
+    expect(contiguous).toHaveLength(2);
   });
 
   it("is scoped to its owner", () => {
