@@ -36,6 +36,11 @@ function artifact(overrides: Partial<ArtifactView> = {}): ArtifactView {
   };
 }
 
+/** The status strip's own sentence, read whole rather than as a substring. */
+function statusStrip(): string | undefined {
+  return document.querySelector('[role="status"]')?.textContent?.trim();
+}
+
 function openWorkspace(items: ArtifactView[] = [artifact()]): ArtifactWorkspace {
   const workspace = new ArtifactWorkspace();
   workspace.items = items;
@@ -417,7 +422,7 @@ describe("ArtifactPanel", () => {
 
     // The mount's `ok` is held open until the `threw` behind it is queued, so
     // the refusal lands while the second report is the one the panel owes.
-    let refuse: ((response: Response) => void) | null = null;
+    let refuse!: (response: Response) => void;
     const held = new Promise<Response>((resolve) => {
       refuse = resolve;
     });
@@ -437,7 +442,7 @@ describe("ArtifactPanel", () => {
       workspace.recordOutcome("threw", "TypeError");
       await vi.waitFor(() => expect(workspace.pendingBuildReport?.status).toBe("threw"));
 
-      refuse?.(new Response("nej", { status: 500 }));
+      refuse(new Response("nej", { status: 500 }));
       await vi.waitFor(() => expect(workspace.open?.latest.buildStatus).toBe("threw"));
       await new Promise((resolve) => setTimeout(resolve, 20));
 
@@ -450,6 +455,30 @@ describe("ArtifactPanel", () => {
     } finally {
       fetched.mockRestore();
     }
+  });
+
+  it("says a stored run threw rather than only that it ran", async () => {
+    // Reopened later: nothing is running, so the strip has only the stored
+    // status to read — and the trit beside it already says `threw` (§13, §20).
+    const workspace = openWorkspace([
+      artifact({ latest: { buildStatus: "threw", buildMessage: "TypeError" } as never }),
+    ]);
+
+    render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX });
+
+    // Read exactly: "It ran" is a prefix of "It ran, then stopped", so a
+    // substring match would pass on the wrong sentence.
+    await vi.waitFor(() => expect(statusStrip()).toBe(m.artifact_status_threw()));
+  });
+
+  it("says a stored run failed rather than that it ran", async () => {
+    const workspace = openWorkspace([
+      artifact({ latest: { buildStatus: "failed", buildMessage: "boom" } as never }),
+    ]);
+
+    render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX });
+
+    await vi.waitFor(() => expect(statusStrip()).toBe(m.artifact_status_failed()));
   });
 
   it("reports nothing for a draft the version does not hold", async () => {

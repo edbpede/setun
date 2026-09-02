@@ -472,6 +472,10 @@ $effect(() => {
               {m.artifact_status_ready()}
             {:else if runStatus === null}
               {m.artifact_status_not_run()}
+            {:else if runStatus === "threw"}
+              {m.artifact_status_threw()}
+            {:else if runStatus === "failed"}
+              {m.artifact_status_failed()}
             {:else}
               {m.artifact_status_ran()}
             {/if}
