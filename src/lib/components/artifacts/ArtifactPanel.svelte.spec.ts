@@ -437,6 +437,53 @@ describe("ArtifactPanel", () => {
   });
 });
 
+describe("the frame's renders", () => {
+  /** Say `ready` as the runner does, so the frame will send a render at all. */
+  function announceReady(): HTMLIFrameElement {
+    const frame = document.querySelector("iframe") as HTMLIFrameElement;
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data: { channel: "setun-artifact", type: "ready" },
+        source: frame.contentWindow,
+      }),
+    );
+    return frame;
+  }
+
+  it("does not re-render the artifact when a build status is recorded", async () => {
+    const workspace = openWorkspace();
+    // The frame is sandboxed without `allow-same-origin`, so its `postMessage`
+    // is unreachable from here — but a render mints exactly one run id, and that
+    // is countable (§14).
+    const minted = vi.spyOn(crypto, "randomUUID");
+
+    try {
+      render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX });
+      announceReady();
+
+      await vi.waitFor(() => expect(minted).toHaveBeenCalled());
+      const before = minted.mock.calls.length;
+
+      // Recording an outcome replaces the artifact list, so every value the
+      // frame reads comes from a new object — and re-sending the render tears
+      // the document down, losing whatever state the artifact had built up.
+      // With two outcomes in one run it also fed itself: the fresh mount
+      // reported `ok` over the `threw` that caused it, and round again (§13).
+      workspace.applyBuildStatus({
+        artifactId: "artifact-1",
+        versionId: "version-1",
+        status: "threw",
+        message: "TypeError",
+      });
+      await vi.waitFor(() => expect(workspace.open?.latest.buildStatus).toBe("threw"));
+
+      expect(minted.mock.calls.length).toBe(before);
+    } finally {
+      minted.mockRestore();
+    }
+  });
+});
+
 describe("restoring a revision written under another language", () => {
   /** An artifact the model has since rewritten as a component. */
   function rewritten(): ArtifactView {

@@ -119,6 +119,21 @@ let ready = $state(false);
 /** Plain, not reactive: it is only ever read inside an event callback. */
 let currentRunId: string | null = null;
 
+/**
+ * What the frame is already showing, so an unchanged render is not re-sent.
+ *
+ * The effect below re-runs whenever the panel's artifact list is *replaced*,
+ * which recording a build status does — the values it reads are equal, but the
+ * objects they came from are not. Re-sending the render tore the document down
+ * and built it again: a game lost its board, and the fresh mount reported an
+ * outcome of its own. With two outcomes in one run — `ok` at the mount and
+ * `threw` a moment later — that became a loop, each report causing the render
+ * that produced the next one.
+ *
+ * Plain, not reactive: written and read only inside the effect.
+ */
+let showing: { artifactId: string; language: ArtifactLanguage; source: string } | null = null;
+
 function send(message: HostMessage, transfer: Transferable[] = []): void {
   // `"*"` because the frame has an opaque origin, which has no addressable
   // form. Nothing secret travels this way — the artifact already has its source.
@@ -159,6 +174,9 @@ $effect(() => {
 
     if (message.type === "ready") {
       ready = true;
+      // A runner that says `ready` again is a document that has been reloaded
+      // and holds nothing, so the next render is not a repeat of anything.
+      showing = null;
       return;
     }
     // Not tied to a run: the compiler and the runtimes outlive any one of them.
@@ -186,6 +204,16 @@ $effect(() => {
   const kind = language;
   const owner = artifactId;
   if (!ready || !owner) return;
+
+  if (
+    showing &&
+    showing.artifactId === owner &&
+    showing.language === kind &&
+    showing.source === running
+  ) {
+    return;
+  }
+  showing = { artifactId: owner, language: kind, source: running };
 
   currentRunId = crypto.randomUUID();
   send({
