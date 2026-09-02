@@ -36,6 +36,13 @@ function artifact(overrides: Partial<ArtifactView> = {}): ArtifactView {
   };
 }
 
+/** Every request body the panel has sent, in the order it sent them. */
+function sentBodies(fetched: { mock: { calls: unknown[][] } }): string[] {
+  return fetched.mock.calls.map(([, init]) =>
+    String((init as RequestInit | undefined)?.body ?? ""),
+  );
+}
+
 /** The status strip's own sentence, read whole rather than as a substring. */
 function statusStrip(): string | undefined {
   return document.querySelector('[role="status"]')?.textContent?.trim();
@@ -444,14 +451,18 @@ describe("ArtifactPanel", () => {
 
       refuse(new Response("nej", { status: 500 }));
       await vi.waitFor(() => expect(workspace.open?.latest.buildStatus).toBe("threw"));
-      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      // A sentinel behind everything already queued. Reports travel one chain in
+      // the order they were raised, so a duplicate queued by the refusal above
+      // must have been sent before this one is — no sleep needed to see it.
+      workspace.recordOutcome("failed", "boom");
+      await vi.waitFor(() =>
+        expect(sentBodies(fetched).some((body) => body.includes("failed"))).toBe(true),
+      );
 
       // Clearing the stamp on the refusal would have reopened the effect on the
       // stamp the throw already held, and sent the throw a second time.
-      const threw = fetched.mock.calls.filter(([, init]) =>
-        String((init as RequestInit | undefined)?.body ?? "").includes("threw"),
-      );
-      expect(threw).toHaveLength(1);
+      expect(sentBodies(fetched).filter((body) => body.includes("threw"))).toHaveLength(1);
     } finally {
       fetched.mockRestore();
     }
