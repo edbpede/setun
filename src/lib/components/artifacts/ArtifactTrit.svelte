@@ -11,6 +11,11 @@ import * as m from "$lib/paraglide/messages";
  * right for ran — rather than as a coloured dot whose meaning has to be learned
  * from a legend.
  *
+ * A page that mounted and then threw is still three slots and still the right
+ * one: it *ran*, and moving it to the left would say the opposite. It is drawn
+ * hollow instead, which reads without colour, and carries the failed tone for
+ * anyone who does see colour.
+ *
  * The same glyph appears in the transcript card, the panel's status strip and
  * the History list, which is what makes it readable: a pupil sees it three times
  * in the same lesson and it means the same thing in all three.
@@ -27,9 +32,11 @@ interface Props {
 
 let { status, class: className = "" }: Props = $props();
 
-const filled = $derived(status === "failed" ? 0 : status === "ok" ? 2 : 1);
+const filled = $derived(status === "failed" ? 0 : status === "ok" || status === "threw" ? 2 : 1);
+/** The filled slot drawn as a ring: it ran, and then it stopped. */
+const hollow = $derived(status === "threw");
 const tone = $derived(
-  status === "failed"
+  status === "failed" || status === "threw"
     ? "text-destructive"
     : status === "ok"
       ? "text-primary"
@@ -38,9 +45,11 @@ const tone = $derived(
 const label = $derived(
   status === "failed"
     ? m.artifact_status_failed()
-    : status === "ok"
-      ? m.artifact_status_ran()
-      : m.artifact_status_not_run(),
+    : status === "threw"
+      ? m.artifact_status_threw()
+      : status === "ok"
+        ? m.artifact_status_ran()
+        : m.artifact_status_not_run(),
 );
 </script>
 
@@ -58,9 +67,9 @@ const label = $derived(
       cx={4 + slot * 7}
       cy="4"
       r={slot === filled ? 3 : 2}
-      fill={slot === filled ? "currentColor" : "none"}
+      fill={slot === filled && !hollow ? "currentColor" : "none"}
       stroke="currentColor"
-      stroke-width="1"
+      stroke-width={slot === filled && hollow ? "2" : "1"}
       opacity={slot === filled ? 1 : 0.35}
     />
   {/each}

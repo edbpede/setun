@@ -1,6 +1,21 @@
+<script lang="ts" module>
+/**
+ * Reports are sent one at a time, in the order they were raised.
+ *
+ * One run can produce two of them — `ok` when the page mounts, `threw` when it
+ * breaks a moment later — against the same version. Sent concurrently they can
+ * land in either order, and the loser is what the server keeps: the model would
+ * then be told a page ran when the pupil is looking at an error, or the reverse.
+ * A chain rather than a per-instance field so a panel remounted mid-flight does
+ * not start a second one.
+ */
+let sending: Promise<unknown> = Promise.resolve();
+</script>
+
 <script lang="ts">
 import { effectiveArtifactKey } from "$lib/artifacts/identity";
 import type { ConsoleLine } from "$lib/artifacts/protocol";
+import type { BuildStatus } from "$lib/artifacts/types";
 import * as m from "$lib/paraglide/messages";
 import {
   type ArtifactVersionView,
@@ -35,8 +50,13 @@ interface Props {
   workspace: ArtifactWorkspace;
   /** A distinct hostname from this one; isolation is by origin (§14). */
   sandboxOrigin: string;
-  /** The pupil asking the model to fix what did not run; the page pre-fills the composer. */
-  onaskforhelp?: () => void;
+  /**
+   * The pupil asking the model to fix what went wrong; the page pre-fills the
+   * composer. The status travels with it: "it did not run" and "it ran, then
+   * stopped" are different sentences, and the wrong one contradicts the note the
+   * model is given beside it.
+   */
+  onaskforhelp?: (status: BuildStatus) => void;
 }
 
 let { workspace, sandboxOrigin, onaskforhelp }: Props = $props();
@@ -80,13 +100,21 @@ const tabs = $derived([
   { value: "history" as const, label: m.artifact_tab_history() },
 ]);
 
-/** What the trit shows: this run's outcome if there is one, else what is stored. */
+/**
+ * What the trit shows: this run's outcome if there is one, else what is stored.
+ *
+ * `threw` is checked before the `running → ok` mapping below: a page that
+ * mounted and then threw stays "running" — it is still on screen — and the
+ * outcome is the only thing that knows it broke afterwards.
+ */
 const runStatus = $derived(
   workspace.status === "failed"
     ? ("failed" as const)
-    : workspace.status === "running"
-      ? ("ok" as const)
-      : (artifact?.latest.buildStatus ?? null),
+    : workspace.outcome?.status === "threw"
+      ? ("threw" as const)
+      : workspace.status === "running"
+        ? ("ok" as const)
+        : (artifact?.latest.buildStatus ?? null),
 );
 
 const shell = $derived(
@@ -240,20 +268,22 @@ $effect(() => {
   if (reported === stamp) return;
   reported = stamp;
 
-  void fetch(`/api/artifacts/${report.artifactId}/versions/${report.versionId}`, {
-    method: "PATCH",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ buildStatus: report.status, buildMessage: report.message }),
-  })
-    .then((response) => {
-      // Folded back in either way is wrong: an unrecorded outcome would be
-      // re-sent on the next render, and the model would be told nothing.
-      if (response.ok) workspace.applyBuildStatus(report);
-      else reported = null;
+  sending = sending.then(() =>
+    fetch(`/api/artifacts/${report.artifactId}/versions/${report.versionId}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ buildStatus: report.status, buildMessage: report.message }),
     })
-    .catch(() => {
-      reported = null;
-    });
+      .then((response) => {
+        // Folded back in either way is wrong: an unrecorded outcome would be
+        // re-sent on the next render, and the model would be told nothing.
+        if (response.ok) workspace.applyBuildStatus(report);
+        else reported = null;
+      })
+      .catch(() => {
+        reported = null;
+      }),
+  );
 });
 </script>
 
@@ -415,6 +445,8 @@ $effect(() => {
               {m.artifact_status_compiling()}
             {:else if workspace.status === "failed"}
               {m.artifact_status_failed()}
+            {:else if workspace.outcome?.status === "threw"}
+              {m.artifact_status_threw()}
             {:else if workspace.status === "running"}
               {m.artifact_status_ready()}
             {:else if runStatus === null}
@@ -476,6 +508,12 @@ $effect(() => {
                 workspace.error = message;
                 workspace.recordOutcome("failed", message);
               }}
+              onthrew={(message) => {
+                // The status stays "running": the page is still on screen, and
+                // what changed is that something on it broke.
+                workspace.error = message;
+                workspace.recordOutcome("threw", message);
+              }}
               onconsole={(lines: readonly ConsoleLine[]) => workspace.appendConsole(lines)}
             />
           {/if}
@@ -518,6 +556,8 @@ $effect(() => {
                     </span>
                     {#if version.buildStatus === "failed"}
                       <span class="text-destructive">{m.artifact_version_build_failed()}</span>
+                    {:else if version.buildStatus === "threw"}
+                      <span class="text-destructive">{m.artifact_version_build_threw()}</span>
                     {:else if !version.buildStatus}
                       <span>{m.artifact_status_not_run()}</span>
                     {/if}
@@ -589,7 +629,7 @@ $effect(() => {
             -->
             <button
               type="button"
-              onclick={onaskforhelp}
+              onclick={() => onaskforhelp?.(workspace.outcome?.status ?? "failed")}
               disabled={workspace.pendingBuildReport !== null}
               class="min-h-9 shrink-0 rounded-md border border-input bg-background px-2.5 text-xs font-medium text-foreground hover:bg-secondary disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >

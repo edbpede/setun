@@ -395,9 +395,19 @@ export function compiledDocument(input: {
 }): string {
   const mount =
     input.framework === "react"
-      ? `const { createRoot } = await import("react-dom/client");
+      ? // Synchronous on purpose. `render()` schedules, so a component that
+        // throws while rendering throws *after* this harness has already acked
+        // the mount — the error then reaches the preamble's global handler as a
+        // late `runtime-error`, and a build failure is reported as a page that
+        // ran and then broke. `flushSync` plus `onUncaughtError` (React 19)
+        // brings the throw back inside the `try` below, which already reports it.
+        `const { createRoot } = await import("react-dom/client");
+const { flushSync } = await import("react-dom");
 const { createElement } = await import("react");
-createRoot(root).render(createElement(pick(module)));`
+let crashed = null;
+const app = createRoot(root, { onUncaughtError: (error) => { crashed = error; } });
+flushSync(() => app.render(createElement(pick(module))));
+if (crashed) throw crashed;`
       : `const { mount } = await import("svelte");
 mount(pick(module), { target: root });`;
 

@@ -59,6 +59,19 @@ describe("asHostMessage", () => {
 });
 
 describe("asSandboxMessage", () => {
+  it("reads a run that mounted and then threw, apart from one that failed", () => {
+    expect(asSandboxMessage({ ...envelope, type: "threw", runId: "r1", message: "boom" })).toEqual({
+      channel: ARTIFACT_CHANNEL,
+      type: "threw",
+      runId: "r1",
+      message: "boom",
+    });
+  });
+
+  it("refuses a throw with nothing to show the pupil", () => {
+    expect(asSandboxMessage({ ...envelope, type: "threw", runId: "r1" })).toBeNull();
+  });
+
   it("reads a console batch", () => {
     const message = asSandboxMessage({
       ...envelope,

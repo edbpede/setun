@@ -328,6 +328,14 @@ test("a run's outcome is recorded against the version it ran", async ({ page }) 
   expect(after.buildStatus).toBe("failed");
   expect(after.buildMessage).toBe("SyntaxError");
 
+  // A page that mounted and then threw is a third outcome the endpoint takes:
+  // the pupil is looking at it, and "did not run" would ask for a rewrite (§13).
+  const threw = await page.request.patch(`/api/artifacts/${artifactId}/versions/${versionId}`, {
+    data: { buildStatus: "threw", buildMessage: "TypeError" },
+  });
+  expect(threw.status()).toBe(200);
+  expect((await read()).buildStatus).toBe("threw");
+
   // A status the schema does not name is refused before it reaches the database.
   const invalid = await page.request.patch(
     `/api/artifacts/${artifactId}/versions/${versionId}`,

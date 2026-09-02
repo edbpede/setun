@@ -78,6 +78,13 @@ interface Props {
   oncompiling?: () => void;
   onrunning?: () => void;
   onfailed?: (message: string) => void;
+  /**
+   * The artifact mounted and then threw (§13).
+   *
+   * Separate from `onfailed` because the page is on screen: what it needs is the
+   * error, not a rewrite. The runner decides which of the two a runtime error is.
+   */
+  onthrew?: (message: string) => void;
   /** What the artifact printed. Rendered as text, never as markup (§13, §21). */
   onconsole?: (lines: readonly ConsoleLine[]) => void;
 }
@@ -90,6 +97,7 @@ let {
   oncompiling,
   onrunning,
   onfailed,
+  onthrew,
   onconsole,
 }: Props = $props();
 
@@ -164,7 +172,8 @@ $effect(() => {
     if (message.type === "compiling") oncompiling?.();
     else if (message.type === "rendered") onrunning?.();
     else if (message.type === "console") onconsole?.(message.lines);
-    else onfailed?.(message.message);
+    else if (message.type === "failed") onfailed?.(message.message);
+    else if (message.type === "threw") onthrew?.(message.message);
   }
 
   window.addEventListener("message", receive);

@@ -250,7 +250,86 @@ describe("ArtifactPanel", () => {
     });
 
     await page.getByRole("button", { name: m.artifact_ask_fix() }).click();
-    expect(asked).toHaveBeenCalled();
+    expect(asked).toHaveBeenCalledWith("failed");
+  });
+
+  it("tells a page that mounted and then threw from one that never ran", async () => {
+    const workspace = openWorkspace();
+    const asked = vi.fn();
+    // Resolved by hand, so the order the two PATCHes are *sent* in is observable.
+    const settle: ((response: Response) => void)[] = [];
+    const fetched = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(() => new Promise((resolve) => settle.push(resolve)));
+
+    try {
+      render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX, onaskforhelp: asked });
+
+      // The mount ack, then the click handler throwing a moment later.
+      workspace.status = "running";
+      workspace.recordOutcome("ok", null);
+      await vi.waitFor(() => expect(fetched).toHaveBeenCalledTimes(1));
+
+      workspace.error = "TypeError: t.score is not a function";
+      workspace.recordOutcome("threw", "TypeError: t.score is not a function");
+
+      // Serialised: `v:ok` then `v:threw` landing out of order would leave the
+      // server disagreeing with what the pupil is looking at.
+      expect(fetched).toHaveBeenCalledTimes(1);
+      settle[0]?.(new Response("{}", { status: 200 }));
+      await vi.waitFor(() => expect(fetched).toHaveBeenCalledTimes(2));
+      settle[1]?.(new Response("{}", { status: 200 }));
+
+      // The page is still on screen, so the strip and the trit say it ran and
+      // then stopped rather than that it never ran (§13).
+      await expect.element(page.getByText("TypeError: t.score is not a function")).toBeVisible();
+      await expect.element(page.getByText(m.artifact_status_threw())).toBeVisible();
+      await expect
+        .element(page.getByRole("img", { name: m.artifact_status_threw() }).first())
+        .toBeInTheDocument();
+
+      await vi.waitFor(() => expect(workspace.pendingBuildReport).toBeNull());
+      await page.getByRole("button", { name: m.artifact_ask_fix() }).click();
+      // The pupil's sentence has to agree with the note beside it.
+      expect(asked).toHaveBeenCalledWith("threw");
+    } finally {
+      fetched.mockRestore();
+    }
+  });
+
+  it("marks a version that ran and then stopped in the history list", async () => {
+    const workspace = openWorkspace();
+    const fetched = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "artifact-1",
+          language: "html",
+          title: "Klikkeren",
+          key: "klikkeren",
+          versions: [
+            {
+              id: "version-1",
+              revision: 1,
+              source: "<button>Klik</button>",
+              authoredBy: "model",
+              buildStatus: "threw",
+              buildMessage: "TypeError",
+              createdAt: new Date(0).toISOString(),
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+
+    try {
+      render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX });
+      await page.getByRole("tab", { name: m.artifact_tab_history() }).click();
+
+      await expect.element(page.getByText(m.artifact_version_build_threw())).toBeVisible();
+    } finally {
+      fetched.mockRestore();
+    }
   });
 
   it("shows what the artifact printed, as text", async () => {

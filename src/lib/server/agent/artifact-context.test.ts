@@ -110,6 +110,23 @@ describe("buildArtifactContext", () => {
     expect(note?.split("\n").filter((line) => line.includes("last run failed"))).toHaveLength(1);
   });
 
+  it("tells a run that mounted and then threw from one that failed", () => {
+    const [recorded] = assistantTurn("```html id=side\n<p>en</p>\n```");
+    recordVersionBuild(db, {
+      artifactId: recorded.artifactId,
+      versionId: recorded.versionId,
+      studentId: fixtures.student.id,
+      status: "threw",
+      message: "TypeError: t.score is not a function",
+    });
+
+    // "Last run failed" for a page the pupil is looking at asks for a rewrite;
+    // this asks for the one error that is actually wrong (§13).
+    expect(formatArtifactState(context().state)).toContain(
+      "ran, then threw: TypeError: t.score is not a function",
+    );
+  });
+
   it("names the pupil when the newest revision is theirs", () => {
     const [recorded] = assistantTurn("```html id=side\n<p>en</p>\n```");
     appendArtifactVersion(db, {

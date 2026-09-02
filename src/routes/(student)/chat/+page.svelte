@@ -3,6 +3,7 @@ import { untrack } from "svelte";
 import { enhance } from "$app/forms";
 import { goto, invalidateAll, replaceState } from "$app/navigation";
 import { page } from "$app/state";
+import type { BuildStatus } from "$lib/artifacts/types";
 import { readEventStream } from "$lib/chat/sse-client";
 import { fitVisualViewport, readScrollPosition, writeScrollPosition } from "$lib/chat/viewport";
 import ArtifactPanel from "$lib/components/artifacts/ArtifactPanel.svelte";
@@ -557,13 +558,16 @@ function openArtifact(artifactId: string): void {
  * the composer and gets the panel out of the way. The overlay is closed because
  * it covers the composer; a split panel does not, so it stays.
  */
-function askForHelp(): void {
+function askForHelp(status: BuildStatus): void {
   // A question, sent now, as text. An edit in progress would send it as a
   // sibling of some earlier prompt, and image mode would draw the sentence
   // instead of answering it (§10, §15).
   composer.editingMessageId = null;
   composer.mode = "text";
-  composer.setDraft(m.artifact_fix_request());
+  // The pupil's sentence has to match the note the model is given beside it: a
+  // page that mounted and then threw did run, and saying otherwise asks for a
+  // rewrite of a file that nearly works.
+  composer.setDraft(status === "threw" ? m.artifact_fix_request_threw() : m.artifact_fix_request());
   if (artifacts.layout !== "split") artifacts.close();
 }
 

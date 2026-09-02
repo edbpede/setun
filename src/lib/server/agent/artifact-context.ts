@@ -116,9 +116,11 @@ export function formatArtifactState(state: readonly ArtifactStateLine[]): string
     const run =
       item.buildStatus === "failed"
         ? `last run failed: ${collapse(item.buildMessage ?? "no message")}`
-        : item.buildStatus === "ok"
-          ? "last run: ok"
-          : "not run yet";
+        : item.buildStatus === "threw"
+          ? `ran, then threw: ${collapse(item.buildMessage ?? "no message")}`
+          : item.buildStatus === "ok"
+            ? "last run: ok"
+            : "not run yet";
 
     return `- id=${item.key} (${item.language})${title} — revision ${item.revision}, last written by ${author}, ${run}`;
   });

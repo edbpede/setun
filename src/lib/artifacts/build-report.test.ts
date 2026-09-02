@@ -48,6 +48,31 @@ describe("buildReportFor", () => {
     ).toBe("failed");
   });
 
+  it("reports a page that mounted and then threw over one recorded as ok", () => {
+    const stored: BuildTarget = {
+      id: "a1",
+      latest: { id: "v1", source: "<p>hi</p>", buildStatus: "ok", buildMessage: null },
+    };
+
+    // The mount ack recorded `ok`; the click handler threw a moment later. The
+    // model has to be told the second thing, or it is told a working page.
+    expect(
+      buildReportFor(stored, { source: "<p>hi</p>", status: "threw", message: "TypeError" }),
+    ).toEqual({ artifactId: "a1", versionId: "v1", status: "threw", message: "TypeError" });
+  });
+
+  it("reports nothing when a throw is already what is stored", () => {
+    const stored: BuildTarget = {
+      id: "a1",
+      latest: { id: "v1", source: "<p>hi</p>", buildStatus: "threw", buildMessage: "TypeError" },
+    };
+
+    // A rAF loop that throws every frame is one PATCH, not sixty a second.
+    expect(
+      buildReportFor(stored, { source: "<p>hi</p>", status: "threw", message: "TypeError" }),
+    ).toBeNull();
+  });
+
   it("caps the message, which is a prompt line and not a log", () => {
     const report = buildReportFor(target, {
       source: "<p>hi</p>",
