@@ -275,6 +275,28 @@ describe("streamingMessageSegments", () => {
     expect(scans[1].map((segment) => segment.kind)).toEqual(["text"]);
   });
 
+  it("remembers a body that arrived in a middle part", () => {
+    // Nothing in the part that opened the fence and nothing in the one that
+    // closed it: whether there is a body is the answer over every part, not the
+    // answer for the last one the scan happened to see.
+    const scans = streamingMessageSegments(["```html id=side", "<p>hi</p>", "\n```\nFærdig."]);
+
+    expect(scans[0]).toEqual([
+      {
+        kind: "artifact",
+        artifact: {
+          language: "html",
+          source: "<p>hi</p>",
+          line: 0,
+          endLine: -1,
+          key: "side",
+          title: null,
+        },
+      },
+    ]);
+    expect(scans[2]).toEqual([{ kind: "text", text: "Færdig." }]);
+  });
+
   it("is one scan per text, in the order they were given", () => {
     expect(streamingMessageSegments([])).toEqual([]);
     expect(streamingMessageSegments(["en", "to", "tre"])).toHaveLength(3);

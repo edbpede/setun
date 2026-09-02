@@ -97,6 +97,9 @@ export type StreamingSegment =
       readonly title: string | null;
     };
 
+/** Anything that is not whitespace, tested without allocating a trimmed copy. */
+const NON_BLANK = /\S/;
+
 export function streamingSegments(markdown: string): StreamingSegment[] {
   // The scanner's own line array, not a second split of the same string: this
   // runs on every delta of a growing message, and §20 budgets it at one pass.
@@ -132,8 +135,16 @@ export function streamingSegments(markdown: string): StreamingSegment[] {
 export function streamingMessageSegments(texts: readonly string[]): StreamingSegment[][] {
   const scans: StreamingSegment[][] = [];
   let carried: OpenFence | null = null;
-  /** The scan whose stub owns the open fence, and the source it holds so far. */
-  let stub: { at: number; open: OpenFence; source: string[] } | null = null;
+  /**
+   * The scan whose stub owns the open fence, the pieces of source it has
+   * collected, and whether any of them holds anything.
+   *
+   * `bodied` is carried rather than derived: this whole walk runs again on every
+   * delta, and re-reading the pieces collected so far to answer one boolean
+   * would make a long artifact cost more with every part it crosses. They are
+   * joined once, when the fence closes and a card needs its source.
+   */
+  let stub: { at: number; open: OpenFence; source: string[]; bodied: boolean } | null = null;
 
   texts.forEach((text, at) => {
     const scanned = scanFences(text, carried);
@@ -141,22 +152,24 @@ export function streamingMessageSegments(texts: readonly string[]): StreamingSeg
     // At most one block can have opened before this part: the carried one, and
     // nothing else can open until it closes.
     const closed = scanned.blocks.find((block) => block.line === CARRIED);
-    // Joined with nothing: each piece is the exact substring of its part, and
-    // `StreamingTurn` concatenates deltas rather than adding a line between them
-    // — a boundary that fell mid-line is one line again here.
-    const body = stub ? [...stub.source, closed ? closed.source : text].join("") : "";
+    const piece = closed ? closed.source : text;
+    const bodied = stub ? stub.bodied || NON_BLANK.test(piece) : false;
 
     // Whether the carried block has a body at all is the caller's to know: it is
     // spread across the parts the fence crossed, and the scan sees one of them.
-    scans.push(segmentsOf(scanned, carried ? { bodied: body.trim().length > 0 } : null));
+    scans.push(segmentsOf(scanned, carried ? { bodied } : null));
 
     if (stub && closed) {
-      if (body.trim()) nameStub(scans[stub.at], stub.open, body);
+      // Joined with nothing: each piece is the exact substring of its part, and
+      // `StreamingTurn` concatenates deltas rather than adding a line between
+      // them — a boundary that fell mid-line is one line again here.
+      if (bodied) nameStub(scans[stub.at], stub.open, [...stub.source, piece].join(""));
       else unbuildStub(scans[stub.at], texts[stub.at], stub.open);
       stub = null;
     } else if (stub) {
       // Still open, so the whole of this part is inside it.
       stub.source.push(text);
+      stub.bodied = bodied;
     }
 
     const open = scanned.open;
@@ -165,9 +178,13 @@ export function streamingMessageSegments(texts: readonly string[]): StreamingSeg
 
     // A fence opened here and is still open: this part owns its stub, if the
     // fence is one the transcript shows a stub for at all.
-    stub = artifactLanguage(open.language)
-      ? { at, open, source: [scanned.lines.slice(open.line + 1).join("\n")] }
-      : null;
+    if (!artifactLanguage(open.language)) {
+      stub = null;
+      return;
+    }
+
+    const head = scanned.lines.slice(open.line + 1).join("\n");
+    stub = { at, open, source: [head], bodied: NON_BLANK.test(head) };
   });
 
   return scans;
