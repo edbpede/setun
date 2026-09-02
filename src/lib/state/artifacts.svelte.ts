@@ -99,7 +99,10 @@ export class ArtifactWorkspace {
    *
    * The source travels with the outcome because a pupil running an unsaved draft
    * is running something no version holds — stamping the stored revision with
-   * that result would tell the model a lie about its own code.
+   * that result would tell the model a lie about its own code. The tag travels
+   * with it for the same reason: a Restore runs text the version already holds
+   * under a tag it does not, and the revision recording that tag is still on its
+   * way to the server while the frame is already running.
    */
   outcome = $state<BuildOutcome | null>(null);
 
@@ -241,9 +244,14 @@ export class ArtifactWorkspace {
     if (this.unseen === artifactId) this.unseen = null;
   }
 
-  /** What the frame reported, against the source it was actually running (§13). */
+  /** What the frame reported, against the source and tag it was actually running (§13). */
   recordOutcome(status: BuildStatus, message: string | null): void {
-    this.outcome = { source: this.running ?? "", status, message };
+    this.outcome = {
+      source: this.running ?? "",
+      language: this.runningLanguage,
+      status,
+      message,
+    };
   }
 
   /** A batch of printed lines from the artifact. Text, never markup (§13, §21). */
