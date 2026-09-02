@@ -152,19 +152,6 @@ test("a student builds an artifact, edits it, and the edit travels back", async 
   expect(body.versions[0].language).toBe("html");
   expect(body.versions[1].language).toBe("html");
 
-  // Named explicitly, the endpoint stores and echoes it.
-  const posted = await page.request.post(`/api/artifacts/${artifactId}/versions`, {
-    data: { source: "<p>en komponent</p>", language: "svelte" },
-  });
-  expect(posted.status()).toBe(201);
-  expect((await posted.json()).language).toBe("svelte");
-
-  // And a tag Setun does not recognise is refused before it reaches the database.
-  const refused = await page.request.post(`/api/artifacts/${artifactId}/versions`, {
-    data: { source: "<p>nej</p>", language: "cobol" },
-  });
-  expect(refused.status()).toBe(400);
-
   await page.getByRole("button", { name: m.artifact_close() }).click();
 
   // The next message carries the current source, marked as the student's (§13).
@@ -183,6 +170,21 @@ test("a student builds an artifact, edits it, and the edit travels back", async 
   // so the model's own next revision is what the artifact now holds.
   const after = await (await page.request.get(`/api/artifacts/${artifactId}`)).json();
   expect(after.versions.at(-1).authoredBy).toBe("model");
+
+  // The language tag, last: posting one appends a student revision of its own,
+  // and doing it earlier would have made *that* the edit carried above rather
+  // than the one the pupil typed into CodeMirror.
+  const posted = await page.request.post(`/api/artifacts/${artifactId}/versions`, {
+    data: { source: "<p>en komponent</p>", language: "svelte" },
+  });
+  expect(posted.status()).toBe(201);
+  expect((await posted.json()).language).toBe("svelte");
+
+  // And a tag Setun does not recognise is refused before it reaches the database.
+  const refused = await page.request.post(`/api/artifacts/${artifactId}/versions`, {
+    data: { source: "<p>nej</p>", language: "cobol" },
+  });
+  expect(refused.status()).toBe(400);
 });
 
 test("the creations gallery holds what the student made", async ({ page }) => {
