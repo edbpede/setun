@@ -112,9 +112,20 @@ describe("streamingSegments", () => {
   });
 
   it("does not read a backtick inside an info string as a fence", () => {
-    const markdown = "Skriv `html` sådan her.";
+    // Mid-line, so no fence is opened at all.
+    const inline = "Skriv `html` sådan her.";
+    expect(streamingSegments(inline)).toEqual([{ kind: "text", text: inline }]);
 
-    expect(streamingSegments(markdown)).toEqual([{ kind: "text", text: markdown }]);
+    // And the guard itself: a line that *does* open with three backticks, whose
+    // info string holds one. CommonMark says that is not a fence — it is how an
+    // inline code span written with three backticks stays inline.
+    const info = "```html id=`x`\n<p>hi";
+    expect(streamingSegments(info)).toEqual([{ kind: "text", text: info }]);
+
+    // A tilde fence's info string may hold one, which is the case beside it.
+    expect(streamingSegments("~~~html id=side\n<p>hi")).toEqual([
+      { kind: "pending", language: "html", key: "side", title: null },
+    ]);
   });
 
   it("reads a tilde fence, whose info string may hold a backtick", () => {
