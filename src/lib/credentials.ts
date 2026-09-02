@@ -13,3 +13,9 @@ export interface CredentialCard {
   /** The non-secret tail, which the roster also shows so a card can be matched (§7). */
   readonly hint: string;
 }
+
+/** One action response, with enough scope to choose preview copy and a safe filename. */
+export interface CredentialBatch {
+  readonly scope: "student" | "classroom";
+  readonly cards: CredentialCard[];
+}

@@ -176,36 +176,6 @@ export function deleteStudent(
 }
 
 /**
- * Replace the credential (§7).
- *
- * Invalidating the student's sessions is the caller's job and is not optional —
- * rotation invalidates immediately (§21). `auth/provisioning` does both.
- */
-export function updateStudentCredential(
-  db: AppDatabase,
-  input: {
-    studentId: string;
-    /** Scopes the write to one classroom; a mismatched pair updates nothing (§21). */
-    classroomId: string;
-    credentialDigest: string;
-    credentialHint: string;
-  },
-): boolean {
-  return (
-    db
-      .update(student)
-      .set({
-        credentialDigest: input.credentialDigest,
-        credentialHint: input.credentialHint,
-        updatedAt: new Date(),
-      })
-      .where(and(eq(student.id, input.studentId), eq(student.classroomId, input.classroomId)))
-      .returning({ id: student.id })
-      .all().length > 0
-  );
-}
-
-/**
  * Set or clear a pupil's own instructions (§10).
  *
  * Scoped to a classroom in the statement itself, so a mismatched pair simply

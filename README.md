@@ -240,6 +240,22 @@ old credentials. Changing either seed value and restarting is treated as an inte
 reset, updates the same educator row, and invalidates educator sessions. Leaving both variables blank
 keeps the recovered credential under CLI control; the recovery command never edits `.env` itself.
 
+## Student access slips and QR sign-in
+
+The roster can replace one pupil's access code or every active pupil's code and produce A4 access
+slips for printing or direct PDF download. Reissuing a slip immediately invalidates the previous code
+and that pupil's signed-in sessions. Plaintext codes exist only in the issuing action response; Setun
+does not store them, and reloading or leaving the page makes them unrecoverable.
+
+Each QR code contains the configured application origin followed by `/login#code=…`. The access code
+is in the URL fragment, so browsers do not send it in HTTP requests or referrers, and the login page
+removes the fragment from browser history before submitting through the normal sign-in action. PDF
+files are generated entirely in the browser; no credential-bearing PDF request reaches the server.
+
+An access slip is still a bearer credential: anyone with a copy can sign in as that pseudonymous
+pupil until the code is rotated, the account is disabled or removed, or normal access policy blocks
+the sign-in. Store and distribute printed and downloaded copies accordingly.
+
 ## Configuration notes
 
 - **Provider credentials** belong to CLIProxyAPI, not Setun. Its management API, control panel,

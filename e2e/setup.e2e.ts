@@ -153,7 +153,7 @@ test("the wizard takes a cold install to a working classroom, then closes (§6.2
   await page.getByRole("button", { name: m.educator_provision_submit() }).click();
   await expect(page.getByText(m.educator_cards_once())).toBeVisible();
 
-  const codes = await page.locator("li code").allInnerTexts();
+  const codes = await page.locator("[data-slip-code]").allTextContents();
   expect(codes).toHaveLength(3);
   expect(new Set(codes).size).toBe(3);
 

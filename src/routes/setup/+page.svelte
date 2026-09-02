@@ -81,6 +81,7 @@ const stepFailure = $derived(setupErrorMessage(failure));
       <StudentsStep
         {cards}
         classroomName={data.classroomName ?? ""}
+        appOrigin={data.appOrigin}
         classroomLanguage={data.classroomLanguage}
         alreadyProvisioned={data.progress.studentCount > 0}
       />

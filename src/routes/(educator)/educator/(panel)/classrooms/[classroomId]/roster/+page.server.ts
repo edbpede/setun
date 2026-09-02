@@ -1,8 +1,12 @@
 import { error, fail } from "@sveltejs/kit";
 import * as v from "valibot";
-import type { CredentialCard } from "$lib/credentials";
+import type { CredentialBatch, CredentialCard } from "$lib/credentials";
 import { requireEducatorPage } from "$lib/server/auth/guards";
-import { provisionStudents, rotateStudentCredential } from "$lib/server/auth/provisioning";
+import {
+  provisionStudents,
+  rotateActiveClassroomCredentials,
+  rotateStudentCredential,
+} from "$lib/server/auth/provisioning";
 import { getDb, getFileStore } from "$lib/server/boot";
 import { resolveRoster } from "$lib/server/classroom/roster";
 import {
@@ -48,10 +52,13 @@ function classroomFor(classroomId: string) {
 export const load: PageServerLoad = ({ params, url }) => {
   const classroom = classroomFor(params.classroomId);
   const includeRemoved = url.searchParams.get("removed") === "1";
+  const students = resolveRoster(getDb(), classroom, new Date(), { includeRemoved });
 
   return {
     includeRemoved,
-    students: resolveRoster(getDb(), classroom, new Date(), { includeRemoved }),
+    students,
+    activeStudentCount: students.filter((student) => student.status === "active").length,
+    appOrigin: getConfig().appOrigin,
   };
 };
 
@@ -79,13 +86,16 @@ export const actions: Actions = {
     });
 
     return {
-      cards: provisioned.map(
-        ({ student, code }): CredentialCard => ({
-          label: student.label,
-          code: code.display,
-          hint: code.hint,
-        }),
-      ),
+      batch: {
+        scope: "classroom",
+        cards: provisioned.map(
+          ({ student, code }): CredentialCard => ({
+            label: student.label,
+            code: code.display,
+            hint: code.hint,
+          }),
+        ),
+      } satisfies CredentialBatch,
     };
   },
 
@@ -112,7 +122,40 @@ export const actions: Actions = {
     });
     if (!code || !student) return fail(404, { invalid: true });
 
-    return { cards: [{ label: student.label, code: code.display, hint: code.hint }] };
+    return {
+      batch: {
+        scope: "student",
+        cards: [{ label: student.label, code: code.display, hint: code.hint }],
+      } satisfies CredentialBatch,
+    };
+  },
+
+  /** Server-selected active roster; the browser never supplies student IDs. */
+  rotateClassroom: async ({ params, locals }) => {
+    requireEducatorPage(locals);
+    const classroom = classroomFor(params.classroomId);
+
+    const result = await rotateActiveClassroomCredentials(getDb(), {
+      classroomId: classroom.id,
+      pepper: getConfig().studentCodePepper,
+    });
+    if (result.status === "empty") {
+      return fail(400, { slipIssueFailure: "empty" as const });
+    }
+    if (result.status === "stale") {
+      return fail(409, { slipIssueFailure: "stale" as const });
+    }
+
+    return {
+      batch: {
+        scope: "classroom",
+        cards: result.students.map(({ student, code }) => ({
+          label: student.label,
+          code: code.display,
+          hint: code.hint,
+        })),
+      } satisfies CredentialBatch,
+    };
   },
 
   /** Disable, enable, or remove from the class — the three §16 distinctions bar deletion. */

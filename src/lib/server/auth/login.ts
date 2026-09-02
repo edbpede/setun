@@ -1,6 +1,7 @@
+import { eq } from "drizzle-orm";
 import type { AppDatabase } from "../db/client";
 import { findStudentByDigest } from "../db/queries/students";
-import type { Student } from "../db/schema";
+import { type Student, student as studentTable } from "../db/schema";
 import { digestCode } from "./codes";
 import { checkRateLimit, recordAttempt, recordRefusedAttempt } from "./rate-limit";
 import { createSession, type IssuedSession } from "./sessions";
@@ -87,12 +88,35 @@ export async function attemptStudentLogin(
   }
 
   const student = findStudentByDigest(db, digest);
-  const authenticated = student !== undefined && student.status === "active";
+  const authenticated =
+    student?.status === "active"
+      ? db.transaction(
+          (tx) => {
+            const current = tx
+              .select()
+              .from(studentTable)
+              .where(eq(studentTable.id, student.id))
+              .get();
 
-  recordAttempt(db, { ip: input.ip, digest, successful: authenticated });
+            // Rotation may have replaced the digest after the first lookup.
+            // Revalidate it under the same writer reservation that inserts the
+            // session, so rotation either revokes this session or wins first
+            // and prevents it from being created.
+            if (current?.status !== "active" || current.credentialDigest !== digest) return null;
+
+            return {
+              ok: true as const,
+              student: current,
+              session: createSession(tx, { ownerKind: "student", ownerId: current.id }),
+            };
+          },
+          { behavior: "immediate" },
+        )
+      : null;
+
+  recordAttempt(db, { ip: input.ip, digest, successful: authenticated !== null });
 
   if (!authenticated) return settle(REJECTED, limit.delayMs);
 
-  const session = createSession(db, { ownerKind: "student", ownerId: student.id });
-  return settle({ ok: true, student, session });
+  return settle(authenticated);
 }

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-svelte";
 import * as m from "$lib/paraglide/messages";
@@ -34,6 +34,8 @@ const BASE: RosterEntry = {
 };
 
 describe("RosterTable", () => {
+  afterEach(() => vi.restoreAllMocks());
+
   it("offers switching off, removal and permanent deletion as three actions (§16)", async () => {
     render(RosterTable, { students: [BASE] });
 
@@ -80,6 +82,15 @@ describe("RosterTable", () => {
     await expect
       .element(page.getByText(m.educator_status_disabled(), { exact: true }))
       .toBeInTheDocument();
+    await expect.element(page.getByText(m.educator_slip_inactive())).toBeInTheDocument();
+  });
+
+  it("confirms code replacement and session revocation before creating a slip", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(RosterTable, { students: [BASE] });
+
+    await page.getByRole("button", { name: m.educator_slip_create() }).click();
+    expect(confirm).toHaveBeenCalledWith(m.educator_slip_rotate_confirm({ label: BASE.label }));
   });
 
   it("does not offer removal again for a pupil already removed", async () => {

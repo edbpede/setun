@@ -11,6 +11,20 @@
 		/>
 
 		<meta name="text-scale" content="scale" />
+		<script>
+			(() => {
+				if (window.location.pathname !== "/login") return;
+				const code = new URLSearchParams(window.location.hash.slice(1)).get("code");
+				if (!code) return;
+
+				window.__setunLoginCode = code;
+				window.history.replaceState(
+					window.history.state,
+					"",
+					`${window.location.pathname}${window.location.search}`,
+				);
+			})();
+		</script>
 		%sveltekit.head%
 	</head>
 
