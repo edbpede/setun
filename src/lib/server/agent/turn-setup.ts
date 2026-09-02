@@ -85,6 +85,9 @@ export async function prepareTurn(input: {
     artifacts: buildArtifactContext(input.db, {
       conversationId: input.conversationId,
       studentId: input.student.id,
+      // The path decides which current sources it does not hold, and therefore
+      // which have to travel with the note rather than being elided (§13).
+      path: input.path,
     }),
   };
 }

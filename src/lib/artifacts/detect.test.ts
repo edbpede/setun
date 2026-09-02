@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { continuityDecision } from "./continuity";
 import { artifactLanguage, detectArtifacts } from "./detect";
-import { fencedBlocks, scanFences } from "./fences";
+import { fencedBlocks, fenceFor, scanFences } from "./fences";
 import { tierOf } from "./types";
 
 /**
@@ -71,6 +71,14 @@ describe("fencedBlocks", () => {
       attributes: { id: "side", title: "Min side" },
       line: 1,
     });
+  });
+
+  it("opens a fence long enough to hold a source that contains one", () => {
+    expect(fenceFor("<p>hi</p>")).toBe("```");
+    expect(fenceFor("<p>så:</p>\n```\net loop\n```")).toBe("````");
+    expect(fenceFor("`````\n")).toBe("``````");
+    // Only a leading run can close a fence, so an inline one does not widen it.
+    expect(fenceFor("skriv `kode` sådan")).toBe("```");
   });
 
   it("has no open fence when every block closed", () => {

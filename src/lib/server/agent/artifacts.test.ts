@@ -10,6 +10,7 @@ import {
 import { createConversation } from "../db/queries/conversations";
 import { appendMessage, appendSibling, getActivePath } from "../db/queries/messages";
 import { createTestDatabase, seedTestFixtures } from "../db/testing";
+import { buildArtifactContext } from "./artifact-context";
 import {
   markArtifactEditsDelivered,
   outgoingArtifactEditParts,
@@ -37,10 +38,10 @@ beforeEach(() => {
 });
 
 /** Persist an assistant message carrying `text`, then record its artifacts. */
-function assistantTurn(text: string) {
+function assistantTurn(text: string, parentId: string | null = null) {
   const message = appendMessage(db, {
     conversationId,
-    parentId: null,
+    parentId,
     role: "assistant",
     parts: [{ type: "text", text }],
   });
@@ -296,6 +297,34 @@ describe("the student's edit travelling back to the model", () => {
     expect(sent).toContain("To change it, reuse id=side and write the complete file.");
   });
 
+  it("opens a longer fence for a pupil's page that holds a fence of its own", () => {
+    const source = ["<p>Sådan:</p>", "```", "et loop", "```"].join("\n");
+    const sent = String(
+      assembleContext([
+        {
+          role: "user",
+          parts: [
+            {
+              type: "artifact-edit",
+              artifactId: crypto.randomUUID(),
+              versionId: crypto.randomUUID(),
+              language: "html",
+              title: null,
+              source,
+              key: "side",
+            },
+          ],
+        },
+      ]).at(-1)?.content,
+    );
+
+    // A three-backtick fence closes on the artifact's own line, and everything
+    // after it reaches the model as prose rather than as the pupil's file (§13).
+    expect(sent).toContain("````html id=side");
+    expect(sent).toContain(source);
+    expect(sent.trimEnd().endsWith("````")).toBe(true);
+  });
+
   it("encodes a part written before ids existed in the form it was written in", () => {
     const sent = String(
       assembleContext([
@@ -473,5 +502,48 @@ describe("an edited prompt re-carrying what it replaces", () => {
         editOfMessageId: prompt.id,
       }),
     ).toEqual([]);
+  });
+});
+
+describe("an artifact whose newest revision is off the active path", () => {
+  it("carries its complete source into the request the branch assembles", () => {
+    // Turn one writes the page, turn two revises it. Then the pupil edits the
+    // first prompt, which sends a path from a branch on which revision 2 never
+    // happened — the state note names it and nothing holds it (§10, §13).
+    const first = appendMessage(db, {
+      conversationId,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "byg en side" }],
+    });
+    assistantTurn("```html id=side\n<p>en</p>\n```", first.id);
+    const second = appendMessage(db, {
+      conversationId,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "gør den blå" }],
+    });
+    assistantTurn("```html id=side\n<p>to</p>\n```", second.id);
+
+    const sibling = appendSibling(db, {
+      siblingOfId: first.id,
+      conversationId,
+      role: "user",
+      parts: [{ type: "text", text: "byg en side, men grøn" }],
+    });
+    const path = getActivePath(db, sibling?.id ?? "");
+    const artifacts = buildArtifactContext(db, {
+      conversationId,
+      studentId: fixtures.student.id,
+      path,
+    });
+
+    const sent = String(assembleContext(path, undefined, undefined, artifacts).at(-1)?.content);
+
+    expect(sent).toContain("byg en side, men grøn");
+    expect(sent).toContain("id=side (html) — revision 2");
+    // Without this the model rewrote revision 2 from a copy it could not see.
+    expect(sent).toContain("does not appear above");
+    expect(sent).toContain("<p>to</p>");
   });
 });

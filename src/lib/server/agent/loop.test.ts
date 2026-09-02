@@ -82,6 +82,7 @@ describe("assembleContext", () => {
           buildMessage: "SyntaxError",
         },
       ],
+      carried: [],
     };
 
     const messages = assembleContext(path, undefined, undefined, artifacts);
@@ -96,8 +97,74 @@ describe("assembleContext", () => {
     expect(messages[1].content).not.toContain("id=side");
   });
 
+  it("carries a current source the path does not hold, behind the note", () => {
+    const artifacts = {
+      index: new Map(),
+      state: [
+        {
+          key: "side",
+          language: "html" as const,
+          title: "Min side",
+          revision: 2,
+          authoredBy: "model" as const,
+          buildStatus: null,
+          buildMessage: null,
+        },
+      ],
+      carried: [
+        {
+          key: "side",
+          language: "html" as const,
+          title: "Min side",
+          revision: 2,
+          source: "<p>to</p>",
+        },
+      ],
+    };
+
+    const messages = assembleContext(path, undefined, undefined, artifacts);
+    const last = messages.at(-1);
+
+    // The cacheable system prefix is untouched: the sources travel in the same
+    // never-persisted slot as the note (§10, §13).
+    expect(messages[0]).toEqual({ role: "system", content: FIXED_SYSTEM_PROMPT });
+    expect(last?.role).toBe("user");
+    expect(String(last?.content)).toContain("does not appear above");
+    expect(String(last?.content)).toContain("<p>to</p>");
+    // Behind the note, not in front of it.
+    expect(String(last?.content).indexOf('id=side (html) "Min side" — revision 2')).toBeLessThan(
+      String(last?.content).indexOf("does not appear above"),
+    );
+  });
+
+  it("appends nothing extra when the path holds every current source", () => {
+    const state = [
+      {
+        key: "side",
+        language: "html" as const,
+        title: null,
+        revision: 1,
+        authoredBy: "model" as const,
+        buildStatus: null,
+        buildMessage: null,
+      },
+    ];
+
+    const messages = assembleContext(path, undefined, undefined, {
+      index: new Map(),
+      state,
+      carried: [],
+    });
+
+    expect(String(messages.at(-1)?.content)).not.toContain("does not appear above");
+  });
+
   it("appends no note when the conversation has built nothing", () => {
-    const messages = assembleContext(path, undefined, undefined, { index: new Map(), state: [] });
+    const messages = assembleContext(path, undefined, undefined, {
+      index: new Map(),
+      state: [],
+      carried: [],
+    });
 
     expect(messages).toEqual(assembleContext(path));
   });

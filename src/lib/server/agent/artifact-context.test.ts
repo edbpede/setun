@@ -7,8 +7,10 @@ import type { Message, MessagePart } from "../db/schema";
 import { createTestDatabase, seedTestFixtures } from "../db/testing";
 import {
   buildArtifactContext,
+  CARRIED_MAX_CHARS,
   elideSupersededArtifacts,
   formatArtifactState,
+  formatCarriedSources,
 } from "./artifact-context";
 import { recordTurnArtifacts } from "./artifacts";
 
@@ -49,8 +51,12 @@ function assistantTurn(text: string) {
   });
 }
 
-function context() {
-  return buildArtifactContext(db, { conversationId, studentId: fixtures.student.id });
+function context(...onPath: Pick<Message, "role" | "parts">[]) {
+  return buildArtifactContext(db, {
+    conversationId,
+    studentId: fixtures.student.id,
+    path: onPath,
+  });
 }
 
 function path(
@@ -376,5 +382,136 @@ describe("elideSupersededArtifacts", () => {
     const given = path(user("hej"), assistant("```html\n<p>en</p>\n```"));
 
     expect(elideSupersededArtifacts(given, context().index)).toEqual(given);
+  });
+});
+
+describe("carried sources", () => {
+  it("carries the current source when the path stops at an earlier revision", () => {
+    const [recorded] = assistantTurn("```html id=side\n<p>en</p>\n```");
+    assistantTurn("```html id=side\n<p>to</p>\n```");
+    expect(recorded.artifactId).toBeDefined();
+
+    // A pupil editing an earlier prompt sends a path from the branch they left:
+    // revision 2 is named by the state note and present nowhere (§13).
+    const { carried } = context(assistant("```html id=side\n<p>en</p>\n```"));
+
+    expect(carried).toEqual([
+      { key: "side", language: "html", title: null, revision: 2, source: "<p>to</p>" },
+    ]);
+  });
+
+  it("carries nothing when the path already holds the current source", () => {
+    assistantTurn("```html id=side\n<p>en</p>\n```");
+    assistantTurn("```html id=side\n<p>to</p>\n```");
+
+    expect(
+      context(
+        assistant("```html id=side\n<p>en</p>\n```"),
+        assistant("```html id=side\n<p>to</p>\n```"),
+      ).carried,
+    ).toEqual([]);
+  });
+
+  it("counts the pupil's own edit part as holding the source", () => {
+    const [recorded] = assistantTurn("```html id=side\n<p>en</p>\n```");
+    const version = appendArtifactVersion(db, {
+      artifactId: recorded.artifactId,
+      source: "<p>min</p>",
+      authoredBy: "student",
+    });
+
+    // The edit is appended to the prompt before the path is read, so carrying it
+    // again would send the same file twice (§13).
+    const edit: MessagePart = {
+      type: "artifact-edit",
+      artifactId: recorded.artifactId,
+      versionId: version.id,
+      language: "html",
+      title: null,
+      source: "<p>min</p>",
+      key: "side",
+    };
+
+    expect(context({ role: "user", parts: [edit] }).carried).toEqual([]);
+  });
+
+  it("carries an artifact no message on the path mentions at all", () => {
+    assistantTurn("```html id=side\n<p>en</p>\n```");
+
+    expect(context(user("Byg noget andet")).carried.map((item) => item.key)).toEqual(["side"]);
+  });
+
+  it("places a block by identity, so a twin's text does not stand in for it", () => {
+    // Two artifacts holding byte-identical current sources. Only `side`'s block
+    // is on the path, and text alone would say both were held (§13).
+    assistantTurn("```html id=side\n<p>ens</p>\n```");
+    assistantTurn("```html id=kopi\n<p>ens</p>\n```");
+
+    const { carried } = context(assistant("```html id=side\n<p>ens</p>\n```"));
+
+    expect(carried.map((item) => item.key)).toEqual(["kopi"]);
+  });
+});
+
+describe("formatCarriedSources", () => {
+  const item = {
+    key: "side",
+    language: "html" as const,
+    title: "Min side",
+    revision: 2,
+    source: "<p>to</p>",
+  };
+
+  it("has nothing to say when the path holds everything", () => {
+    expect(formatCarriedSources([])).toBeNull();
+  });
+
+  it("names the artifact, then hands over the file in the shape it asks for", () => {
+    const text = formatCarriedSources([item]);
+
+    expect(text).toContain('id=side (html) "Min side", revision 2, does not appear above.');
+    expect(text).toContain("reuse id=side and write the complete file.]");
+    // The same info string the model is asked to write, so it can copy the
+    // identity off the block rather than translate it (§13).
+    expect(text).toContain('```html id=side title="Min side"');
+    expect(text).toContain("\n<p>to</p>\n");
+  });
+
+  it("opens a longer fence for a source that holds a fence of its own", () => {
+    const source = ["<p>Sådan skriver du kode:</p>", "```", "et loop", "```"].join("\n");
+    const text = formatCarriedSources([{ ...item, source }]);
+
+    // A three-backtick fence would close on the artifact's own line, and the
+    // rest of the file would reach the model as prose.
+    expect(text).toContain("````html id=side");
+    expect(text?.endsWith("````")).toBe(true);
+    expect(text).toContain(source);
+  });
+
+  it("names an artifact it cannot afford to send, rather than dropping it", () => {
+    const big = { ...item, key: "stor", source: "x".repeat(CARRIED_MAX_CHARS + 1) };
+    const text = formatCarriedSources([big, { ...item, key: "lille" }]);
+
+    // Named either way: a model told an artifact exists and shown nothing asks
+    // about it; a model shown nothing at all rewrites it (§13).
+    expect(text).toContain("id=stor (html)");
+    expect(text).toContain("Source omitted for length.]");
+    expect(text).not.toContain("x".repeat(100));
+
+    // And the one that fits is still sent whole, past the one that did not.
+    expect(text).toContain('```html id=lille title="Min side"');
+    expect(text).toContain("<p>to</p>");
+  });
+
+  it("bounds the batch and not each source, which is where the sum matters", () => {
+    const half = "y".repeat(CARRIED_MAX_CHARS * 0.75);
+    const text = formatCarriedSources([
+      { ...item, key: "en", source: half },
+      { ...item, key: "to", source: half },
+    ]);
+
+    expect(text).toContain('```html id=en title="Min side"');
+    expect(text).toContain("id=to (html)");
+    expect(text).toContain("Source omitted for length.]");
   });
 });

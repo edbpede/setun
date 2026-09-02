@@ -126,6 +126,28 @@ export function fencedBlocks(markdown: string): FencedBlock[] {
   return scanFences(markdown).blocks;
 }
 
+/**
+ * A fence long enough to hold this source (§13).
+ *
+ * A source that itself contains a line of three backticks — a page explaining
+ * markdown, a component with a template literal — closes a three-backtick fence
+ * early, and everything after that point reaches the model as prose. CommonMark
+ * answers this with a longer fence, and `fencedBlocks` already honours one, so
+ * what the model reads is unchanged for every source that did not need it.
+ *
+ * Leading backticks only: those are the ones that can close a fence.
+ */
+export function fenceFor(source: string): string {
+  let longest = 0;
+
+  for (const line of source.split("\n")) {
+    const run = /^`+/.exec(line);
+    if (run) longest = Math.max(longest, run[0].length);
+  }
+
+  return "`".repeat(Math.max(3, longest + 1));
+}
+
 function findClosing(lines: readonly string[], from: number, fence: string): number {
   const marker = fence[0];
 
