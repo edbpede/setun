@@ -131,12 +131,43 @@ describe("listConversationVersions", () => {
       authoredBy: "model",
     });
 
+    // A second artifact, because "every version of every artifact" is the
+    // contract and one artifact cannot show that the groups stay together.
+    const quiz = createArtifact(db, {
+      studentId: fixtures.student.id,
+      conversationId,
+      language: "svg",
+      key: "quiz",
+    });
+    for (const source of ["<svg>1</svg>", "<svg>2</svg>", "<svg>3</svg>"]) {
+      appendArtifactVersion(db, { artifactId: quiz.id, source, authoredBy: "model" });
+    }
+
     const rows = listConversationVersions(db, {
       conversationId,
       studentId: fixtures.student.id,
     });
 
-    expect(rows.map((row) => row.version.revision)).toEqual([1, 2]);
+    // Grouped by artifact, each group by ascending revision: the caller folds
+    // this in one pass and takes the last row of each group as the current one.
+    const expected = [artifact.id, quiz.id].sort();
+    expect(rows.map((row) => [row.artifact.id, row.version.revision])).toEqual(
+      expected[0] === artifact.id
+        ? [
+            [artifact.id, 1],
+            [artifact.id, 2],
+            [quiz.id, 1],
+            [quiz.id, 2],
+            [quiz.id, 3],
+          ]
+        : [
+            [quiz.id, 1],
+            [quiz.id, 2],
+            [quiz.id, 3],
+            [artifact.id, 1],
+            [artifact.id, 2],
+          ],
+    );
   });
 
   it("is scoped to its owner", () => {
@@ -151,29 +182,85 @@ describe("listConversationVersions", () => {
 
 describe("versionsByMessage", () => {
   it("groups the versions a message wrote, in recording order", () => {
+    // The failure this orders against: one message that rewrites an artifact
+    // and creates another holds a later revision and a first, and by-revision
+    // order puts them back to front — so the transcript's cards swap (§13).
+    const side = createArtifact(db, {
+      studentId: fixtures.student.id,
+      conversationId,
+      language: "html",
+      key: "side",
+    });
+    for (const source of ["<p>en</p>", "<p>to</p>"]) {
+      appendArtifactVersion(db, { artifactId: side.id, source, authoredBy: "model" });
+    }
+
     const message = appendMessage(db, {
       conversationId,
       parentId: null,
       role: "assistant",
       parts: [{ type: "text", text: "her" }],
     });
-    const artifact = createArtifact(db, {
+    const quiz = createArtifact(db, {
       studentId: fixtures.student.id,
       conversationId,
-      language: "html",
-      key: "side",
+      language: "svg",
+      key: "quiz",
     });
-    appendArtifactVersion(db, {
-      artifactId: artifact.id,
-      messageId: message.id,
-      source: "<p>en</p>",
-      authoredBy: "model",
-    });
+
+    // Written in this order: the third revision of `side`, then the first of
+    // `quiz`, then a fourth of `side`.
+    const written = [
+      appendArtifactVersion(db, {
+        artifactId: side.id,
+        messageId: message.id,
+        source: "<p>tre</p>",
+        authoredBy: "model",
+      }),
+      appendArtifactVersion(db, {
+        artifactId: quiz.id,
+        messageId: message.id,
+        source: "<svg>1</svg>",
+        authoredBy: "model",
+      }),
+      appendArtifactVersion(db, {
+        artifactId: side.id,
+        messageId: message.id,
+        source: "<p>fire</p>",
+        authoredBy: "model",
+      }),
+    ];
 
     const rows = versionsByMessage(db, [message.id]);
 
-    expect(rows).toHaveLength(1);
-    expect(rows[0].artifact.key).toBe("side");
+    expect(rows.map((row) => row.version.id)).toEqual(written.map((version) => version.id));
+    expect(rows.map((row) => row.artifact.key)).toEqual(["side", "quiz", "side"]);
+    expect(rows.map((row) => row.version.revision)).toEqual([3, 1, 4]);
+  });
+
+  it("holds nothing a different message wrote", () => {
+    const first = appendMessage(db, {
+      conversationId,
+      parentId: null,
+      role: "assistant",
+      parts: [{ type: "text", text: "en" }],
+    });
+    const second = appendMessage(db, {
+      conversationId,
+      parentId: first.id,
+      role: "assistant",
+      parts: [{ type: "text", text: "to" }],
+    });
+    const { artifact } = seedArtifact();
+    appendArtifactVersion(db, {
+      artifactId: artifact.id,
+      messageId: second.id,
+      source: "<p>to</p>",
+      authoredBy: "model",
+    });
+
+    expect(versionsByMessage(db, [first.id])).toEqual([]);
+    expect(versionsByMessage(db, [second.id])).toHaveLength(1);
   });
 
   it("has nothing to say about no messages", () => {

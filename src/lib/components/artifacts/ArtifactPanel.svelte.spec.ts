@@ -401,13 +401,28 @@ describe("following the model's writes", () => {
     expect(workspace.visible).toBe(false);
   });
 
-  it("follows the last of two writes in one turn — the first block written", () => {
+  it("follows the first block written of two writes in one turn", () => {
     const workspace = new ArtifactWorkspace();
     workspace.replace([artifact()]);
 
+    // As the server hands it over: most recently written first. So the block
+    // the model wrote first is the *last* element, and only the revision's own
+    // timestamp says which that is (§13).
     workspace.replace([
-      { ...artifact(), latest: { ...artifact().latest, id: "version-2", revision: 2 } },
-      { ...artifact(), id: "artifact-2", latest: { ...artifact().latest, id: "v2" } },
+      {
+        ...artifact(),
+        id: "artifact-2",
+        latest: { ...artifact().latest, id: "v2", createdAt: new Date(2_000).toISOString() },
+      },
+      {
+        ...artifact(),
+        latest: {
+          ...artifact().latest,
+          id: "version-2",
+          revision: 2,
+          createdAt: new Date(1_000).toISOString(),
+        },
+      },
     ]);
 
     expect(workspace.openId).toBe("artifact-1");

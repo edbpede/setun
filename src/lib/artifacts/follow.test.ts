@@ -1,8 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import { type FollowCandidate, followModelWrite } from "./follow";
 
-function item(id: string, versionId: string, authoredBy: "model" | "student"): FollowCandidate {
-  return { id, latest: { id: versionId, authoredBy } };
+function item(
+  id: string,
+  versionId: string,
+  authoredBy: "model" | "student",
+  createdAt = "2026-01-01T00:00:00.000Z",
+): FollowCandidate {
+  return { id, latest: { id: versionId, authoredBy, createdAt } };
 }
 
 describe("followModelWrite", () => {
@@ -18,9 +23,12 @@ describe("followModelWrite", () => {
   });
 
   it("follows nothing when nothing changed", () => {
-    const list = [item("a", "v1", "model"), item("b", "v3", "student")];
+    // Two lists that are equal without being the same array: an implementation
+    // that only compared references would pass with `list, list`.
+    const previous = [item("a", "v1", "model"), item("b", "v3", "student")];
+    const next = [item("a", "v1", "model"), item("b", "v3", "student")];
 
-    expect(followModelWrite(list, list)).toBeNull();
+    expect(followModelWrite(previous, next)).toBeNull();
   });
 
   it("never follows the pupil's own revision", () => {
@@ -36,8 +44,19 @@ describe("followModelWrite", () => {
     expect(followModelWrite([], [item("a", "v1", "model")])).toBe("a");
   });
 
-  it("takes the first of two writes in one message, which is recording order", () => {
-    const next = [item("a", "v2", "model"), item("b", "v1", "model")];
+  it("takes the first of two writes in one message, not the first of the list", () => {
+    // The list arrives most-recently-written first, so the block the model wrote
+    // first is the *last* element — the revision's own timestamp is what says so.
+    const next = [
+      item("b", "v1", "model", "2026-01-01T00:00:01.000Z"),
+      item("a", "v2", "model", "2026-01-01T00:00:00.500Z"),
+    ];
+
+    expect(followModelWrite([item("a", "v1", "model")], next)).toBe("a");
+  });
+
+  it("falls to the later element when two writes share a millisecond", () => {
+    const next = [item("b", "v1", "model"), item("a", "v2", "model")];
 
     expect(followModelWrite([item("a", "v1", "model")], next)).toBe("a");
   });

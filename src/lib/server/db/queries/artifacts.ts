@@ -119,23 +119,6 @@ export function appendArtifactVersion(
   return row;
 }
 
-/**
- * Every artifact of a conversation, newest first — what continuity resolves over
- * (§13).
- *
- * The whole set rather than the single most recent one: the rule now matches on
- * the key the model wrote, and an interleaved artifact of another language must
- * not be able to steal the anchor from the thing being worked on.
- */
-export function listConversationArtifactRows(db: AppDatabase, conversationId: string): Artifact[] {
-  return db
-    .select()
-    .from(artifact)
-    .where(eq(artifact.conversationId, conversationId))
-    .orderBy(desc(artifact.updatedAt), desc(artifact.createdAt))
-    .all();
-}
-
 /** Persist the key a model adopted, so the next turn resolves to this row (§13). */
 export function setArtifactKey(db: AppDatabase, input: { artifactId: string; key: string }): void {
   db.update(artifact).set({ key: input.key }).where(eq(artifact.id, input.artifactId)).run();
@@ -242,7 +225,10 @@ export function markVersionsDelivered(db: AppDatabase, versionIds: readonly stri
  * artifact's revision count and last run result for the state note — and asking
  * per artifact would be one query per thing the pupil has built.
  *
- * Ordered by artifact and then revision, so a caller folds it in one pass.
+ * Ordered by artifact and then revision, so a caller folds it in one pass — the
+ * last row of each group being that artifact's current source. The identifier
+ * joins the sort because `createdAt` is milliseconds: two artifacts created in
+ * one message tie on it, and the groups would otherwise interleave.
  */
 export function listConversationVersions(
   db: AppDatabase,
@@ -258,11 +244,21 @@ export function listConversationVersions(
         eq(artifact.studentId, input.studentId),
       ),
     )
-    .orderBy(asc(artifact.createdAt), asc(artifactVersion.revision))
+    .orderBy(asc(artifact.createdAt), asc(artifact.id), asc(artifactVersion.revision))
     .all();
 }
 
-/** Every version recorded against a message, for the transcript's cards (§13). */
+/**
+ * Every version recorded against a message, for the transcript's cards (§13).
+ *
+ * In recording order, which is what the transcript aligns its cards against: a
+ * message that rewrites one artifact and creates another holds a fifth revision
+ * and a first, and ordering by revision would put them back to front — the card
+ * under each block would name the other block's artifact.
+ *
+ * Recording order is insertion order, and `createdAt` is only milliseconds, so
+ * SQLite's own `rowid` breaks the ties that two blocks of one message produce.
+ */
 export function versionsByMessage(
   db: AppDatabase,
   messageIds: readonly string[],
@@ -274,7 +270,7 @@ export function versionsByMessage(
     .from(artifactVersion)
     .innerJoin(artifact, eq(artifact.id, artifactVersion.artifactId))
     .where(inArray(artifactVersion.messageId, [...messageIds]))
-    .orderBy(asc(artifactVersion.revision), asc(artifactVersion.createdAt))
+    .orderBy(asc(artifactVersion.createdAt), sql`"artifact_version"."rowid"`)
     .all();
 }
 
