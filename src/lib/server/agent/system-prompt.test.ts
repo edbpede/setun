@@ -71,6 +71,10 @@ describe("the artifact layer", () => {
   it("is part of the fixed prefix, before any educator layer", () => {
     const prompt = buildSystemPrompt({ classroomInstructions: "Svar altid på dansk." });
 
+    // In the fixed prefix itself, not merely somewhere ahead of the classroom
+    // layer: appended as a mutable layer it would still order correctly below
+    // while breaking the cacheable prefix this names (§10, §13).
+    expect(FIXED_SYSTEM_PROMPT).toContain(ARTIFACT_INSTRUCTIONS);
     expect(prompt.indexOf(ARTIFACT_INSTRUCTIONS)).toBeGreaterThan(-1);
     // Platform fact first, pedagogy after: a classroom rule reads as refining a
     // fact already stated, and the cacheable prefix stays identical (§10, §13).
@@ -85,5 +89,12 @@ describe("the artifact layer", () => {
     expect(ARTIFACT_INSTRUCTIONS).toContain("write the");
     expect(ARTIFACT_INSTRUCTIONS).toContain("COMPLETE file again under the same id");
     expect(ARTIFACT_INSTRUCTIONS).toContain("id=home-page");
+  });
+
+  it("does not ask a svelte artifact for a default export", () => {
+    // The Svelte compiler refuses a component with one, so following the
+    // instruction would have made every svelte artifact fail to build (§13).
+    expect(ARTIFACT_INSTRUCTIONS).toContain("jsx and tsx must");
+    expect(ARTIFACT_INSTRUCTIONS).toContain("never an export default");
   });
 });
