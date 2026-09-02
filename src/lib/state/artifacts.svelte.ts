@@ -47,7 +47,7 @@ export type RunStatus = "idle" | "compiling" | "running" | "failed";
  * A `requestAnimationFrame` loop with a stray `console.log` prints sixty lines a
  * second, and the useful ones are the newest.
  */
-const CONSOLE_KEPT = 200;
+export const CONSOLE_KEPT = 200;
 
 export class ArtifactWorkspace {
   items = $state<ArtifactView[]>([]);
@@ -125,13 +125,6 @@ export class ArtifactWorkspace {
   }
 
   /**
-   * Replace the list from the server.
-   *
-   * A draft is dropped only when the artifact it belonged to gained a revision —
-   * the model answering again must not silently discard what a pupil was typing,
-   * and a reload that returns the same revision must not either.
-   */
-  /**
    * Which conversation's list is currently held, and whether one is (§13).
    *
    * A page load and a conversation switch both replace the list wholesale, and
@@ -142,6 +135,17 @@ export class ArtifactWorkspace {
   private hydrated = false;
   private hydratedFor: string | null = null;
 
+  /**
+   * Replace the list from the server.
+   *
+   * A draft is dropped only when the artifact it belonged to gained a revision —
+   * the model answering again must not silently discard what a pupil was typing,
+   * and a reload that returns the same revision must not either.
+   *
+   * When the model wrote something, the panel opens on it and follows it: the
+   * pupil asked for the thing, and having to go looking for it afterwards was
+   * the gap between "it built something" and "they can see it" (§13, §20).
+   */
   replace(items: ArtifactView[], conversationId: string | null = null): void {
     const previous = this.open;
     const fresh = !this.hydrated || conversationId !== this.hydratedFor;

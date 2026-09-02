@@ -10,7 +10,6 @@
   "artifact_build_unseen": "Updated",
   "artifact_card_label": "Built: {title}",
   "artifact_close": "Close",
-  "artifact_console_empty": "Nothing printed yet.",
   "artifact_console_label": "Console ({count})",
   "artifact_console_truncated": "Only the newest lines are kept.",
   "artifact_delete": "Delete",

@@ -41,7 +41,9 @@ states: minus, zero, and plus.
 - **Streaming AI chat** — run classroom-scoped conversations with attachments, search, cancellation,
   and model aliases chosen by the educator.
 - **Live artifacts** — preview, edit, rerun, and version HTML, SVG, JSX, TSX, and Svelte creations in
-  an isolated workspace.
+  an isolated workspace, built up over several turns: the model writes an id on the fence
+  (` ```html id=home-page `) and reuses it to revise the same thing, and a run's outcome travels
+  back so the next answer can fix the error the pupil saw.
 - **Curated capabilities** — publish reusable skills and expose only approved MCP tools, with
   per-classroom controls for tools that require confirmation.
 - **Image workflows** — support image attachments and model-generated images without exposing the

@@ -2,7 +2,11 @@
 import { effectiveArtifactKey } from "$lib/artifacts/identity";
 import type { ConsoleLine } from "$lib/artifacts/protocol";
 import * as m from "$lib/paraglide/messages";
-import type { ArtifactVersionView, ArtifactWorkspace } from "$lib/state/artifacts.svelte";
+import {
+  type ArtifactVersionView,
+  type ArtifactWorkspace,
+  CONSOLE_KEPT,
+} from "$lib/state/artifacts.svelte";
 import ArtifactDiff from "./ArtifactDiff.svelte";
 import ArtifactEditor from "./ArtifactEditor.svelte";
 import ArtifactFrame from "./ArtifactFrame.svelte";
@@ -561,7 +565,13 @@ $effect(() => {
             class="max-h-32 overflow-auto bg-muted p-2 font-mono text-xs whitespace-pre-wrap text-foreground">{workspace.consoleLines
               .map((line) => `${line.level === "log" ? "" : `${line.level}: `}${line.text}`)
               .join("\n")}</pre>
-          <p class="px-2 py-1 text-xs text-muted-foreground">{m.artifact_console_truncated()}</p>
+          {#if workspace.consoleLines.length >= CONSOLE_KEPT}
+            <!-- A rAF loop with a stray log prints sixty lines a second; the
+                 useful ones are the newest, so the older ones are gone. -->
+            <p class="px-2 py-1 text-xs text-muted-foreground">
+              {m.artifact_console_truncated()}
+            </p>
+          {/if}
         </div>
       {/if}
 

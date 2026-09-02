@@ -10,7 +10,6 @@
   "artifact_build_unseen": "Opdateret",
   "artifact_card_label": "Bygget: {title}",
   "artifact_close": "Luk",
-  "artifact_console_empty": "Der er ikke skrevet noget endnu.",
   "artifact_console_label": "Konsol ({count})",
   "artifact_console_truncated": "Kun de nyeste linjer bliver gemt.",
   "artifact_delete": "Slet",
