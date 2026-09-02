@@ -158,12 +158,18 @@ test("what an artifact saves survives a Run, and its neighbour starts empty", as
   });
   await expect(stage.locator("#out")).toHaveText("point:1", { timeout: 20_000 });
 
-  // The snapshot is posted on a 250 ms debounce, so the second run has to come
-  // after it — which it does in practice, because a pupil presses Run by hand.
-  await expect
-    .poll(async () => (await sandboxMessageTypes(page)).length, { timeout: 10_000 })
-    .toBeGreaterThan(0);
-  await page.waitForTimeout(600);
+  // Kept per artifact: the thing beside it does not read its neighbour's score.
+  //
+  // Run before the second go at `spillet` on purpose. The shim posts its
+  // snapshot on a 250 ms debounce *and* on `pagehide`, and replacing the frame
+  // here is what fires the second — so what the next step reads back is carried
+  // by the frame's own teardown rather than by whether a timer beat a sleep.
+  const other = await rerenderArtifact(page, {
+    language: "html",
+    source: SCORE_KEEPER,
+    artifactId: "noget-andet",
+  });
+  await expect(other.locator("#out")).toHaveText("point:1", { timeout: 20_000 });
 
   const again = await rerenderArtifact(page, {
     language: "html",
@@ -171,14 +177,6 @@ test("what an artifact saves survives a Run, and its neighbour starts empty", as
     artifactId: "spillet",
   });
   await expect(again.locator("#out")).toHaveText("point:2", { timeout: 20_000 });
-
-  // Kept per artifact: the thing beside it does not read its neighbour's score.
-  const other = await rerenderArtifact(page, {
-    language: "html",
-    source: SCORE_KEEPER,
-    artifactId: "noget-andet",
-  });
-  await expect(other.locator("#out")).toHaveText("point:1", { timeout: 20_000 });
 
   // And none of it reached the application (§13, §14).
   expect(await sandboxMessageTypes(page)).not.toContain("storage");

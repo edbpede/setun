@@ -37,6 +37,17 @@ const stage = document.getElementById("stage") as HTMLIFrameElement;
 let currentRunId: string | null = null;
 /** Which artifact that render belongs to, so its storage is kept apart. */
 let currentArtifactId: string | null = null;
+/**
+ * The run this one replaced, kept only for its final storage snapshot.
+ *
+ * Replacing the stage's document fires `pagehide` in the old one, and the shim
+ * flushes there — with the run id it was started under, from a window the frame
+ * no longer holds. Both of those made the flush unrecognisable: it named a run
+ * that was no longer current, and it came from a source that was no longer
+ * `stage.contentWindow`. So every write made inside the shim's 250 ms debounce
+ * was lost whenever a pupil pressed Run, which for a game is its saved state.
+ */
+let replacedRun: { runId: string; artifactId: string } | null = null;
 
 /**
  * What each artifact's storage shim held, kept for as long as this page lives
@@ -59,7 +70,21 @@ const storageByArtifact = new Map<
 >();
 
 function storageFor(artifactId: string): ArtifactStorageSeed {
-  return storageByArtifact.get(artifactId) ?? { local: {}, session: {} };
+  const held = storageByArtifact.get(artifactId);
+  if (!held) return { local: {}, session: {} };
+
+  // Reading is use. Without this a rerun that writes nothing never refreshes
+  // its recency, and the artifact on screen is the next one evicted.
+  storageByArtifact.delete(artifactId);
+  storageByArtifact.set(artifactId, held);
+
+  return held;
+}
+
+/** Which artifact a snapshot belongs to: the run on screen, or the one it replaced. */
+function storageOwnerOf(runId: string): string | null {
+  if (runId === currentRunId) return currentArtifactId;
+  return replacedRun?.runId === runId ? replacedRun.artifactId : null;
 }
 
 function rememberStorage(
@@ -291,6 +316,12 @@ async function render(
   language: ArtifactLanguage,
   source: string,
 ): Promise<void> {
+  // Held before it is overwritten: the document about to be replaced still owes
+  // its final storage flush, and it posts that under the run id it has now.
+  if (currentRunId && currentArtifactId && currentRunId !== runId) {
+    replacedRun = { runId: currentRunId, artifactId: currentArtifactId };
+  }
+
   currentRunId = runId;
   currentArtifactId = artifactId;
 
@@ -347,17 +378,29 @@ async function render(
 }
 
 window.addEventListener("message", (event) => {
-  // From the artifact below: mounted, or an error it threw at runtime.
-  if (stage.contentWindow && event.source === stage.contentWindow) {
+  // From the artifact below — which is anything that is not the application
+  // above. The frame's *current* window is not the test: a document being torn
+  // down posts its final storage snapshot from `pagehide`, and by then the
+  // browser has swapped `stage.contentWindow` for the document replacing it.
+  if (event.source !== parent) {
     const staged = asStageMessage(event.data);
-    if (!staged || staged.runId !== currentRunId) return;
+    if (!staged) return;
 
     // Kept here and forwarded no further: what an artifact stores belongs to
     // the artifact, and the application has no use for it (§13, §14).
+    //
+    // Placed by the run it names rather than by its sender, which is what lets
+    // the replaced document's last word still count. A run id is minted by the
+    // application per render, so it names a document this page staged itself.
     if (staged.type === "storage") {
-      if (currentArtifactId) rememberStorage(currentArtifactId, staged.area, { ...staged.entries });
+      const owner = storageOwnerOf(staged.runId);
+      if (owner) rememberStorage(owner, staged.area, { ...staged.entries });
       return;
     }
+
+    // Everything else describes what is on screen, so it has to come from the
+    // document that is on screen and name the run that is running in it.
+    if (event.source !== stage.contentWindow || staged.runId !== currentRunId) return;
 
     if (staged.type === "console") {
       toHost({
@@ -387,9 +430,6 @@ window.addEventListener("message", (event) => {
     });
     return;
   }
-
-  // From the application above. Anything else on this window is ignored.
-  if (event.source !== parent) return;
 
   const message = asHostMessage(event.data);
   if (!message) return;
