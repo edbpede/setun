@@ -291,6 +291,21 @@ describe("compiledDocument", () => {
     expect(html).toContain("connect-src 'none'");
   });
 
+  it("decides a React crash on a flag rather than on the thrown value", () => {
+    const html = compiledDocument({
+      framework: "react",
+      module: 'export default () => "hi";',
+      runtimes: RUNTIMES,
+      runId: "run-1",
+    });
+
+    // `throw null` and `throw ""` are legal. A harness that tested the caught
+    // value would read those as no crash at all, ack the mount, and tell the
+    // pupil — and the model — that a component that never rendered ran (§13).
+    expect(html).toContain("crashed = true");
+    expect(html).not.toContain("crashed = error");
+  });
+
   it("mounts a Svelte component through the Svelte runtime", () => {
     const html = compiledDocument({
       framework: "svelte",

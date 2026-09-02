@@ -401,13 +401,18 @@ export function compiledDocument(input: {
         // late `runtime-error`, and a build failure is reported as a page that
         // ran and then broke. `flushSync` plus `onUncaughtError` (React 19)
         // brings the throw back inside the `try` below, which already reports it.
+        //
+        // The flag is separate from the value: `throw null` and `throw ""` are
+        // legal, and testing the caught value itself would read those as no
+        // crash at all and ack a mount that never happened.
         `const { createRoot } = await import("react-dom/client");
 const { flushSync } = await import("react-dom");
 const { createElement } = await import("react");
-let crashed = null;
-const app = createRoot(root, { onUncaughtError: (error) => { crashed = error; } });
+let crashed = false;
+let crash = null;
+const app = createRoot(root, { onUncaughtError: (error) => { crashed = true; crash = error; } });
 flushSync(() => app.render(createElement(pick(module))));
-if (crashed) throw crashed;`
+if (crashed) throw crash;`
       : `const { mount } = await import("svelte");
 mount(pick(module), { target: root });`;
 
