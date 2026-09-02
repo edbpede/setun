@@ -42,6 +42,8 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
       revision: version.revision,
       source: version.source,
       authoredBy: version.authoredBy,
+      buildStatus: version.buildStatus,
+      buildMessage: version.buildMessage,
       createdAt: version.createdAt.toISOString(),
     },
     { status: 201 },

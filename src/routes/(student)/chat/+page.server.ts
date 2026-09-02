@@ -1,4 +1,6 @@
 import { redirect } from "@sveltejs/kit";
+import { effectiveArtifactKey } from "$lib/artifacts/identity";
+import type { ArtifactLanguage, BuildStatus } from "$lib/artifacts/types";
 import { generationAliases } from "$lib/server/agent/image-generation";
 import { requireStudentPage } from "$lib/server/auth/guards";
 import { destroySession, SESSION_COOKIE_NAME } from "$lib/server/auth/sessions";
@@ -6,7 +8,7 @@ import { getDb } from "$lib/server/boot";
 import { classroomAvailability } from "$lib/server/classroom/enforcement";
 import { resolveClassroomStatus } from "$lib/server/classroom/status";
 import { getConfig } from "$lib/server/config";
-import { listConversationArtifacts } from "$lib/server/db/queries/artifacts";
+import { listConversationArtifacts, versionsByMessage } from "$lib/server/db/queries/artifacts";
 import { listPendingAttachments } from "$lib/server/db/queries/attachments";
 import { listClassroomAliases } from "$lib/server/db/queries/classroom-aliases";
 import { getClassroom } from "$lib/server/db/queries/classrooms";
@@ -44,33 +46,75 @@ export const load: PageServerLoad = ({ locals, url }) => {
   // much of the transcript as the prose is, and the same component renders a
   // reloaded message and a streaming one (§10, §11, §15).
   const conversationId = active?.id;
-  const messages =
-    active?.activeLeafId && conversationId
-      ? getActivePath(db, active.activeLeafId).map((message) => {
-          // A branch point is a message with siblings — the variants an edit or
-          // a regenerate left addressable but off-screen. The picker needs only
-          // this message's position and the neighbours to step to; the switch
-          // endpoint resolves each neighbour to its branch tip.
-          const siblings = listSiblings(db, conversationId, message.parentId);
-          const index = siblings.findIndex((sibling) => sibling.id === message.id);
-          const branch =
-            siblings.length > 1 && index !== -1
-              ? {
-                  index,
-                  total: siblings.length,
-                  prevId: index > 0 ? siblings[index - 1].id : null,
-                  nextId: index < siblings.length - 1 ? siblings[index + 1].id : null,
-                }
-              : null;
+  const path = active?.activeLeafId ? getActivePath(db, active.activeLeafId) : [];
 
-          return {
-            id: message.id,
-            role: message.role,
-            parts: message.parts,
-            branch,
-          };
-        })
-      : [];
+  /**
+   * The artifacts each message produced, so the transcript can show a card that
+   * opens one rather than the markup it was written as (§13, §20).
+   *
+   * Read for the whole path in one query and grouped here: one query per message
+   * would be a query per artifact block in a lesson-long thread.
+   */
+  const messageArtifacts = new Map<
+    string,
+    {
+      artifactId: string;
+      versionId: string;
+      revision: number;
+      key: string;
+      language: ArtifactLanguage;
+      title: string | null;
+      buildStatus: BuildStatus | null;
+    }[]
+  >();
+  for (const { artifact, version } of versionsByMessage(
+    db,
+    path.map((message) => message.id),
+  )) {
+    if (!version.messageId) continue;
+
+    const held = messageArtifacts.get(version.messageId) ?? [];
+    held.push({
+      artifactId: artifact.id,
+      versionId: version.id,
+      revision: version.revision,
+      key: effectiveArtifactKey(artifact),
+      language: artifact.language,
+      title: artifact.title,
+      buildStatus: version.buildStatus,
+    });
+    messageArtifacts.set(version.messageId, held);
+  }
+
+  const messages = conversationId
+    ? path.map((message) => {
+        // A branch point is a message with siblings — the variants an edit or
+        // a regenerate left addressable but off-screen. The picker needs only
+        // this message's position and the neighbours to step to; the switch
+        // endpoint resolves each neighbour to its branch tip.
+        const siblings = listSiblings(db, conversationId, message.parentId);
+        const index = siblings.findIndex((sibling) => sibling.id === message.id);
+        const branch =
+          siblings.length > 1 && index !== -1
+            ? {
+                index,
+                total: siblings.length,
+                prevId: index > 0 ? siblings[index - 1].id : null,
+                nextId: index < siblings.length - 1 ? siblings[index + 1].id : null,
+              }
+            : null;
+
+        return {
+          id: message.id,
+          role: message.role,
+          parts: message.parts,
+          branch,
+          // In recording order — which is the order the blocks were written,
+          // so the transcript's cards line up with the prose around them.
+          artifacts: messageArtifacts.get(message.id) ?? [],
+        };
+      })
+    : [];
 
   // A turn still streaming when this tab reloaded: the client resumes it from
   // the buffer rather than losing the answer (§10).
@@ -125,11 +169,14 @@ export const load: PageServerLoad = ({ locals, url }) => {
           id: artifact.id,
           language: artifact.language,
           title: artifact.title,
+          key: effectiveArtifactKey(artifact),
           latest: {
             id: latest.id,
             revision: latest.revision,
             source: latest.source,
             authoredBy: latest.authoredBy,
+            buildStatus: latest.buildStatus,
+            buildMessage: latest.buildMessage,
             createdAt: latest.createdAt.toISOString(),
           },
         }))

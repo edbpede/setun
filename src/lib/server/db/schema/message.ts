@@ -45,6 +45,14 @@ export interface ArtifactEditPart {
   readonly language: string;
   readonly title: string | null;
   readonly source: string;
+  /**
+   * The id the artifact answers to, so the block carries the identity the model
+   * is asked to reuse (§13).
+   *
+   * Optional because parts written before the fence carried an id have none;
+   * those still encode, in the form they were written in.
+   */
+  readonly key?: string | null;
 }
 
 /** An image produced by the generation path, served only by Setun (§15). */

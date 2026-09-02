@@ -1,3 +1,4 @@
+import type { ArtifactLanguage, BuildStatus } from "$lib/artifacts/types";
 import type { MessagePart } from "$lib/server/db/schema";
 import { StreamingTurn } from "./streaming-turn.svelte";
 
@@ -22,6 +23,22 @@ export interface MessageBranch {
   readonly nextId: string | null;
 }
 
+/**
+ * An artifact a message produced, as the transcript needs it (§13).
+ *
+ * One entry per artifact block the server recorded, in the order the blocks were
+ * written, so the cards line up with the prose they were written between.
+ */
+export interface MessageArtifactRef {
+  readonly artifactId: string;
+  readonly versionId: string;
+  readonly revision: number;
+  readonly key: string;
+  readonly language: ArtifactLanguage;
+  readonly title: string | null;
+  readonly buildStatus?: BuildStatus | null;
+}
+
 export interface ChatMessage {
   readonly id: string;
   readonly role: "user" | "assistant";
@@ -34,6 +51,8 @@ export interface ChatMessage {
   readonly parts: readonly MessagePart[];
   /** Branch-picker data, or null/absent for a message with no siblings. */
   readonly branch?: MessageBranch | null;
+  /** The artifacts this message wrote, in recording order (§13). */
+  readonly artifacts?: readonly MessageArtifactRef[];
 }
 
 /** The prose of a message, for the composer's edit flow (§10). */

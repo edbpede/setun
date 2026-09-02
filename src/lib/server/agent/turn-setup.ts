@@ -7,6 +7,7 @@ import type { McpClient } from "../mcp/client";
 import { resolveSkills, skillIndexEntries } from "../skills/registry";
 import { type AttachmentPayload, loadAttachmentPayloads } from "../storage/attachments";
 import type { FileStore } from "../storage/files";
+import { type ArtifactContext, buildArtifactContext } from "./artifact-context";
 import type { SystemPromptLayers } from "./system-prompt";
 import { buildToolSet, type ToolContext, type ToolSet } from "./tools";
 
@@ -25,6 +26,8 @@ export interface PreparedTurn {
   readonly toolContext: ToolContext;
   readonly promptLayers: SystemPromptLayers;
   readonly attachmentPayloads: ReadonlyMap<string, AttachmentPayload>;
+  /** What this conversation has built: the state note and the elision index (§13). */
+  readonly artifacts: ArtifactContext;
 }
 
 export async function prepareTurn(input: {
@@ -79,5 +82,9 @@ export async function prepareTurn(input: {
       skillIndex: skillIndexEntries(skills),
     },
     attachmentPayloads,
+    artifacts: buildArtifactContext(input.db, {
+      conversationId: input.conversationId,
+      studentId: input.student.id,
+    }),
   };
 }

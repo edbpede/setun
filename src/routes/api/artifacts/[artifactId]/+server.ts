@@ -1,4 +1,5 @@
 import { error, json } from "@sveltejs/kit";
+import { effectiveArtifactKey } from "$lib/artifacts/identity";
 import { requireStudentApi } from "$lib/server/auth/guards";
 import { getDb } from "$lib/server/boot";
 import { getOwnedArtifact, listArtifactVersions } from "$lib/server/db/queries/artifacts";
@@ -26,11 +27,16 @@ export const GET: RequestHandler = ({ params, locals }) => {
     id: record.id,
     language: record.language,
     title: record.title,
+    // The id the model reuses to change it — derived when the row stores none,
+    // so every artifact answers to a key whether or not it was given one (§13).
+    key: effectiveArtifactKey(record),
     versions: listArtifactVersions(db, record.id).map((version) => ({
       id: version.id,
       revision: version.revision,
       source: version.source,
       authoredBy: version.authoredBy,
+      buildStatus: version.buildStatus,
+      buildMessage: version.buildMessage,
       createdAt: version.createdAt.toISOString(),
     })),
   });

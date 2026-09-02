@@ -320,6 +320,64 @@ describe("compiledDocument", () => {
   });
 });
 
+describe("the document preamble", () => {
+  const base = { language: "html" as const, runtimes: REACT, runId: "run-1" };
+
+  it("seeds the storage shim with what the artifact held on its last run", () => {
+    const html = staticDocument({
+      ...base,
+      source: "<p>hi</p>",
+      storage: { local: { score: "12" }, session: {} },
+    });
+
+    expect(html).toContain('{"local":{"score":"12"},"session":{}}');
+    expect(html).toContain('install("local");install("session")');
+  });
+
+  it("seeds both areas empty when nothing was kept", () => {
+    expect(staticDocument({ ...base, source: "<p>hi</p>" })).toContain('{"local":{},"session":{}}');
+  });
+
+  it("installs the shim only where the native object is unreachable", () => {
+    // The probe: a frame that *can* reach `localStorage` keeps it, so relaxing
+    // the sandbox later does not leave two storages in play.
+    expect(staticDocument({ ...base, source: "<p>hi</p>" })).toContain(
+      'try{var native=window[name];native.getItem("__setun__");return}catch(e){}',
+    );
+  });
+
+  it("cannot be broken out of by a stored value holding a closing script tag", () => {
+    const html = staticDocument({
+      ...base,
+      source: "<p>hi</p>",
+      storage: { local: { evil: "</script><script>alert(1)</script>" } },
+    });
+
+    expect(html).not.toContain("</script><script>alert(1)");
+    expect(html).toContain("<\\/script>");
+  });
+
+  it("copies console output upward while still calling the original", () => {
+    const html = staticDocument({ ...base, source: "<p>hi</p>" });
+
+    expect(html).toContain("original&&original.apply(console,arguments)");
+    expect(html).toContain('type:"console"');
+  });
+
+  it("carries the shim and the console capture into a compiled document too", () => {
+    const html = compiledDocument({
+      framework: "react",
+      module: "export default () => null;",
+      runtimes: REACT,
+      runId: "run-1",
+      storage: { session: { turn: "3" } },
+    });
+
+    expect(html).toContain('"session":{"turn":"3"}');
+    expect(html).toContain('type:"console"');
+  });
+});
+
 describe("artifactTitle", () => {
   it("reads a document title", () => {
     expect(artifactTitle("<html><head><title>Mit kort</title></head></html>")).toBe("Mit kort");

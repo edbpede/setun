@@ -1,4 +1,5 @@
 import { fencedBlocks } from "./fences";
+import { normaliseArtifactKey } from "./identity";
 import { type ArtifactLanguage, isArtifactLanguage } from "./types";
 
 /**
@@ -17,6 +18,15 @@ export interface DetectedArtifact {
   readonly source: string;
   /** Position of the opening fence, so blocks are recorded in the order written. */
   readonly line: number;
+  /** Position of the closing fence, so a whole block can be replaced by line. */
+  readonly endLine: number;
+  /**
+   * The `id=` the model wrote, normalised; null when it wrote none or wrote
+   * something that is not a slug. This is what continuity resolves on (§13).
+   */
+  readonly key: string | null;
+  /** The `title=` the model wrote; null when it wrote none. */
+  readonly title: string | null;
 }
 
 /**
@@ -42,7 +52,14 @@ export function detectArtifacts(markdown: string): DetectedArtifact[] {
     // An empty block is a fence the model opened and closed with nothing in it.
     if (!language || !block.source.trim()) continue;
 
-    found.push({ language, source: block.source, line: block.line });
+    found.push({
+      language,
+      source: block.source,
+      line: block.line,
+      endLine: block.endLine,
+      key: normaliseArtifactKey(block.attributes.id),
+      title: block.attributes.title?.trim() || null,
+    });
   }
 
   return found;

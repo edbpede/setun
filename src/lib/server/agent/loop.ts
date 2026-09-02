@@ -1,3 +1,5 @@
+import { fenceInfo } from "../../artifacts/identity";
+import { isArtifactLanguage } from "../../artifacts/types";
 import type { Message, MessagePart, PermissionMode } from "../db/schema";
 import type { DialectName, GatewayAdapter } from "../gateway/adapter";
 import type { GatewayContentPart, GatewayMessage, GatewayToolCall } from "../gateway/dialect";
@@ -6,6 +8,11 @@ import type { GatewayEvent, TurnEndReason } from "../gateway/events";
 import { promptTextOf } from "../gateway/messages";
 import { estimateTokens, resolveUsage } from "../gateway/usage";
 import type { AttachmentPayload } from "../storage/attachments";
+import {
+  type ArtifactContext,
+  elideSupersededArtifacts,
+  formatArtifactState,
+} from "./artifact-context";
 import { BUDGET_PRESETS, type BudgetSettings, TurnBudget } from "./budgets";
 import type { InteractionAnswer, TurnInteractionRegistry } from "./interactions";
 import {
@@ -57,6 +64,14 @@ export interface RunTurnInput {
   readonly attachmentPayloads?: ReadonlyMap<string, AttachmentPayload>;
   readonly promptLayers?: SystemPromptLayers;
   /**
+   * What this conversation has built, for the state note and the elision (§13).
+   *
+   * Resolved by the caller rather than here, exactly as attachments are: the
+   * loop stays pure over stored parts, and a termination-condition test should
+   * not need a database to run.
+   */
+  readonly artifacts?: ArtifactContext;
+  /**
    * The classroom's per-turn caps (§10).
    *
    * Defaulted to the Standard preset rather than to "unlimited": Standard is
@@ -94,16 +109,30 @@ function textOf(message: Pick<Message, "parts">): string {
 
 const FENCE = "```";
 
-/** The marked block an edited artifact travels in (§13). */
+/**
+ * The marked block an edited artifact travels in (§13).
+ *
+ * The fence carries the artifact's own id, in the form the model is asked to
+ * write, and the marker says outright what to do with it: a pupil's edited page
+ * that comes back under `id=home-page` is answerable with a complete file under
+ * the same id, which is the whole mechanism. A part stored before the id existed
+ * has none, and encodes in the form it was written in.
+ */
 function encodeArtifactEdit(part: Extract<MessagePart, { type: "artifact-edit" }>): string {
   const named = part.title ? ` "${part.title}"` : "";
+  const key = part.key ?? null;
+  const info =
+    key && isArtifactLanguage(part.language)
+      ? fenceInfo(part.language, { key, title: part.title })
+      : part.language;
 
   return [
     "",
     "",
     `[The student's edited version of the ${part.language} artifact${named}.`,
-    "This is the current source, not the version you last wrote.]",
-    `${FENCE}${part.language}`,
+    "This is the current source, not the version you last wrote.",
+    ...(key ? [`To change it, reuse id=${key} and write the complete file.]`] : ["]"]),
+    `${FENCE}${info}`,
     part.source,
     FENCE,
   ].join("\n");
@@ -183,16 +212,58 @@ function encodeStoredMessage(
   ];
 }
 
-/** Assemble the upstream context from the active path plus the layered system prompt (§10). */
+/**
+ * Assemble the upstream context from the active path plus the layered system
+ * prompt (§10, §13).
+ *
+ * Two things happen to the path on the way. Obsolete copies of an artifact's
+ * source are replaced by a line naming them, so a fourth revision of a page does
+ * not send four copies of that page. Then the state note is appended to the last
+ * user message, so the model reads what exists immediately before the request
+ * that asks it to change one of them.
+ *
+ * The note is not a system message: it changes every turn, and putting it in the
+ * system layer would break the cacheable prefix on every send. It is not
+ * persisted either — it describes the moment the turn was assembled.
+ */
 export function assembleContext(
   path: readonly Pick<Message, "role" | "parts">[],
   layers?: SystemPromptLayers,
   payloads?: RunTurnInput["attachmentPayloads"],
+  artifacts?: ArtifactContext,
 ): GatewayMessage[] {
-  return [
+  const elided = artifacts ? elideSupersededArtifacts(path, artifacts.index) : path;
+
+  const messages: GatewayMessage[] = [
     { role: "system" as const, content: buildSystemPrompt(layers) },
-    ...path.flatMap((message) => encodeStoredMessage(message, payloads)),
+    ...elided.flatMap((message) => encodeStoredMessage(message, payloads)),
   ];
+
+  const note = artifacts ? formatArtifactState(artifacts.state) : null;
+  return note ? withStateNote(messages, note) : messages;
+}
+
+/** Append the note to the last user message, whatever shape its content has. */
+function withStateNote(messages: GatewayMessage[], note: string): GatewayMessage[] {
+  const at = messages.findLastIndex((message) => message.role === "user");
+  if (at === -1) return messages;
+
+  const target = messages[at];
+
+  if (typeof target.content === "string") {
+    messages[at] = { ...target, content: `${target.content}\n\n${note}` };
+    return messages;
+  }
+
+  // A message with images carries its prose as the first text part.
+  const content = [...target.content];
+  const textAt = content.findIndex((part) => part.type === "text");
+  const held = textAt === -1 ? null : content[textAt];
+  if (held?.type === "text") content[textAt] = { type: "text", text: `${held.text}\n\n${note}` };
+  else content.unshift({ type: "text", text: note });
+
+  messages[at] = { ...target, content };
+  return messages;
 }
 
 /**
@@ -208,6 +279,7 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<GatewayEvent
     input.path,
     input.promptLayers,
     input.attachmentPayloads,
+    input.artifacts,
   );
   const now = input.now ?? Date.now;
   const budget = new TurnBudget(input.budgets ?? BUDGET_PRESETS.standard, now());

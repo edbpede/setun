@@ -1,3 +1,9 @@
+import {
+  CONSOLE_MAX_LINES,
+  CONSOLE_MAX_TEXT,
+  STORAGE_MAX_BYTES,
+  STORAGE_MAX_KEYS,
+} from "./protocol";
 import type { ArtifactLanguage } from "./types";
 
 /**
@@ -31,22 +37,120 @@ const INNER_POLICY = [
 ].join("; ");
 
 /**
- * Errors are reported to the runner rather than swallowed.
+ * What an artifact gets besides its own source (PRD §13, §14).
  *
- * `parent` here is the runner page, one origin boundary away; it forwards to
- * the application, which is another. Nothing about the message is trusted at
- * either hop — it is rendered as text.
+ * Three things, all of them installed before a line of generated code runs:
+ *
+ * 1. **Error reporting.** `parent` here is the runner page, one origin boundary
+ *    away; it forwards to the application, which is another. Nothing about the
+ *    message is trusted at either hop — it is rendered as text.
+ * 2. **A storage shim.** The frame is sandboxed without `allow-same-origin`, so
+ *    its origin is opaque — and in an opaque origin `localStorage` *throws*
+ *    rather than returning null. A small game that saves a high score therefore
+ *    died on the line where it tried, which is not a lesson about anything. So
+ *    an in-memory `Storage` stands in, seeded with what this artifact held on
+ *    its last run and posted back to the runner as it changes. It is bounded and
+ *    it is not durable: the runner holds it while the panel is open, nothing
+ *    reaches the application, and the model is told as much in its instructions.
+ * 3. **Console capture.** `console.log` in a nested opaque frame went nowhere a
+ *    pupil could look. The originals still run; the text is batched upward.
+ *
+ * The shim is installed only where the native object is unreachable, so a future
+ * relaxation of the frame's sandbox does not leave two storages in play.
  */
-function preamble(runId: string): string {
+function preamble(runId: string, storage?: ArtifactStorageSeed): string {
   const id = JSON.stringify(runId);
+  const seed = escapeScript(
+    JSON.stringify({ local: storage?.local ?? {}, session: storage?.session ?? {} }),
+  );
 
   return `<meta http-equiv="Content-Security-Policy" content="${INNER_POLICY}">
 <script>(function(){
 var post=function(type,message){try{parent.postMessage({channel:"setun-artifact",type:type,runId:${id},message:message},"*")}catch(e){}};
+var send=function(payload){try{parent.postMessage(payload,"*")}catch(e){}};
 addEventListener("error",function(e){post("runtime-error",String(e.message||"Error"))});
 addEventListener("unhandledrejection",function(e){post("runtime-error",String((e.reason&&e.reason.message)||e.reason||"Error"))});
 window.__setunReady=function(){post("mounted","")};
+
+/* The storage shim. Bounded at ${STORAGE_MAX_KEYS} keys and ${STORAGE_MAX_BYTES} bytes,
+   which is what the runner will keep and what the model is told it has. */
+var seed=${seed};
+var install=function(area){
+  var name=area==="local"?"localStorage":"sessionStorage";
+  try{var native=window[name];native.getItem("__setun__");return}catch(e){}
+  var data=Object.assign({},seed[area]||{});
+  var timer=null;
+  var flush=function(){if(timer){clearTimeout(timer);timer=null}send({channel:"setun-artifact",type:"storage",runId:${id},area:area,entries:data})};
+  var schedule=function(){if(timer)return;timer=setTimeout(function(){timer=null;flush()},250)};
+  var quota=function(){var e=new Error("The artifact's storage is full.");e.name="QuotaExceededError";return e};
+  var api={
+    getItem:function(k){k=String(k);return Object.prototype.hasOwnProperty.call(data,k)?data[k]:null},
+    setItem:function(k,v){
+      k=String(k);v=String(v);
+      var bytes=v.length+k.length;
+      for(var held in data)bytes+=held.length+data[held].length;
+      if(bytes>${STORAGE_MAX_BYTES})throw quota();
+      if(!Object.prototype.hasOwnProperty.call(data,k)&&Object.keys(data).length>=${STORAGE_MAX_KEYS})throw quota();
+      data[k]=v;schedule()
+    },
+    removeItem:function(k){delete data[String(k)];schedule()},
+    clear:function(){data={};schedule()},
+    key:function(i){var keys=Object.keys(data);return i<keys.length?keys[i]:null}
+  };
+  Object.defineProperty(api,"length",{get:function(){return Object.keys(data).length}});
+  /* A Proxy, because artifacts write \`storage.score = 3\` as often as they call
+     \`setItem\` — the named-property access is part of the interface, not sugar. */
+  var shim=new Proxy(api,{
+    get:function(target,key){
+      if(key in target)return target[key];
+      return typeof key==="string"&&Object.prototype.hasOwnProperty.call(data,key)?data[key]:undefined
+    },
+    set:function(target,key,value){if(typeof key==="string")api.setItem(key,value);return true},
+    has:function(target,key){return key in target||Object.prototype.hasOwnProperty.call(data,key)},
+    deleteProperty:function(target,key){api.removeItem(key);return true},
+    ownKeys:function(){return Object.keys(data)},
+    getOwnPropertyDescriptor:function(target,key){
+      return Object.prototype.hasOwnProperty.call(data,key)
+        ?{value:data[key],writable:true,enumerable:true,configurable:true}
+        :Object.getOwnPropertyDescriptor(target,key)
+    }
+  });
+  try{Object.defineProperty(window,name,{value:shim,configurable:true,writable:false})}catch(e){}
+  addEventListener("pagehide",flush);
+};
+install("local");install("session");
+
+/* Console capture. The originals still run — a pupil with devtools open should
+   see what they printed there too — and the copy is batched upward. */
+(function(){
+var queue=[],sent=0,timer=null;
+var flush=function(){timer=null;if(queue.length===0)return;var batch=queue.splice(0,${CONSOLE_MAX_LINES});send({channel:"setun-artifact",type:"console",runId:${id},lines:batch});if(queue.length)timer=setTimeout(flush,100)};
+var say=function(value){
+  if(typeof value==="string")return value;
+  if(value instanceof Error)return String(value.stack||value.message||value);
+  try{return JSON.stringify(value)??String(value)}catch(e){return String(value)}
+};
+var levels=["log","warn","error","info","debug"];
+for(var i=0;i<levels.length;i++)(function(level){
+  var original=console[level];
+  console[level]=function(){
+    try{original&&original.apply(console,arguments)}catch(e){}
+    if(sent>=500)return;
+    sent++;
+    var text="";
+    for(var a=0;a<arguments.length;a++)text+=(a?" ":"")+say(arguments[a]);
+    queue.push({level:level,text:text.slice(0,${CONSOLE_MAX_TEXT})});
+    if(!timer)timer=setTimeout(flush,100)
+  }
+})(levels[i]);
+})();
 })();</script>`;
+}
+
+/** What an artifact's storage shim starts a run holding, per area. */
+export interface ArtifactStorageSeed {
+  readonly local?: Readonly<Record<string, string>>;
+  readonly session?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -124,11 +228,12 @@ export function staticDocument(input: {
   source: string;
   runtimes: RuntimeSources;
   runId: string;
+  storage?: ArtifactStorageSeed;
 }): string {
   // A static artifact runs no module of its own, so the only thing the graph is
   // here for is UnoCSS — but it goes through the same script all the same, since
   // that runtime is itself a code-split entry with chunks to resolve.
-  const head = `${preamble(input.runId)}\n${modules(input.runtimes, "")}`;
+  const head = `${preamble(input.runId, input.storage)}\n${modules(input.runtimes, "")}`;
   const ack = "<script>window.__setunReady&&window.__setunReady();</script>";
 
   if (input.language === "svg") {
@@ -277,6 +382,7 @@ export function compiledDocument(input: {
   module: string;
   runtimes: RuntimeSources;
   runId: string;
+  storage?: ArtifactStorageSeed;
 }): string {
   const mount =
     input.framework === "react"
@@ -308,7 +414,7 @@ try {
   // in the markup — UnoCSS's, as it used to be — would begin loading before the
   // map existed, and a map added after that point is ignored.
   return `<!doctype html><html><head><meta charset="utf-8">
-${preamble(input.runId)}
+${preamble(input.runId, input.storage)}
 <style>html,body{margin:0}</style>
 </head><body><div id="setun-root"></div>
 ${modules(input.runtimes, harness)}

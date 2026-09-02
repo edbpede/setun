@@ -10,6 +10,7 @@ import type { GatewayAdapter } from "../gateway/adapter";
 import type { GatewayEvent } from "../gateway/events";
 import { describeCause, log } from "../logging";
 import type { AttachmentPayload } from "../storage/attachments";
+import type { ArtifactContext } from "./artifact-context";
 import { recordTurnArtifacts } from "./artifacts";
 import type { BudgetSettings } from "./budgets";
 import { turnInteractions } from "./interactions";
@@ -44,6 +45,8 @@ export interface ExecuteTurnInput {
   readonly path: readonly Pick<Message, "role" | "parts">[];
   readonly attachmentPayloads?: ReadonlyMap<string, AttachmentPayload>;
   readonly promptLayers?: SystemPromptLayers;
+  /** What this conversation has built, for the state note and the elision (§13). */
+  readonly artifacts?: ArtifactContext;
   /** The classroom's per-turn caps; the loop stops the turn at a clean boundary (§10). */
   readonly budgets?: BudgetSettings;
   /** The turn's tools and the mode that governs them; absent for plain chat (§11). */
@@ -86,6 +89,7 @@ export async function executeTurn(input: ExecuteTurnInput): Promise<void> {
       path: input.path,
       attachmentPayloads: input.attachmentPayloads,
       promptLayers: input.promptLayers,
+      artifacts: input.artifacts,
       budgets: input.budgets,
       signal,
       ...(input.tools && input.toolContext

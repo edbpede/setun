@@ -1,0 +1,49 @@
+import { error, json } from "@sveltejs/kit";
+import * as v from "valibot";
+import { BUILD_STATUSES } from "$lib/artifacts/types";
+import { requireStudentApi } from "$lib/server/auth/guards";
+import { getDb } from "$lib/server/boot";
+import { recordVersionBuild } from "$lib/server/db/queries/artifacts";
+import type { RequestHandler } from "./$types";
+
+/**
+ * What happened when the browser ran this revision (PRD §13).
+ *
+ * The failure a pupil sees used to stop at the panel: the compiler's words were
+ * on screen and the model, on the next turn, was told nothing at all — so "it
+ * does not work" was the whole of what it had to work from. The browser is the
+ * only party that knows whether an artifact ran, so it says so here, and the
+ * next turn's prompt states it.
+ *
+ * Owner-scoped in SQL: another student's artifact is absent rather than
+ * forbidden, so there is nothing to probe (§21). Not gated on classroom
+ * availability, for the same reason the rest of this route is not — nothing here
+ * reaches a model, spends an allowance, or is refused by a locked room (§8).
+ */
+const BuildSchema = v.object({
+  buildStatus: v.picklist(BUILD_STATUSES),
+  buildMessage: v.optional(v.nullable(v.pipe(v.string(), v.maxLength(64_000)))),
+});
+
+/** The message is a prompt line and a panel line, not a log. */
+const MESSAGE_MAX = 2_000;
+
+export const PATCH: RequestHandler = async ({ params, request, locals }) => {
+  const student = requireStudentApi(locals);
+  const db = getDb();
+
+  const parsed = v.safeParse(BuildSchema, await request.json().catch(() => null));
+  if (!parsed.success) error(400, "Invalid request");
+
+  const recorded = recordVersionBuild(db, {
+    artifactId: params.artifactId,
+    versionId: params.versionId,
+    studentId: student.id,
+    status: parsed.output.buildStatus,
+    message: parsed.output.buildMessage?.slice(0, MESSAGE_MAX) ?? null,
+  });
+
+  if (!recorded) error(404, "Not found");
+
+  return json({ ok: true });
+};

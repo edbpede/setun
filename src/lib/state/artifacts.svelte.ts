@@ -1,4 +1,7 @@
-import type { ArtifactLanguage, VersionAuthor } from "$lib/artifacts/types";
+import { type BuildOutcome, type BuildReport, buildReportFor } from "$lib/artifacts/build-report";
+import { followModelWrite } from "$lib/artifacts/follow";
+import type { ConsoleLine } from "$lib/artifacts/protocol";
+import type { ArtifactLanguage, BuildStatus, VersionAuthor } from "$lib/artifacts/types";
 
 /**
  * The artifact workspace a student has open (PRD §13, §20).
@@ -18,6 +21,9 @@ export interface ArtifactVersionView {
   readonly revision: number;
   readonly source: string;
   readonly authoredBy: VersionAuthor;
+  /** How this revision ran the last time anyone pressed Run; null for never (§13). */
+  readonly buildStatus?: BuildStatus | null;
+  readonly buildMessage?: string | null;
   readonly createdAt: string;
 }
 
@@ -25,6 +31,8 @@ export interface ArtifactView {
   readonly id: string;
   readonly language: ArtifactLanguage;
   readonly title: string | null;
+  /** The id the model reuses to change it, written or derived (§13). */
+  readonly key?: string | null;
   readonly latest: ArtifactVersionView;
 }
 
@@ -32,6 +40,14 @@ export interface ArtifactView {
 export type PanelLayout = "overlay" | "split" | "fullscreen";
 export type PanelView = "preview" | "code" | "history";
 export type RunStatus = "idle" | "compiling" | "running" | "failed";
+
+/**
+ * How many printed lines the panel keeps.
+ *
+ * A `requestAnimationFrame` loop with a stray `console.log` prints sixty lines a
+ * second, and the useful ones are the newest.
+ */
+const CONSOLE_KEPT = 200;
 
 export class ArtifactWorkspace {
   items = $state<ArtifactView[]>([]);
@@ -65,6 +81,31 @@ export class ArtifactWorkspace {
   error = $state<string | null>(null);
   saveFailed = $state(false);
 
+  /**
+   * How the last run went, and over which source (§13).
+   *
+   * The source travels with the outcome because a pupil running an unsaved draft
+   * is running something no version holds — stamping the stored revision with
+   * that result would tell the model a lie about its own code.
+   */
+  outcome = $state<BuildOutcome | null>(null);
+
+  /** What the artifact printed on this run, oldest first (§13). */
+  consoleLines = $state<ConsoleLine[]>([]);
+
+  /**
+   * An artifact whose model-written revision the pupil has not looked at.
+   *
+   * The Build button wears it as a badge, so a pupil whose panel is closed still
+   * learns that something was built.
+   */
+  unseen = $state<string | null>(null);
+
+  /** The PATCH the panel owes the server, or null when it owes none. */
+  get pendingBuildReport(): BuildReport | null {
+    return buildReportFor(this.open, this.outcome);
+  }
+
   get open(): ArtifactView | null {
     return this.items.find((item) => item.id === this.openId) ?? null;
   }
@@ -92,19 +133,86 @@ export class ArtifactWorkspace {
    */
   replace(items: ArtifactView[]): void {
     const previous = this.open;
+    const followed = followModelWrite(this.items, items);
+    /**
+     * A draft on some *other* artifact is work the pupil is in the middle of,
+     * and following the model's write would take the editor out from under them.
+     * A draft on the artifact that was just rewritten is a different matter: the
+     * revision it was based on is gone, which is the rule below.
+     */
+    const busyElsewhere = this.dirty && this.openId !== followed;
+
     this.items = items;
 
     if (this.openId && !items.some((item) => item.id === this.openId)) {
       this.openId = items[0]?.id ?? null;
       this.draft = null;
       this.running = null;
+      this.outcome = null;
+      this.consoleLines = [];
       return;
     }
 
     if (previous && this.open && previous.latest.id !== this.open.latest.id) {
       this.draft = null;
       this.running = this.open.latest.source;
+      this.outcome = null;
+      this.consoleLines = [];
     }
+
+    if (!followed) return;
+
+    // The model wrote something. The pupil asked for it, so the panel opens on
+    // it and — while it stays open — follows the newest thing written (§13, §20).
+    if (busyElsewhere) {
+      this.unseen = followed;
+      return;
+    }
+
+    this.visible = true;
+    this.show(followed);
+  }
+
+  /**
+   * Put an artifact on screen without changing whether the panel is open.
+   *
+   * `select` is the pupil choosing one and always opens the panel; this is the
+   * panel following a write, and is also what the transcript's card calls.
+   */
+  show(artifactId: string): void {
+    if (!this.items.some((item) => item.id === artifactId)) return;
+
+    this.openId = artifactId;
+    this.draft = null;
+    this.status = "idle";
+    this.error = null;
+    this.saveFailed = false;
+    this.outcome = null;
+    this.consoleLines = [];
+    this.running = this.open?.latest.source ?? null;
+    if (this.unseen === artifactId) this.unseen = null;
+  }
+
+  /** What the frame reported, against the source it was actually running (§13). */
+  recordOutcome(status: BuildStatus, message: string | null): void {
+    this.outcome = { source: this.running ?? "", status, message };
+  }
+
+  /** A batch of printed lines from the artifact. Text, never markup (§13, §21). */
+  appendConsole(lines: readonly ConsoleLine[]): void {
+    this.consoleLines = [...this.consoleLines, ...lines].slice(-CONSOLE_KEPT);
+  }
+
+  /** Fold a stored build result back in, so the report is not sent twice. */
+  applyBuildStatus(report: BuildReport): void {
+    this.items = this.items.map((item) =>
+      item.id === report.artifactId && item.latest.id === report.versionId
+        ? {
+            ...item,
+            latest: { ...item.latest, buildStatus: report.status, buildMessage: report.message },
+          }
+        : item,
+    );
   }
 
   /**
@@ -131,7 +239,10 @@ export class ArtifactWorkspace {
     this.status = "idle";
     this.error = null;
     this.saveFailed = false;
+    this.outcome = null;
+    this.consoleLines = [];
     this.running = this.open?.latest.source ?? null;
+    if (this.unseen === artifactId) this.unseen = null;
   }
 
   close(): void {
@@ -140,6 +251,8 @@ export class ArtifactWorkspace {
     this.running = null;
     this.status = "idle";
     this.error = null;
+    this.outcome = null;
+    this.consoleLines = [];
   }
 
   /** A keystroke. Nothing compiles here — that is the point (§13, §20). */
@@ -154,6 +267,8 @@ export class ArtifactWorkspace {
     this.running = this.source;
     this.status = "compiling";
     this.error = null;
+    this.outcome = null;
+    this.consoleLines = [];
   }
 
   /** Fold a version the server just stored back into the list. */

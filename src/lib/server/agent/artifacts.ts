@@ -1,15 +1,17 @@
 import { continuityDecision } from "../../artifacts/continuity";
 import { detectArtifacts } from "../../artifacts/detect";
 import { artifactTitle } from "../../artifacts/document";
+import { effectiveArtifactKey } from "../../artifacts/identity";
 import type { ArtifactLanguage } from "../../artifacts/types";
 import type { AppDatabase } from "../db/client";
 import {
   type ArtifactWithLatest,
   appendArtifactVersion,
   createArtifact,
-  latestConversationArtifact,
   listConversationArtifacts,
   markVersionsDelivered,
+  setArtifactKey,
+  setArtifactLanguage,
   setArtifactTitle,
   undeliveredStudentEdits,
 } from "../db/queries/artifacts";
@@ -32,15 +34,29 @@ export interface RecordedArtifact {
   readonly artifactId: string;
   readonly versionId: string;
   readonly language: ArtifactLanguage;
+  /** The id the artifact answers to, written or derived (§13). */
+  readonly key: string;
+  /** True when the block was identical to what the artifact already held. */
+  readonly unchanged: boolean;
 }
 
 /**
  * Record every artifact block in an assistant message.
  *
- * Continuity is resolved block by block against the conversation's most recent
- * artifact, which the previous block may just have become — the heuristic reads
- * "the conversation's most recent artifact", and a message emitting two HTML
- * blocks is two revisions of one thing under that rule (§13).
+ * Continuity is resolved block by block, against the conversation as it stands
+ * *after* the previous block — a message that writes two blocks under one id is
+ * two revisions of one thing, and under two ids it is two things (§13).
+ *
+ * Three rules beyond the resolution itself:
+ *
+ * - A key the model wrote is persisted onto the row it resolved to, including
+ *   the fallback key the state note offered it. Adopting the id it was shown is
+ *   how a model that started without one settles onto a name.
+ * - The language follows the key. A page rewritten as a component under the same
+ *   id is one thing to the pupil, so the row changes tag rather than forking.
+ * - An identical re-emission appends no revision. Models restate a file they did
+ *   not change, and a history of eight identical revisions is a history of
+ *   nothing — while every real change is still retained, which is what §13 asks.
  */
 export function recordTurnArtifacts(
   db: AppDatabase,
@@ -59,36 +75,102 @@ export function recordTurnArtifacts(
   const recorded: RecordedArtifact[] = [];
 
   for (const detected of detectArtifacts(prose)) {
-    const latest = latestConversationArtifact(db, input.conversationId);
-    const decision = continuityDecision({
-      language: detected.language,
-      latest: latest ? { id: latest.id, language: latest.language } : null,
+    // Re-read per block: the previous block may have created the row this one
+    // resolves to, or given it the key this one names.
+    const rows = listConversationArtifacts(db, {
+      conversationId: input.conversationId,
+      studentId: input.studentId,
     });
 
-    const artifactId =
-      decision.kind === "version"
-        ? decision.artifactId
-        : createArtifact(db, {
-            studentId: input.studentId,
-            conversationId: input.conversationId,
-            language: detected.language,
-            title: artifactTitle(detected.source),
-          }).id;
+    const decision = continuityDecision({
+      language: detected.language,
+      key: detected.key,
+      existing: rows.map(({ artifact }) => ({
+        id: artifact.id,
+        language: artifact.language,
+        key: artifact.key,
+        updatedAt: artifact.updatedAt.getTime(),
+      })),
+    });
+
+    if (decision.kind === "new") {
+      const created = createArtifact(db, {
+        studentId: input.studentId,
+        conversationId: input.conversationId,
+        language: detected.language,
+        key: decision.key,
+        title: detected.title ?? artifactTitle(detected.source),
+      });
+
+      const version = appendArtifactVersion(db, {
+        artifactId: created.id,
+        messageId: input.messageId,
+        source: detected.source,
+        authoredBy: "model",
+      });
+
+      recorded.push({
+        artifactId: created.id,
+        versionId: version.id,
+        language: detected.language,
+        key: effectiveArtifactKey(created),
+        unchanged: false,
+      });
+      continue;
+    }
+
+    const existing = rows.find(({ artifact }) => artifact.id === decision.artifactId);
+    // The row was resolved out of `rows` a line ago; this is a type narrowing.
+    if (!existing) continue;
+
+    if (detected.key && existing.artifact.key !== detected.key) {
+      setArtifactKey(db, { artifactId: existing.artifact.id, key: detected.key });
+    }
+    if (existing.artifact.language !== detected.language) {
+      setArtifactLanguage(db, {
+        artifactId: existing.artifact.id,
+        language: detected.language,
+      });
+    }
+
+    // An explicit `title=` renames; a title read out of the source only names
+    // what is still unnamed, so a later revision cannot quietly retitle the
+    // thing a pupil has been calling something else.
+    const title =
+      detected.title ?? (existing.artifact.title ? null : artifactTitle(detected.source));
+    if (title) setArtifactTitle(db, { artifactId: existing.artifact.id, title });
+
+    const key = effectiveArtifactKey({
+      language: detected.language,
+      id: existing.artifact.id,
+      key: detected.key ?? existing.artifact.key,
+    });
+
+    if (existing.latest.source === detected.source) {
+      recorded.push({
+        artifactId: existing.artifact.id,
+        versionId: existing.latest.id,
+        language: detected.language,
+        key,
+        unchanged: true,
+      });
+      continue;
+    }
 
     const version = appendArtifactVersion(db, {
-      artifactId,
+      artifactId: existing.artifact.id,
       messageId: input.messageId,
       source: detected.source,
       authoredBy: "model",
     });
 
-    // A later revision may name the thing the first one left unnamed.
-    if (decision.kind === "version" && latest && !latest.title) {
-      const title = artifactTitle(detected.source);
-      if (title) setArtifactTitle(db, { artifactId, title });
-    }
-
-    recorded.push({ artifactId, versionId: version.id, language: detected.language });
+    recorded.push({
+      artifactId: existing.artifact.id,
+      versionId: version.id,
+      language: detected.language,
+      key,
+      unchanged: false,
+    });
   }
 
   return recorded;
@@ -119,6 +201,9 @@ function toEditPart({
     language: artifact.language,
     title: artifact.title,
     source: latest.source,
+    // The id the model must reuse to change it — the same identity it writes on
+    // its own blocks, so the carried source is something it can answer in kind.
+    key: effectiveArtifactKey(artifact),
   };
 }
 

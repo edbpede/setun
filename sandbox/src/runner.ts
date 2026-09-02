@@ -5,7 +5,12 @@ import {
   SANDBOX_MANIFEST_PATH,
   UNOCSS_ENTRY,
 } from "$lib/artifacts/assets";
-import { compiledDocument, type RuntimeSources, staticDocument } from "$lib/artifacts/document";
+import {
+  type ArtifactStorageSeed,
+  compiledDocument,
+  type RuntimeSources,
+  staticDocument,
+} from "$lib/artifacts/document";
 import {
   ARTIFACT_CHANNEL,
   asHostMessage,
@@ -30,6 +35,52 @@ const stage = document.getElementById("stage") as HTMLIFrameElement;
 
 /** The render currently on screen; results from earlier ones are dropped. */
 let currentRunId: string | null = null;
+/** Which artifact that render belongs to, so its storage is kept apart. */
+let currentArtifactId: string | null = null;
+
+/**
+ * What each artifact's storage shim held, kept for as long as this page lives
+ * (PRD §13).
+ *
+ * The artifact's own frame has an opaque origin, where `localStorage` throws, so
+ * the document installs an in-memory stand-in and posts its contents here. This
+ * is where "survives a Run" comes from — and where "the artifact beside it starts
+ * empty" comes from, since the snapshots are keyed by artifact.
+ *
+ * It stops here. Nothing about it is posted to the application: what an artifact
+ * stores is the artifact's, it is not durable, and the model is told as much.
+ * Bounded so a lesson that opens twenty artifacts does not accumulate all of
+ * them; the oldest goes first, which is the one nobody is looking at.
+ */
+const MAX_STORAGE_SNAPSHOTS = 16;
+const storageByArtifact = new Map<
+  string,
+  { local: Record<string, string>; session: Record<string, string> }
+>();
+
+function storageFor(artifactId: string): ArtifactStorageSeed {
+  return storageByArtifact.get(artifactId) ?? { local: {}, session: {} };
+}
+
+function rememberStorage(
+  artifactId: string,
+  area: "local" | "session",
+  entries: Record<string, string>,
+): void {
+  const held = storageByArtifact.get(artifactId) ?? { local: {}, session: {} };
+  held[area] = entries;
+
+  // Re-inserted so the map's insertion order is recency, which is what makes
+  // "drop the oldest" mean "drop the one nobody has run in longest".
+  storageByArtifact.delete(artifactId);
+  storageByArtifact.set(artifactId, held);
+
+  while (storageByArtifact.size > MAX_STORAGE_SNAPSHOTS) {
+    const oldest = storageByArtifact.keys().next().value;
+    if (oldest === undefined) break;
+    storageByArtifact.delete(oldest);
+  }
+}
 
 let worker: Promise<Worker> | null = null;
 const pending = new Map<string, (response: CompileResponse) => void>();
@@ -234,8 +285,19 @@ async function compile(request: CompileRequest): Promise<CompileResponse> {
   });
 }
 
-async function render(runId: string, language: ArtifactLanguage, source: string): Promise<void> {
+async function render(
+  runId: string,
+  artifactId: string,
+  language: ArtifactLanguage,
+  source: string,
+): Promise<void> {
   currentRunId = runId;
+  currentArtifactId = artifactId;
+
+  // Read before the awaits below: the shim is seeded with what this artifact
+  // held, and a snapshot arriving mid-render belongs to the document being
+  // replaced rather than to the one being built.
+  const storage = storageFor(artifactId);
 
   if (tierOf(language) === 0) {
     const runtimes = await runtimeSources(null);
@@ -250,6 +312,7 @@ async function render(runId: string, language: ArtifactLanguage, source: string)
       source,
       runtimes,
       runId,
+      storage,
     });
     return;
   }
@@ -279,6 +342,7 @@ async function render(runId: string, language: ArtifactLanguage, source: string)
     module: result.code,
     runtimes,
     runId,
+    storage,
   });
 }
 
@@ -288,16 +352,39 @@ window.addEventListener("message", (event) => {
     const staged = asStageMessage(event.data);
     if (!staged || staged.runId !== currentRunId) return;
 
-    toHost(
-      staged.type === "mounted"
-        ? { channel: ARTIFACT_CHANNEL, type: "rendered", runId: staged.runId }
-        : {
-            channel: ARTIFACT_CHANNEL,
-            type: "failed",
-            runId: staged.runId,
-            message: staged.message,
-          },
-    );
+    // Kept here and forwarded no further: what an artifact stores belongs to
+    // the artifact, and the application has no use for it (§13, §14).
+    if (staged.type === "storage") {
+      if (currentArtifactId) rememberStorage(currentArtifactId, staged.area, { ...staged.entries });
+      return;
+    }
+
+    if (staged.type === "console") {
+      toHost({
+        channel: ARTIFACT_CHANNEL,
+        type: "console",
+        runId: staged.runId,
+        lines: staged.lines,
+      });
+      return;
+    }
+
+    if (staged.type === "mounted") {
+      toHost({ channel: ARTIFACT_CHANNEL, type: "rendered", runId: staged.runId });
+      // A game listens for keys on its own window, and a pupil who has not
+      // clicked inside the frame is typing at the conversation. Taken only when
+      // this page already holds focus, so a render that lands while the pupil is
+      // writing does not pull the caret out of the composer.
+      if (document.hasFocus()) stage.contentWindow?.focus();
+      return;
+    }
+
+    toHost({
+      channel: ARTIFACT_CHANNEL,
+      type: "failed",
+      runId: staged.runId,
+      message: staged.message,
+    });
     return;
   }
 
@@ -318,20 +405,30 @@ window.addEventListener("message", (event) => {
 
   if (message.type === "clear") {
     currentRunId = null;
+    currentArtifactId = null;
     stage.srcdoc = "";
+    return;
+  }
+
+  // The application asking for the artifact to take the keyboard: a pupil who
+  // tapped the preview means to play the game, not to type into the composer.
+  if (message.type === "focus") {
+    stage.contentWindow?.focus();
     return;
   }
 
   // Nothing here may fail silently: a rejected render would leave the panel
   // waiting on a build that is never coming, with nothing to tell the pupil.
-  void render(message.runId, message.language, message.source).catch((cause) => {
-    toHost({
-      channel: ARTIFACT_CHANNEL,
-      type: "failed",
-      runId: message.runId,
-      message: cause instanceof Error ? cause.message : String(cause),
-    });
-  });
+  void render(message.runId, message.artifactId, message.language, message.source).catch(
+    (cause) => {
+      toHost({
+        channel: ARTIFACT_CHANNEL,
+        type: "failed",
+        runId: message.runId,
+        message: cause instanceof Error ? cause.message : String(cause),
+      });
+    },
+  );
 });
 
 toHost({ channel: ARTIFACT_CHANNEL, type: "ready" });

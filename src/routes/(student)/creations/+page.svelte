@@ -89,6 +89,7 @@ const empty = $derived(data.artifacts.length === 0 && data.images.length === 0);
               <div class="h-96 overflow-hidden rounded-md border border-border">
                 <ArtifactFrame
                   sandboxOrigin={data.sandboxOrigin}
+                  artifactId={selected.id}
                   language={selected.language}
                   source={selected.latest.source}
                 />

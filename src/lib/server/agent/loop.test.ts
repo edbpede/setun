@@ -3,7 +3,7 @@ import { GatewayAdapter } from "../gateway/adapter";
 import type { GatewayEvent } from "../gateway/events";
 import { streamingResponse, stubFetch } from "../gateway/testing";
 import { assembleContext, runTurn } from "./loop";
-import { BASE_SYSTEM_PROMPT } from "./system-prompt";
+import { FIXED_SYSTEM_PROMPT } from "./system-prompt";
 
 /**
  * Agent-loop termination conditions and context assembly
@@ -45,7 +45,7 @@ describe("assembleContext", () => {
   it("puts the layered system prompt first, then the path oldest first", () => {
     const messages = assembleContext(path);
 
-    expect(messages[0]).toEqual({ role: "system", content: BASE_SYSTEM_PROMPT });
+    expect(messages[0]).toEqual({ role: "system", content: FIXED_SYSTEM_PROMPT });
     expect(messages.slice(1)).toEqual([
       { role: "user", content: "Hej" },
       { role: "assistant", content: "Hej med dig" },
