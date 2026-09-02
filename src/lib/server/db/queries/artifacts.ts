@@ -119,6 +119,48 @@ export function appendArtifactVersion(
   return row;
 }
 
+/**
+ * What continuity resolves over: each artifact's identity and when it was last
+ * written (§13).
+ *
+ * `updatedAt` is milliseconds, and two artifacts rewritten in one message tie on
+ * it — so the anchor also carries the `rowid` of the artifact's newest version.
+ * That is SQLite's own insertion counter, so it is the write order `updatedAt`
+ * cannot express, and it moves only when a revision lands: renaming an artifact
+ * touches `updatedAt` and is not a write of the thing itself.
+ */
+export interface ArtifactAnchorRow {
+  readonly id: string;
+  readonly language: ArtifactLanguage;
+  readonly key: string | null;
+  readonly updatedAt: Date;
+  readonly writtenAt: number;
+}
+
+export function listConversationAnchors(
+  db: AppDatabase,
+  input: { conversationId: string; studentId: string },
+): ArtifactAnchorRow[] {
+  return db
+    .select({
+      id: artifact.id,
+      language: artifact.language,
+      key: artifact.key,
+      updatedAt: artifact.updatedAt,
+      writtenAt: sql<number>`max("artifact_version"."rowid")`,
+    })
+    .from(artifact)
+    .innerJoin(artifactVersion, eq(artifactVersion.artifactId, artifact.id))
+    .where(
+      and(
+        eq(artifact.conversationId, input.conversationId),
+        eq(artifact.studentId, input.studentId),
+      ),
+    )
+    .groupBy(artifact.id)
+    .all();
+}
+
 /** Persist the key a model adopted, so the next turn resolves to this row (§13). */
 export function setArtifactKey(db: AppDatabase, input: { artifactId: string; key: string }): void {
   db.update(artifact).set({ key: input.key }).where(eq(artifact.id, input.artifactId)).run();

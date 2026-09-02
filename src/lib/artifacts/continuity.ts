@@ -33,8 +33,14 @@ export interface ArtifactAnchor {
   readonly key: string | null;
   /** Higher is more recent. The last-written artifact of a language wins. */
   readonly updatedAt: number;
-  /** Breaks a tie on `updatedAt`, which has only millisecond granularity. */
-  readonly createdAt: number;
+  /**
+   * The write order `updatedAt` cannot express, higher being later.
+   *
+   * `updatedAt` is milliseconds, so two artifacts rewritten in one message tie
+   * on it; this is the insertion order of the newest revision of each, which is
+   * exactly what "last written" means when the clock cannot tell them apart.
+   */
+  readonly writtenAt: number;
 }
 
 export type ContinuityDecision =
@@ -64,18 +70,13 @@ export function continuityDecision(input: {
   // No key: §13's original rule, narrowed to the language so an artifact of
   // another kind cannot steal the anchor.
   //
-  // `updatedAt` is milliseconds, so two artifacts rewritten in one message can
-  // tie; the sort is stable and would then hold whatever order the rows arrived
-  // in. Creation time and then the identifier settle it, so the same facts pick
-  // the same row every time rather than the database's row order deciding.
+  // `updatedAt` is milliseconds, so two artifacts rewritten in one message tie
+  // on it; the sort is stable and would then hold whatever order the rows
+  // arrived in. The write order settles it, and settles it correctly: the last
+  // revision to land wins, which is what "the most recent artifact" means.
   const sameLanguage = input.existing
     .filter((anchor) => anchor.language === input.language)
-    .sort(
-      (a, b) =>
-        b.updatedAt - a.updatedAt ||
-        b.createdAt - a.createdAt ||
-        (a.id < b.id ? 1 : a.id > b.id ? -1 : 0),
-    );
+    .sort((a, b) => b.updatedAt - a.updatedAt || b.writtenAt - a.writtenAt);
 
   return sameLanguage[0]
     ? { kind: "version", artifactId: sameLanguage[0].id }

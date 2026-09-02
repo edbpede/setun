@@ -6,6 +6,7 @@ import {
   createArtifact,
   getOwnedArtifact,
   listArtifactVersions,
+  listConversationAnchors,
   listConversationVersions,
   recordVersionBuild,
   versionsByMessage,
@@ -175,6 +176,46 @@ describe("listConversationVersions", () => {
     expect(
       listConversationVersions(db, { conversationId, studentId: intruder.student.id }),
     ).toEqual([]);
+  });
+});
+
+describe("listConversationAnchors", () => {
+  it("orders two artifacts written in one millisecond by which revision landed last", () => {
+    const first = seedArtifact("en");
+    const second = seedArtifact("to");
+    // Both rewritten in one message, in this order.
+    appendArtifactVersion(db, {
+      artifactId: second.artifact.id,
+      source: "<p>to igen</p>",
+      authoredBy: "model",
+    });
+    appendArtifactVersion(db, {
+      artifactId: first.artifact.id,
+      source: "<p>en igen</p>",
+      authoredBy: "model",
+    });
+
+    const anchors = listConversationAnchors(db, {
+      conversationId,
+      studentId: fixtures.student.id,
+    });
+    const writtenAt = new Map(anchors.map((anchor) => [anchor.id, anchor.writtenAt]));
+
+    expect(anchors).toHaveLength(2);
+    // `updatedAt` can tie to the millisecond; the write order cannot.
+    expect(writtenAt.get(first.artifact.id)).toBeGreaterThan(
+      writtenAt.get(second.artifact.id) ?? 0,
+    );
+    expect(anchors.map((anchor) => anchor.key).sort()).toEqual(["en", "to"]);
+  });
+
+  it("is scoped to its owner", () => {
+    seedArtifact();
+    const intruder = seedTestFixtures(db, { label: "still-owl", digest: crypto.randomUUID() });
+
+    expect(listConversationAnchors(db, { conversationId, studentId: intruder.student.id })).toEqual(
+      [],
+    );
   });
 });
 

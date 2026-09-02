@@ -8,6 +8,7 @@ import {
   type ArtifactWithLatest,
   appendArtifactVersion,
   createArtifact,
+  listConversationAnchors,
   listConversationArtifacts,
   markVersionsDelivered,
   setArtifactKey,
@@ -85,12 +86,17 @@ export function recordTurnArtifacts(
     const decision = continuityDecision({
       language: detected.language,
       key: detected.key,
-      existing: rows.map(({ artifact }) => ({
-        id: artifact.id,
-        language: artifact.language,
-        key: artifact.key,
-        updatedAt: artifact.updatedAt.getTime(),
-        createdAt: artifact.createdAt.getTime(),
+      // Read apart from `rows`: the anchors carry the write order that decides
+      // a tie, which `updatedAt` alone cannot express (§13).
+      existing: listConversationAnchors(db, {
+        conversationId: input.conversationId,
+        studentId: input.studentId,
+      }).map((anchor) => ({
+        id: anchor.id,
+        language: anchor.language,
+        key: anchor.key,
+        updatedAt: anchor.updatedAt.getTime(),
+        writtenAt: anchor.writtenAt,
       })),
     });
 
