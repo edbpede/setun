@@ -506,6 +506,11 @@ window.addEventListener("message", (event) => {
   // waiting on a build that is never coming, with nothing to tell the pupil.
   void render(message.runId, message.artifactId, message.language, message.source).catch(
     (cause) => {
+      // Unless the stage has moved on. A render rejecting after a later one
+      // began is not what the panel is waiting on, and settling it here would
+      // take the terminal word off the run that is actually on screen.
+      if (currentRunId !== message.runId) return;
+
       settledRunId = message.runId;
       toHost({
         channel: ARTIFACT_CHANNEL,
