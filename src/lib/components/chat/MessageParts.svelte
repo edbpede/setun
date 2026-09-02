@@ -1,5 +1,10 @@
 <script lang="ts">
-import { artifactSegmentCount, artifactSegments, streamingSegments } from "$lib/artifacts/segments";
+import {
+  artifactSegmentCount,
+  artifactSegments,
+  type StreamingSegment,
+  streamingMessageSegments,
+} from "$lib/artifacts/segments";
 import { toolLabel } from "$lib/chat/tool-labels";
 import { turnNoticeText } from "$lib/chat/turn-notices";
 import * as m from "$lib/paraglide/messages";
@@ -81,6 +86,34 @@ const aligned = $derived.by(() => {
   });
 });
 
+/**
+ * The streaming scan, over the message's text parts as one document (§13, §20).
+ *
+ * A tool call or a generated image between two deltas starts a new text part,
+ * and a fence can span one — so the parts are scanned together rather than each
+ * on its own, and the part that opened a fence is the one that shows its stub.
+ * Only while streaming: a settled message goes through `artifactSegments`, which
+ * is where the refs exist.
+ */
+const streamingByPart = $derived.by(() => {
+  const byIndex = new Map<number, StreamingSegment[]>();
+  if (!streaming || plain) return byIndex;
+
+  const texts: string[] = [];
+  const indexes: number[] = [];
+  parts.forEach((part, index) => {
+    if (part.type !== "text") return;
+    texts.push(part.text);
+    indexes.push(index);
+  });
+
+  streamingMessageSegments(texts).forEach((segments, at) => {
+    byIndex.set(indexes[at], segments);
+  });
+
+  return byIndex;
+});
+
 const results = $derived(
   parts.filter(
     (part): part is Extract<MessagePart, { type: "tool-result" }> => part.type === "tool-result",
@@ -104,7 +137,7 @@ const failed = $derived(
         card. There are no refs yet, so nothing here opens anything — the real
         cards arrive with the settled message (§13, §20).
       -->
-      {#each streamingSegments(part.text) as segment, at (at)}
+      {#each streamingByPart.get(index) ?? [] as segment, at (at)}
         {#if segment.kind === "text"}
           <p class="whitespace-pre-wrap break-words">{segment.text}</p>
         {:else if segment.kind === "artifact"}

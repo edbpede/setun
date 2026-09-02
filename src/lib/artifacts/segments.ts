@@ -1,5 +1,5 @@
 import { artifactLanguage, type DetectedArtifact, detectArtifacts } from "./detect";
-import { scanFences } from "./fences";
+import { CARRIED, type OpenFence, type ScannedFences, scanFences } from "./fences";
 import { normaliseArtifactKey } from "./identity";
 import type { ArtifactLanguage } from "./types";
 
@@ -100,22 +100,69 @@ export type StreamingSegment =
 export function streamingSegments(markdown: string): StreamingSegment[] {
   // The scanner's own line array, not a second split of the same string: this
   // runs on every delta of a growing message, and §20 budgets it at one pass.
-  const { blocks, open, lines } = scanFences(markdown);
+  return segmentsOf(scanFences(markdown), false);
+}
+
+/**
+ * A whole streaming message's text parts, scanned as one document (§13, §20).
+ *
+ * Prose arrives as several parts: `StreamingTurn` starts a new one wherever a
+ * tool call or a generated image landed between two deltas. Scanned apart, a
+ * fence that spans one of those boundaries is lost — the part after it has no
+ * opening line, so the pupil watches the rest of their page arrive as prose,
+ * which is the one thing the stub card exists to prevent.
+ *
+ * So the open fence is carried from part to part. The part that *opened* it owns
+ * the card, and the parts continuing it render only what comes after it closes:
+ * one artifact is one stub, wherever the tool call fell inside it.
+ *
+ * Returns one segment list per text given, in the order they were given.
+ */
+export function streamingMessageSegments(texts: readonly string[]): StreamingSegment[][] {
+  const scans: StreamingSegment[][] = [];
+  let carried: OpenFence | null = null;
+
+  for (const text of texts) {
+    const scanned = scanFences(text, carried);
+    scans.push(segmentsOf(scanned, carried !== null));
+
+    // Only an artifact fence is worth carrying: an ordinary code block is prose
+    // on both sides of the boundary, which is what it already renders as.
+    const open = scanned.open;
+    carried = open && artifactLanguage(open.language) ? open : null;
+  }
+
+  return scans;
+}
+
+/**
+ * `continued` says the scan began inside a fence an earlier part opened, whose
+ * stub that part is already showing — so the block it closes here, and the
+ * pending it may still be inside, belong there and are not repeated.
+ */
+function segmentsOf(scanned: ScannedFences, continued: boolean): StreamingSegment[] {
+  const { blocks, open, lines } = scanned;
   const pendingLanguage = open ? artifactLanguage(open.language) : null;
 
   // A fence that is open but not an artifact — a bare ``` or a js block — is
   // ordinary prose and stays in the paragraph, exactly as it does today.
-  const end = pendingLanguage && open ? open.line : lines.length;
+  const end = pendingLanguage && open ? Math.max(open.line, 0) : lines.length;
 
   const segments: StreamingSegment[] = [];
   let at = 0;
 
   for (const block of blocks) {
     const language = artifactLanguage(block.language);
-    if (!language || !block.source.trim()) continue;
+    const carried = block.line === CARRIED;
+    // An empty body is not an artifact — but a carried block's body is in the
+    // part before this one, so emptiness here says nothing about it.
+    if (!language || (!carried && !block.source.trim())) continue;
 
-    const before = lines.slice(at, block.line).join("\n");
+    const before = lines.slice(at, Math.max(block.line, 0)).join("\n");
     if (before.trim()) segments.push({ kind: "text", text: before });
+
+    at = block.endLine + 1;
+    if (carried) continue;
 
     segments.push({
       kind: "artifact",
@@ -128,14 +175,12 @@ export function streamingSegments(markdown: string): StreamingSegment[] {
         title: block.attributes.title?.trim() || null,
       },
     });
-
-    at = block.endLine + 1;
   }
 
   const after = lines.slice(at, end).join("\n");
   if (after.trim()) segments.push({ kind: "text", text: after });
 
-  if (pendingLanguage && open) {
+  if (pendingLanguage && open && !(continued && open.line === CARRIED)) {
     segments.push({
       kind: "pending",
       language: pendingLanguage,

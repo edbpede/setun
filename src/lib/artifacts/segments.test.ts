@@ -1,5 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { artifactSegmentCount, artifactSegments, streamingSegments } from "./segments";
+import {
+  artifactSegmentCount,
+  artifactSegments,
+  streamingMessageSegments,
+  streamingSegments,
+} from "./segments";
 
 describe("artifactSegments", () => {
   it("splits prose around an artifact block", () => {
@@ -123,5 +128,70 @@ describe("streamingSegments", () => {
     const segments = streamingSegments(`Her er den:\n\`\`\`html id=lang\n${body}`);
 
     expect(segments.map((segment) => segment.kind)).toEqual(["text", "pending"]);
+  });
+});
+
+describe("streamingMessageSegments", () => {
+  it("carries an open fence across the tool call that split the prose", () => {
+    // `StreamingTurn` starts a new text part wherever a tool call landed between
+    // two deltas, and a model can call one in the middle of writing a page.
+    const [before, after] = streamingMessageSegments([
+      'Her er siden:\n```html id=side title="Min side"\n<h1>Hej',
+      "</h1>\n```\nFærdig.",
+    ]);
+
+    // Scanned apart, the second part had no opening line and the rest of the
+    // pupil's page arrived as prose (§13, §20).
+    expect(before).toEqual([
+      { kind: "text", text: "Her er siden:" },
+      { kind: "pending", language: "html", key: "side", title: "Min side" },
+    ]);
+    // One artifact is one stub, owned by the part that opened it.
+    expect(after).toEqual([{ kind: "text", text: "Færdig." }]);
+  });
+
+  it("renders nothing for a part wholly inside a carried fence", () => {
+    const scans = streamingMessageSegments([
+      "```html id=side\n<h1>Hej",
+      "<p>mere</p>",
+      "</h1>\n```",
+    ]);
+
+    expect(scans[0]).toEqual([{ kind: "pending", language: "html", key: "side", title: null }]);
+    expect(scans[1]).toEqual([]);
+    expect(scans[2]).toEqual([]);
+  });
+
+  it("does not leak the closing fence when a part begins with it", () => {
+    const scans = streamingMessageSegments(["```html id=side\n<h1>Hej</h1>", "```\nFærdig."]);
+
+    expect(scans[1]).toEqual([{ kind: "text", text: "Færdig." }]);
+  });
+
+  it("scans a part after a closed fence exactly as it would alone", () => {
+    const scans = streamingMessageSegments([
+      "```html id=en\n<p>en</p>\n```",
+      "Og nu:\n```svg id=to\n<svg",
+    ]);
+
+    expect(scans[0].map((segment) => segment.kind)).toEqual(["artifact"]);
+    expect(scans[1]).toEqual([
+      { kind: "text", text: "Og nu:" },
+      { kind: "pending", language: "svg", key: "to", title: null },
+    ]);
+  });
+
+  it("leaves an ordinary code block spanning a boundary as prose on both sides", () => {
+    // A js block is prose while it streams, and carrying it would change nothing
+    // — so it is not carried, and both parts read as they always did.
+    const scans = streamingMessageSegments(["Sådan her:\n```js\nconst x = 1;", "\n```\nFærdig."]);
+
+    expect(scans[0]).toEqual([{ kind: "text", text: "Sådan her:\n```js\nconst x = 1;" }]);
+    expect(scans[1].map((segment) => segment.kind)).toEqual(["text"]);
+  });
+
+  it("is one scan per text, in the order they were given", () => {
+    expect(streamingMessageSegments([])).toEqual([]);
+    expect(streamingMessageSegments(["en", "to", "tre"])).toHaveLength(3);
   });
 });

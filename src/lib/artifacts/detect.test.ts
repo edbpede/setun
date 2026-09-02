@@ -70,6 +70,7 @@ describe("fencedBlocks", () => {
       language: "html",
       attributes: { id: "side", title: "Min side" },
       line: 1,
+      fence: "```",
     });
   });
 

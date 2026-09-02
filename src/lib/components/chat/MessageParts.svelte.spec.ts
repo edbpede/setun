@@ -119,6 +119,34 @@ describe("MessageParts artifact cards", () => {
     await expect.element(page.getByRole("button")).not.toBeInTheDocument();
   });
 
+  it("keeps the markup hidden when a tool call splits the fence in two", async () => {
+    // `StreamingTurn` starts a new text part wherever a tool call landed between
+    // two deltas, and a model can call one in the middle of writing a page.
+    const parts: MessagePart[] = [
+      { type: "text", text: 'Her er siden:\n```html id=side title="Min side"\n<p>hi</p>' },
+      {
+        type: "tool-call",
+        toolCallId: "call-1",
+        toolName: "search",
+        serverLabel: null,
+        arguments: {},
+        decision: "auto",
+      },
+      { type: "text", text: "<p>og mere</p>\n```\nPrøv den." },
+    ];
+
+    render(MessageParts, { parts, streaming: true });
+
+    // Scanned per part, the second part had no opening fence and the rest of the
+    // pupil's page arrived as prose (§13, §20).
+    await expect.element(page.getByText("<p>og mere</p>")).not.toBeInTheDocument();
+    await expect.element(page.getByText("<p>hi</p>")).not.toBeInTheDocument();
+    await expect
+      .element(page.getByText(m.artifact_card_building({ title: "Min side" })))
+      .toBeVisible();
+    await expect.element(page.getByText("Prøv den.")).toBeVisible();
+  });
+
   it("never parses the pupil's own words", async () => {
     render(MessageParts, { parts: text(PROSE), artifacts: [ref()], plain: true });
 

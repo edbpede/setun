@@ -62,9 +62,25 @@ function attributesOf(info: string): Record<string, string> {
 export interface OpenFence {
   readonly language: string | null;
   readonly attributes: Readonly<Record<string, string>>;
-  /** Index of the opening fence line; everything from here on is inside it. */
+  /**
+   * Index of the opening fence line; everything from here on is inside it.
+   *
+   * `CARRIED` when the fence opened in an earlier chunk, which is the whole of
+   * this chunk being inside it.
+   */
   readonly line: number;
+  /** The marker that opened it, so a later chunk can recognise its closing line. */
+  readonly fence: string;
 }
+
+/**
+ * The line index of a block or fence that opened before this chunk began (§20).
+ *
+ * A streaming message's prose arrives in parts, split wherever a tool call or a
+ * generated image landed between two deltas — and a fence can span one of those.
+ * A block carried in has no opening line *here*; it starts at the top.
+ */
+export const CARRIED = -1;
 
 export interface ScannedFences {
   readonly blocks: FencedBlock[];
@@ -82,12 +98,34 @@ export interface ScannedFences {
  *
  * `fencedBlocks` is this scan with the open fence discarded, which is what every
  * caller that works on settled text wants.
+ *
+ * `carried` continues a scan across a chunk boundary: pass the `open` a previous
+ * chunk ended on and this one begins inside it, with the block that closes here
+ * reported at `CARRIED` rather than at a line it does not have.
  */
-export function scanFences(markdown: string): ScannedFences {
+export function scanFences(markdown: string, carried: OpenFence | null = null): ScannedFences {
   const lines = markdown.split("\n");
   const blocks: FencedBlock[] = [];
+  let from = 0;
 
-  for (let index = 0; index < lines.length; index++) {
+  // A fence left open by an earlier chunk. Nothing here can open another until
+  // it closes, so the only thing to look for first is the line that closes it.
+  if (carried) {
+    const closing = findClosing(lines, 0, carried.fence);
+    if (closing === -1) return { blocks, lines, open: { ...carried, line: CARRIED } };
+
+    blocks.push({
+      language: carried.language,
+      source: lines.slice(0, closing).join("\n"),
+      line: CARRIED,
+      endLine: closing,
+      attributes: carried.attributes,
+    });
+
+    from = closing + 1;
+  }
+
+  for (let index = from; index < lines.length; index++) {
     const opening = OPENING.exec(lines[index]);
     if (!opening) continue;
 
@@ -110,6 +148,7 @@ export function scanFences(markdown: string): ScannedFences {
           language: first?.toLowerCase() || null,
           attributes: attributesOf(rest.join(" ")),
           line: index,
+          fence,
         },
       };
     }
