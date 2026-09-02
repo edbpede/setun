@@ -131,9 +131,24 @@ export class ArtifactWorkspace {
    * the model answering again must not silently discard what a pupil was typing,
    * and a reload that returns the same revision must not either.
    */
-  replace(items: ArtifactView[]): void {
+  /**
+   * Which conversation's list is currently held, and whether one is (§13).
+   *
+   * A page load and a conversation switch both replace the list wholesale, and
+   * neither is a turn landing — so the panel must not open on either. An empty
+   * list is not the signal, because a conversation with nothing built yet is
+   * exactly where the first artifact appears and that one should open.
+   */
+  private hydrated = false;
+  private hydratedFor: string | null = null;
+
+  replace(items: ArtifactView[], conversationId: string | null = null): void {
     const previous = this.open;
-    const followed = followModelWrite(this.items, items);
+    const fresh = !this.hydrated || conversationId !== this.hydratedFor;
+    const followed = fresh ? null : followModelWrite(this.items, items);
+
+    this.hydrated = true;
+    this.hydratedFor = conversationId;
     /**
      * A draft on some *other* artifact is work the pupil is in the middle of,
      * and following the model's write would take the editor out from under them.

@@ -25,19 +25,22 @@ export interface FollowCandidate {
 /**
  * The artifact of the latest model-authored new or changed row, or null.
  *
- * Null on the first hydration — `previous` empty is a page that just loaded, not
- * a turn that just landed, and opening the panel over a reloaded conversation
- * would be an interface acting on nothing that happened.
+ * `previous` is null for a list that has not been hydrated yet — a page that
+ * just loaded, or a conversation the pupil just switched to. That is not a turn
+ * landing, and opening the panel over it would be an interface acting on nothing
+ * that happened. It is deliberately not the same as an empty list: a
+ * conversation with no artifacts yet is exactly where the first one is written,
+ * and that one must open.
  *
  * A tie (two artifacts written in one message) resolves to the first in `next`,
  * which the server orders by recording order: the first block the model wrote is
  * the one the sentence around it was about.
  */
 export function followModelWrite(
-  previous: readonly FollowCandidate[],
+  previous: readonly FollowCandidate[] | null,
   next: readonly FollowCandidate[],
 ): string | null {
-  if (previous.length === 0) return null;
+  if (previous === null) return null;
 
   const before = new Map(previous.map((item) => [item.id, item.latest.id]));
 

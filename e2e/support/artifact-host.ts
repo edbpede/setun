@@ -13,13 +13,27 @@ import { SANDBOX_ORIGIN } from "../../playwright.config";
 
 export const HOST_FRAME_ID = "e2e-artifact-host";
 
+/**
+ * Everything the runner posted up, so a test can assert what did *not* cross.
+ *
+ * The storage snapshot is the case this exists for: it stops at the runner by
+ * design, and "nothing reaches the application" is only checkable by recording
+ * everything that did (§13, §14).
+ */
+declare global {
+  interface Window {
+    __setunSandboxMessages?: { type?: string }[];
+  }
+}
+
 export async function mountArtifact(
   page: Page,
-  input: { language: string; source: string },
+  input: { language: string; source: string; artifactId?: string },
 ): Promise<FrameLocator> {
   await page.evaluate(
-    async ({ origin, language, source, id }) => {
+    async ({ origin, language, source, id, artifactId }) => {
       document.getElementById(id)?.remove();
+      window.__setunSandboxMessages = [];
 
       const frame = document.createElement("iframe");
       frame.id = id;
@@ -39,7 +53,10 @@ export async function mountArtifact(
       window.addEventListener("message", (event) => {
         if (event.source !== frame.contentWindow) return;
         const data = event.data as { channel?: string; type?: string; path?: string };
-        if (data?.channel !== "setun-artifact" || data.type !== "need-asset") return;
+        if (data?.channel !== "setun-artifact") return;
+
+        window.__setunSandboxMessages?.push({ type: data.type });
+        if (data.type !== "need-asset") return;
 
         const path = data.path ?? "";
         void (async () => {
@@ -74,13 +91,72 @@ export async function mountArtifact(
       });
 
       frame.contentWindow?.postMessage(
-        { channel: "setun-artifact", type: "render", runId: "e2e", language, source },
+        {
+          channel: "setun-artifact",
+          type: "render",
+          runId: "e2e",
+          artifactId,
+          language,
+          source,
+        },
         "*",
       );
     },
-    { origin: SANDBOX_ORIGIN, language: input.language, source: input.source, id: HOST_FRAME_ID },
+    {
+      origin: SANDBOX_ORIGIN,
+      language: input.language,
+      source: input.source,
+      id: HOST_FRAME_ID,
+      artifactId: input.artifactId ?? "e2e-artifact",
+    },
   );
 
   // The runner, and then the artifact's own document one frame further down.
   return page.frameLocator(`#${HOST_FRAME_ID}`).frameLocator("#stage");
+}
+
+/**
+ * Run something else in the frame that is already mounted.
+ *
+ * A second `mountArtifact` would replace the frame, and the storage snapshots
+ * live in the runner page — so re-running the *same* frame is the only way to
+ * ask whether an artifact finds what it saved (§13).
+ */
+export async function rerenderArtifact(
+  page: Page,
+  input: { language: string; source: string; artifactId?: string; runId?: string },
+): Promise<FrameLocator> {
+  await page.evaluate(
+    ({ id, language, source, artifactId, runId }) => {
+      const frame = document.getElementById(id) as HTMLIFrameElement | null;
+      frame?.contentWindow?.postMessage(
+        { channel: "setun-artifact", type: "render", runId, artifactId, language, source },
+        "*",
+      );
+    },
+    {
+      id: HOST_FRAME_ID,
+      language: input.language,
+      source: input.source,
+      artifactId: input.artifactId ?? "e2e-artifact",
+      runId: input.runId ?? `e2e-${Math.random()}`,
+    },
+  );
+
+  return page.frameLocator(`#${HOST_FRAME_ID}`).frameLocator("#stage");
+}
+
+/** Ask the runner to put the keyboard in the artifact, as the panel does (§13). */
+export async function focusArtifact(page: Page): Promise<void> {
+  await page.evaluate((id) => {
+    const frame = document.getElementById(id) as HTMLIFrameElement | null;
+    frame?.contentWindow?.postMessage({ channel: "setun-artifact", type: "focus" }, "*");
+  }, HOST_FRAME_ID);
+}
+
+/** The message types the runner has posted up to the application so far. */
+export async function sandboxMessageTypes(page: Page): Promise<string[]> {
+  return page.evaluate(() =>
+    (window.__setunSandboxMessages ?? []).map((message) => message.type ?? ""),
+  );
 }

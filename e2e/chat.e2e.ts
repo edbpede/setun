@@ -75,6 +75,9 @@ test("a student logs in, chats with a streaming answer, and logs out", async ({ 
   await page.reload();
   await expect(page.locator('[data-role="assistant"]').getByText(/Et loop gentager/)).toBeVisible();
 
+  // Sign out lives in the drawer with the rest of the navigation: the header is
+  // one compact strip on a 640-pixel screen and holds only the primary controls.
+  await page.getByRole("button", { name: m.chat_conversations() }).click();
   await page.getByRole("button", { name: m.chat_sign_out() }).click();
   await expect(page).toHaveURL(/\/login/);
 
@@ -92,7 +95,10 @@ test("the chat header fits a narrow phone viewport", async ({ page }) => {
   await page.getByRole("button", { name: m.login_submit() }).click();
   await expect(page).toHaveURL(/\/chat/);
 
+  await page.getByRole("button", { name: m.chat_conversations() }).click();
   await expect(page.getByRole("button", { name: m.chat_sign_out() })).toBeVisible();
+  await page.keyboard.press("Escape");
+
   const widths = await page.evaluate(() => ({
     viewport: window.innerWidth,
     document: document.documentElement.scrollWidth,

@@ -84,7 +84,13 @@ $effect(() => {
 });
 </script>
 
+<!--
+  The composer sits on the page's own ground with a rule above it, and its own
+  controls carry the borders. A second filled surface here reads as a third panel
+  on a screen that already has a conversation and an artifact panel (§20).
+-->
 <form class="flex flex-col gap-2 border-t border-border bg-background p-3" onsubmit={submit}>
+  <div class="mx-auto flex w-full max-w-2xl flex-col gap-2">
   {#if composer.attachments.length > 0}
     <ul class="flex flex-wrap gap-1.5">
       {#each composer.attachments as file (file.id)}
@@ -182,5 +188,6 @@ $effect(() => {
         {isImageMode ? m.chat_image_mode() : m.chat_send()}
       </button>
     {/if}
+    </div>
   </div>
 </form>

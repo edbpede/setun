@@ -133,7 +133,10 @@ const visibleMessages = $derived(
 // writes re-runs itself forever.
 $effect(() => {
   const next = data.artifacts;
-  untrack(() => artifacts.replace(next));
+  const conversationId = data.conversation?.id ?? null;
+  // The conversation is named so that switching threads re-seeds rather than
+  // reading a different conversation's artifacts as things just written (§13).
+  untrack(() => artifacts.replace(next, conversationId));
 });
 
 // A turn was still streaming when this tab loaded: replay the buffer and tail

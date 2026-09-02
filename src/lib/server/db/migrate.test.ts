@@ -77,6 +77,45 @@ describe("applyMigrations", () => {
     expect(upgraded?.costExchangeRate).toBe(7);
   });
 
+  it("adds the artifact identity columns to rows that predate them", () => {
+    const journal = readJournal();
+    const identity = journal.entries.find((entry) => entry.tag.includes("artifact_identity"));
+    if (!identity) throw new Error("the artifact identity migration is not in the journal");
+
+    const root = mkdtempSync(join(tmpdir(), "setun-migrate-artifact-"));
+    const db = createDatabase(join(root, "setun.sqlite"));
+
+    // An artifact and a revision stored by a deployment that had never heard of
+    // a fence id: the upgrade must leave them readable and simply unkeyed.
+    applyMigrations(db, migrationsThrough(identity.idx - 1, join(root, "previous")));
+    db.$client.exec(
+      "INSERT INTO classroom (id, name, timezone, createdAt, updatedAt) VALUES ('c1', 'Pilotklasse', 'Europe/Copenhagen', 1, 1)",
+    );
+    db.$client.exec(
+      "INSERT INTO student (id, classroomId, label, credentialDigest, credentialHint, createdAt, updatedAt) VALUES ('s1', 'c1', 'quiet-fox', 'x', 'y', 1, 1)",
+    );
+    db.$client.exec(
+      "INSERT INTO artifact (id, studentId, language, createdAt, updatedAt) VALUES ('a1', 's1', 'html', 1, 1)",
+    );
+    db.$client.exec(
+      "INSERT INTO artifact_version (id, artifactId, revision, source, authoredBy, createdAt) VALUES ('v1', 'a1', 1, '<p>en</p>', 'model', 1)",
+    );
+
+    expect(() => applyMigrations(db)).not.toThrow();
+
+    const artifact = db.$client.query("SELECT key FROM artifact WHERE id = 'a1'").get() as {
+      key: string | null;
+    };
+    const version = db.$client
+      .query("SELECT buildStatus, buildMessage, source FROM artifact_version WHERE id = 'v1'")
+      .get() as { buildStatus: string | null; buildMessage: string | null; source: string };
+
+    expect(artifact.key).toBeNull();
+    expect(version.buildStatus).toBeNull();
+    expect(version.buildMessage).toBeNull();
+    expect(version.source).toBe("<p>en</p>");
+  });
+
   it("is idempotent — a second application changes nothing", () => {
     const root = mkdtempSync(join(tmpdir(), "setun-migrate-"));
     const db = createDatabase(join(root, "setun.sqlite"));

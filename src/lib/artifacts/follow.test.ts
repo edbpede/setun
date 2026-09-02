@@ -27,8 +27,13 @@ describe("followModelWrite", () => {
     expect(followModelWrite([item("a", "v1", "model")], [item("a", "v2", "student")])).toBeNull();
   });
 
-  it("follows nothing on the first hydration", () => {
-    expect(followModelWrite([], [item("a", "v1", "model")])).toBeNull();
+  it("follows nothing before anything has been hydrated", () => {
+    expect(followModelWrite(null, [item("a", "v1", "model")])).toBeNull();
+  });
+
+  it("follows the first artifact of a conversation that had none", () => {
+    // Not the same as "not hydrated": this is where the first thing is built.
+    expect(followModelWrite([], [item("a", "v1", "model")])).toBe("a");
   });
 
   it("takes the first of two writes in one message, which is recording order", () => {

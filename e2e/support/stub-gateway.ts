@@ -34,11 +34,41 @@ export const ARTIFACT_MARKER = "ARTEFAKT-HTML";
 /** What the stub writes when asked for one. Detection is on the fence tag alone (§13). */
 export const ARTIFACT_REPLY = [
   "Her er siden:",
-  "```html",
+  '```html id=klikkeren title="Klikkeren"',
   "<!doctype html><html><head><title>Klikkeren</title></head>",
-  "<body><button id=\"knap\">Klik her</button></body></html>",
+  '<body><button id="knap">Klik her</button></body></html>',
   "```",
   "Prøv den.",
+].join("\n");
+
+/**
+ * A prompt containing this asks for a *revision* of the same artifact (§13).
+ *
+ * The whole point of the id on the fence: a second turn under the same id is a
+ * new revision of one thing rather than a second thing, and the reply is a
+ * complete document rather than the fragment that used to replace the page.
+ */
+export const ARTIFACT_REVISION_MARKER = "ARTEFAKT-QUIZ";
+
+export const ARTIFACT_REVISION_REPLY = [
+  "Jeg har tilføjet quizzen:",
+  '```html id=klikkeren title="Klikkeren"',
+  "<!doctype html><html><head><title>Klikkeren</title></head>",
+  '<body><button id="knap">Klik her</button>',
+  '<section id="quiz"><p>Hvad hedder jeg?</p></section>',
+  "</body></html>",
+  "```",
+  "Prøv den nu.",
+].join("\n");
+
+/** A prompt containing this asks for a second, separate artifact under a new id. */
+export const ARTIFACT_SECOND_MARKER = "ARTEFAKT-LOGO";
+
+export const ARTIFACT_SECOND_REPLY = [
+  "Her er logoet:",
+  '```svg id=logo title="Logo"',
+  '<svg viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" fill="teal"/></svg>',
+  "```",
 ].join("\n");
 
 /**
@@ -57,6 +87,37 @@ export const LONG_REPLY = Array.from(
 ).join(" ");
 
 const SLOW_WORD_DELAY_MS = 400;
+
+/**
+ * The text of the newest user message, or the whole body if it cannot be read.
+ *
+ * Falling back to the whole payload rather than to nothing: a malformed request
+ * is a stub bug, and a test that silently gets the default reply is harder to
+ * diagnose than one that behaves as it did before.
+ */
+function lastUserContent(payload: string): string {
+  try {
+    const parsed = JSON.parse(payload) as {
+      messages?: { role?: string; content?: unknown }[];
+    };
+    const last = parsed.messages?.findLast((message) => message.role === "user");
+    if (!last) return payload;
+
+    if (typeof last.content === "string") return last.content;
+    if (Array.isArray(last.content)) {
+      return last.content
+        .map((part: unknown) =>
+          typeof part === "object" && part !== null && "text" in part
+            ? String((part as { text: unknown }).text)
+            : "",
+        )
+        .join(" ");
+    }
+    return payload;
+  } catch {
+    return payload;
+  }
+}
 
 export async function startStubGateway(
   options: { reply?: string; delayMs?: number; port?: number } = {},
@@ -82,18 +143,32 @@ export async function startStubGateway(
     const payload = Buffer.concat(chunks).toString();
 
     /**
+     * Markers are matched against the *last user message* only.
+     *
+     * The whole payload now carries the conversation, and an artifact turn puts
+     * its own reply back into it as context — so scanning everything made turn
+     * two replay turn one's answer forever. This is the only part of the request
+     * a test controls, and it is the part that just arrived.
+     */
+    const ask = lastUserContent(payload);
+
+    /**
      * A deliberately slow answer, for the one case that needs a turn still in
      * flight while something else happens to it — a classroom locking mid-stream
      * (PRD §8). The marker travels in the prompt because that is the only part
      * of the request a test controls.
      */
-    const slow = payload.includes(SLOW_MARKER);
+    const slow = ask.includes(SLOW_MARKER);
     const perWordDelay = slow ? SLOW_WORD_DELAY_MS : options.delayMs;
-    const body = payload.includes(ARTIFACT_MARKER)
-      ? ARTIFACT_REPLY
-      : payload.includes(LONG_MARKER)
-        ? LONG_REPLY
-        : reply;
+    const body = ask.includes(ARTIFACT_REVISION_MARKER)
+      ? ARTIFACT_REVISION_REPLY
+      : ask.includes(ARTIFACT_SECOND_MARKER)
+        ? ARTIFACT_SECOND_REPLY
+        : ask.includes(ARTIFACT_MARKER)
+          ? ARTIFACT_REPLY
+          : ask.includes(LONG_MARKER)
+            ? LONG_REPLY
+            : reply;
 
     response.writeHead(200, {
       "content-type": "text/event-stream",

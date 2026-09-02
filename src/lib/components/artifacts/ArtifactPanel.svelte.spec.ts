@@ -220,4 +220,227 @@ describe("ArtifactPanel", () => {
     expect(workspace.visible).toBe(false);
     await expect.element(page.getByText("Klikkeren")).not.toBeInTheDocument();
   });
+
+  it("shows the artifact's id in the mono identity line", async () => {
+    const workspace = openWorkspace([{ ...artifact(), key: "side" }]);
+    render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX });
+
+    await expect.element(page.getByText("id=side · html · v1")).toBeVisible();
+  });
+
+  it("derives an id for a row that stores none, so the line is never blank", async () => {
+    render(ArtifactPanel, { workspace: openWorkspace(), sandboxOrigin: SANDBOX });
+
+    await expect.element(page.getByText("id=html-artifa · html · v1")).toBeVisible();
+  });
+
+  it("offers to hand a failure back to the model", async () => {
+    const workspace = openWorkspace();
+    const asked = vi.fn();
+    render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX, onaskforhelp: asked });
+
+    workspace.status = "failed";
+    workspace.error = "Line 3: Unexpected <";
+    // Already reported, so the button is not waiting on a PATCH.
+    workspace.applyBuildStatus({
+      artifactId: "artifact-1",
+      versionId: "version-1",
+      status: "failed",
+      message: "Line 3: Unexpected <",
+    });
+
+    await page.getByRole("button", { name: m.artifact_ask_fix() }).click();
+    expect(asked).toHaveBeenCalled();
+  });
+
+  it("shows what the artifact printed, as text", async () => {
+    const workspace = openWorkspace();
+    render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX });
+
+    workspace.appendConsole([
+      { level: "log", text: "point: 3" },
+      { level: "warn", text: "<b>ikke markup</b>" },
+    ]);
+
+    await page.getByRole("button", { name: m.artifact_console_label({ count: 2 }) }).click();
+
+    const log = page.getByRole("log");
+    await expect.element(log).toBeVisible();
+    // Generated output, so it is text at every hop (§13, §21).
+    await expect.element(page.getByText("<b>ikke markup</b>")).toBeVisible();
+  });
+
+  it("marks a version that did not run in the history list", async () => {
+    const workspace = openWorkspace();
+    const fetched = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "artifact-1",
+          language: "html",
+          title: "Klikkeren",
+          key: "klikkeren",
+          versions: [
+            {
+              id: "version-1",
+              revision: 1,
+              source: "<button>Klik</button>",
+              authoredBy: "model",
+              buildStatus: "failed",
+              buildMessage: "boom",
+              createdAt: new Date(0).toISOString(),
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+
+    try {
+      render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX });
+      await page.getByRole("tab", { name: m.artifact_tab_history() }).click();
+
+      await expect.element(page.getByText(m.artifact_version_build_failed())).toBeVisible();
+    } finally {
+      fetched.mockRestore();
+    }
+  });
+
+  it("reports a run onto the version it ran, once per outcome", async () => {
+    const workspace = openWorkspace();
+    const fetched = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response("{}", { status: 200 }));
+
+    try {
+      render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX });
+
+      workspace.recordOutcome("failed", "Line 3: Unexpected <");
+      await vi.waitFor(() =>
+        expect(fetched).toHaveBeenCalledWith(
+          "/api/artifacts/artifact-1/versions/version-1",
+          expect.objectContaining({ method: "PATCH" }),
+        ),
+      );
+
+      // The stored status now says so, so nothing further is owed.
+      await vi.waitFor(() => expect(workspace.pendingBuildReport).toBeNull());
+
+      const calls = fetched.mock.calls.length;
+      workspace.recordOutcome("failed", "Line 3: Unexpected <");
+      expect(fetched.mock.calls.length).toBe(calls);
+    } finally {
+      fetched.mockRestore();
+    }
+  });
+
+  it("reports nothing for a draft the version does not hold", async () => {
+    const workspace = openWorkspace();
+    const fetched = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response("{}", { status: 200 }));
+
+    try {
+      render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX });
+
+      // A pupil running something no version holds: stamping the stored revision
+      // with that result would tell the model a lie about its own code (§13).
+      workspace.running = "<p>udkast</p>";
+      workspace.recordOutcome("failed", "boom");
+
+      expect(workspace.pendingBuildReport).toBeNull();
+      expect(fetched).not.toHaveBeenCalledWith(
+        expect.stringContaining("/versions/version-1"),
+        expect.objectContaining({ method: "PATCH" }),
+      );
+    } finally {
+      fetched.mockRestore();
+    }
+  });
+});
+
+describe("following the model's writes", () => {
+  it("opens the panel on a new artifact and shows it", () => {
+    const workspace = new ArtifactWorkspace();
+    workspace.replace([artifact()], "c1");
+    // First hydration is a page load, not a turn landing: nothing opens (§13).
+    expect(workspace.visible).toBe(false);
+
+    workspace.replace(
+      [
+        {
+          ...artifact(),
+          id: "artifact-2",
+          title: "Quiz",
+          latest: { ...artifact().latest, id: "v2" },
+        },
+        artifact(),
+      ],
+      "c1",
+    );
+
+    expect(workspace.visible).toBe(true);
+    expect(workspace.openId).toBe("artifact-2");
+  });
+
+  it("opens on the first artifact of a conversation that had none", () => {
+    const workspace = new ArtifactWorkspace();
+    workspace.replace([], "c1");
+
+    workspace.replace([artifact()], "c1");
+
+    expect(workspace.visible).toBe(true);
+    expect(workspace.openId).toBe("artifact-1");
+  });
+
+  it("does not open when the pupil merely switches conversation", () => {
+    const workspace = new ArtifactWorkspace();
+    workspace.replace([], "c1");
+
+    workspace.replace([artifact()], "c2");
+
+    expect(workspace.visible).toBe(false);
+  });
+
+  it("follows the last of two writes in one turn — the first block written", () => {
+    const workspace = new ArtifactWorkspace();
+    workspace.replace([artifact()]);
+
+    workspace.replace([
+      { ...artifact(), latest: { ...artifact().latest, id: "version-2", revision: 2 } },
+      { ...artifact(), id: "artifact-2", latest: { ...artifact().latest, id: "v2" } },
+    ]);
+
+    expect(workspace.openId).toBe("artifact-1");
+  });
+
+  it("does not take the editor out from under a draft on another artifact", () => {
+    const workspace = new ArtifactWorkspace();
+    workspace.replace([artifact()]);
+    workspace.select("artifact-1");
+    workspace.edit("<p>jeg skriver</p>");
+
+    workspace.replace([
+      artifact(),
+      { ...artifact(), id: "artifact-2", latest: { ...artifact().latest, id: "v2" } },
+    ]);
+
+    expect(workspace.openId).toBe("artifact-1");
+    expect(workspace.draft).toBe("<p>jeg skriver</p>");
+    // But the pupil is told, so a closed panel is not a silent one (§13).
+    expect(workspace.unseen).toBe("artifact-2");
+  });
+
+  it("never follows the pupil's own save", () => {
+    const workspace = new ArtifactWorkspace();
+    workspace.replace([artifact()]);
+
+    workspace.replace([
+      {
+        ...artifact(),
+        latest: { ...artifact().latest, id: "version-2", revision: 2, authoredBy: "student" },
+      },
+    ]);
+
+    expect(workspace.visible).toBe(false);
+  });
 });

@@ -3,7 +3,11 @@ import { promisify } from "node:util";
 import { expect, type Page, test } from "@playwright/test";
 import * as m from "../src/lib/paraglide/messages";
 import { E2E_DATABASE_PATH, E2E_PEPPER, E2E_STORAGE_PATH } from "../playwright.config";
-import { ARTIFACT_MARKER } from "./support/stub-gateway";
+import {
+  ARTIFACT_MARKER,
+  ARTIFACT_REVISION_MARKER,
+  ARTIFACT_SECOND_MARKER,
+} from "./support/stub-gateway";
 import { clearLoginWindow } from "./support/login-window";
 
 /**
@@ -51,6 +55,25 @@ async function signIn(page: Page, code: string): Promise<void> {
   await expect(page).toHaveURL(/\/chat/);
 }
 
+/**
+ * Send a message and wait until the Build button reports `count` artifacts.
+ *
+ * The panel is closed first when it is open: it is an overlay over the whole
+ * conversation, so it covers the composer — which is the point on a 640-pixel
+ * screen, and means a pupil returns to the chat by closing it (§20).
+ */
+async function ask(page: Page, text: string, count: number): Promise<void> {
+  const close = page.getByRole("button", { name: m.artifact_close() });
+  if (await close.isVisible()) await close.click();
+
+  await page.getByRole("textbox", { name: m.chat_composer_label() }).fill(text);
+  await page.getByRole("button", { name: m.chat_send() }).click();
+
+  await expect(
+    page.getByRole("button", { name: new RegExp(`Build \\(${count}\\)|Byg \\(${count}\\)`) }),
+  ).toBeVisible({ timeout: 20_000 });
+}
+
 /** Ask the stub for an artifact and wait until the answer has landed. */
 async function askForArtifact(page: Page): Promise<void> {
   await page.getByRole("button", { name: m.chat_new_conversation() }).first().click();
@@ -59,14 +82,7 @@ async function askForArtifact(page: Page): Promise<void> {
   // the first send — so its appearance is no longer the implicit wait it used to
   // be, and a draft typed before this navigation lands is discarded by it.
   await expect(page).toHaveURL(/\?c=/);
-  await page.getByRole("textbox", { name: m.chat_composer_label() }).fill(
-    `${ARTIFACT_MARKER} lav en klikker`,
-  );
-  await page.getByRole("button", { name: m.chat_send() }).click();
-
-  await expect(page.getByRole("button", { name: /Build \(1\)|Byg \(1\)/ })).toBeVisible({
-    timeout: 20_000,
-  });
+  await ask(page, `${ARTIFACT_MARKER} lav en klikker`, 1);
 }
 
 /**
@@ -83,8 +99,11 @@ test("a student builds an artifact, edits it, and the edit travels back", async 
   await signIn(page, code);
   await askForArtifact(page);
 
-  // The Build entry point, prominent rather than an obscure toggle (§13).
-  await page.getByRole("button", { name: /Build \(1\)|Byg \(1\)/ }).click();
+  // The panel opens on the model's write rather than waiting to be found: the
+  // Build entry point is still there, but the pupil does not have to look (§13).
+  await expect(page.getByRole("tab", { name: m.artifact_tab_preview() })).toBeVisible({
+    timeout: 20_000,
+  });
 
   // Tier 0: it renders in the sandboxed frame with no build step (§13, §14).
   const stage = page
@@ -132,7 +151,11 @@ test("a student builds an artifact, edits it, and the edit travels back", async 
   await page.getByRole("button", { name: m.artifact_close() }).click();
 
   // The next message carries the current source, marked as the student's (§13).
-  await page.getByRole("textbox", { name: m.chat_composer_label() }).fill("Jeg ødelagde den");
+  // It asks for an artifact too, so the model writes a revision of its own —
+  // which is what makes "delivered once" observable in the next assertion.
+  await page
+    .getByRole("textbox", { name: m.chat_composer_label() })
+    .fill(`Jeg ødelagde den — ${ARTIFACT_MARKER}`);
   await page.getByRole("button", { name: m.chat_send() }).click();
 
   await expect(page.getByText(/Your edited version of|Din rettede version af/)).toBeVisible({
@@ -153,6 +176,9 @@ test("the creations gallery holds what the student made", async ({ page }) => {
   await signIn(page, code);
   await askForArtifact(page);
 
+  // The panel auto-opened over the conversation; the drawer is behind it.
+  await page.getByRole("button", { name: m.artifact_close() }).click();
+  await page.getByRole("button", { name: m.chat_conversations() }).click();
   await page.getByRole("link", { name: m.creations_link() }).click();
   await expect(page).toHaveURL(/\/creations/);
 
@@ -174,7 +200,6 @@ test("a student cannot reach another student's artifact", async ({ browser }) =>
   await signIn(ownerPage, owner.code);
   await askForArtifact(ownerPage);
 
-  await ownerPage.getByRole("button", { name: /Build \(1\)|Byg \(1\)/ }).click();
   const target = await ownerPage
     .locator("[data-artifact-id]")
     .first()
@@ -211,4 +236,139 @@ test("the artifact API refuses an unauthenticated caller", async ({ request }) =
     data: { source: "<p>x</p>" },
   });
   expect(write.status()).toBe(401);
+});
+
+test("a second turn revises the same artifact rather than replacing it", async ({ page }) => {
+  test.setTimeout(120_000);
+  const { code } = await provisionStudent();
+
+  await signIn(page, code);
+  await askForArtifact(page);
+
+  // The failure this replaces: the follow-up produced a fragment, which became
+  // revision 2 of the page — so the page disappeared and the quiz did not work
+  // either. Under one id the answer is a complete document (§13).
+  await ask(page, `${ARTIFACT_REVISION_MARKER} tilføj en quiz om mig`, 1);
+
+  // The panel opens on the model's write and follows it, so the quiz is on
+  // screen without the pupil going looking for it (§13, §20).
+  const stage = page
+    .frameLocator(`iframe[title="${m.artifact_frame_title()}"]`)
+    .frameLocator("#stage");
+  await expect(stage.locator("#quiz")).toBeVisible({ timeout: 20_000 });
+  // And the button the first turn made is still there.
+  await expect(stage.locator("#knap")).toHaveText("Klik her");
+
+  const artifactId = await page
+    .locator("[data-artifact-id]")
+    .first()
+    .getAttribute("data-artifact-id");
+
+  const stored = await (await page.request.get(`/api/artifacts/${artifactId}`)).json();
+  expect(stored.key).toBe("klikkeren");
+  expect(stored.versions).toHaveLength(2);
+  expect(stored.versions[1].authoredBy).toBe("model");
+  expect(stored.versions[1].source).toContain("quiz");
+
+  // A different id is a different thing, not a revision of this one.
+  await ask(page, `${ARTIFACT_SECOND_MARKER} lav et logo`, 2);
+});
+
+test("the transcript card opens what the model built", async ({ page }) => {
+  test.setTimeout(120_000);
+  const { code } = await provisionStudent();
+
+  await signIn(page, code);
+  await askForArtifact(page);
+
+  // The panel auto-opened on the write; close it, so the card is what reopens it.
+  await page.getByRole("button", { name: m.artifact_close() }).click();
+
+  // The transcript shows what was built, not the markup it was written as (§13).
+  await expect(page.getByText("<!doctype html>")).toHaveCount(0);
+  await page.getByRole("button", { name: m.artifact_card_label({ title: "Klikkeren" }) }).click();
+
+  const stage = page
+    .frameLocator(`iframe[title="${m.artifact_frame_title()}"]`)
+    .frameLocator("#stage");
+  await expect(stage.locator("#knap")).toHaveText("Klik her", { timeout: 20_000 });
+});
+
+test("a run's outcome is recorded against the version it ran", async ({ page }) => {
+  test.setTimeout(120_000);
+  const { code } = await provisionStudent();
+
+  await signIn(page, code);
+  await askForArtifact(page);
+
+  const artifactId = await page
+    .locator("[data-artifact-id]")
+    .first()
+    .getAttribute("data-artifact-id");
+  const stored = await (await page.request.get(`/api/artifacts/${artifactId}`)).json();
+  const versionId = stored.versions[0].id;
+
+  const patched = await page.request.patch(
+    `/api/artifacts/${artifactId}/versions/${versionId}`,
+    { data: { buildStatus: "failed", buildMessage: "SyntaxError" } },
+  );
+  expect(patched.status()).toBe(200);
+
+  const after = await (await page.request.get(`/api/artifacts/${artifactId}`)).json();
+  expect(after.versions[0].buildStatus).toBe("failed");
+  expect(after.versions[0].buildMessage).toBe("SyntaxError");
+
+  // A status the schema does not name is refused before it reaches the database.
+  const invalid = await page.request.patch(
+    `/api/artifacts/${artifactId}/versions/${versionId}`,
+    { data: { buildStatus: "exploded" } },
+  );
+  expect(invalid.status()).toBe(400);
+});
+
+test("a build outcome cannot be written to somebody else's artifact", async ({ browser }) => {
+  test.setTimeout(120_000);
+  const [owner, intruder] = await Promise.all([provisionStudent(), provisionStudent()]);
+
+  const ownerContext = await browser.newContext();
+  const ownerPage = await ownerContext.newPage();
+  await signIn(ownerPage, owner.code);
+  await askForArtifact(ownerPage);
+
+  const target = await ownerPage
+    .locator("[data-artifact-id]")
+    .first()
+    .getAttribute("data-artifact-id");
+  const stored = await (await ownerPage.request.get(`/api/artifacts/${target}`)).json();
+  const versionId = stored.versions[0].id;
+
+  const intruderContext = await browser.newContext();
+  const intruderPage = await intruderContext.newPage();
+  await signIn(intruderPage, intruder.code);
+
+  // Absent, not forbidden: there is nothing to probe (§21).
+  const write = await intruderPage.request.patch(
+    `/api/artifacts/${target}/versions/${versionId}`,
+    { data: { buildStatus: "failed", buildMessage: "hacked" } },
+  );
+  expect(write.status()).toBe(404);
+
+  const unauthenticated = await browser.newContext();
+  const anonymous = await unauthenticated.newPage();
+  const refused = await anonymous.request.patch(
+    `/api/artifacts/${target}/versions/${versionId}`,
+    { data: { buildStatus: "failed" } },
+  );
+  expect(refused.status()).toBe(401);
+
+  // And nothing of the intruder's was recorded. The owner's own panel has run
+  // the artifact and reported that, which is the feature working — so what is
+  // asserted is that the status is the owner's and not the one just refused.
+  const after = await (await ownerPage.request.get(`/api/artifacts/${target}`)).json();
+  expect(after.versions[0].buildStatus).not.toBe("failed");
+  expect(after.versions[0].buildMessage).not.toBe("hacked");
+
+  await ownerContext.close();
+  await intruderContext.close();
+  await unauthenticated.close();
 });
