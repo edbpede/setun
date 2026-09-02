@@ -8,6 +8,7 @@
   "artifact_ask_fix": "Ask for help fixing it",
   "artifact_build": "Build",
   "artifact_build_unseen": "Updated",
+  "artifact_card_building": "Building {title}…",
   "artifact_card_label": "Built: {title}",
   "artifact_close": "Close",
   "artifact_console_label": "Console ({count})",

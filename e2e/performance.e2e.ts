@@ -4,7 +4,7 @@ import { promisify } from "node:util";
 import { expect, test } from "@playwright/test";
 import * as m from "../src/lib/paraglide/messages";
 import { E2E_DATABASE_PATH, E2E_PEPPER } from "../playwright.config";
-import { LONG_MARKER } from "./support/stub-gateway";
+import { ARTIFACT_LONG_MARKER, LONG_MARKER } from "./support/stub-gateway";
 import { clearLoginWindow } from "./support/login-window";
 
 /**
@@ -214,6 +214,67 @@ test("streaming plain text does not drop frames under sixfold CPU throttling (§
   // re-parsing and re-highlighting the whole message on every delta — makes
   // every frame slow, so it shows in the median; a lone outlier is another
   // Playwright worker compiling something on the same two cores.
+  expect(measured.length).toBeGreaterThan(10);
+  expect(at(0.5)).toBeLessThan(50);
+  expect(at(0.95)).toBeLessThan(150);
+});
+
+test("streaming an artifact does not drop frames under sixfold CPU throttling (§20)", async ({
+  page,
+}) => {
+  // The case above never streams a fence, so it cannot see a regression in the
+  // boundary scan the transcript now runs per delta. This one is the same
+  // measurement over a reply that is mostly one long artifact (§13, §20).
+  test.setTimeout(120_000);
+
+  const { code } = await provisionStudent();
+
+  const session = await page.context().newCDPSession(page);
+
+  await page.goto("/login");
+  await page.getByLabel(m.login_code_label()).fill(code);
+  await page.getByRole("button", { name: m.login_submit() }).click();
+  await expect(page).toHaveURL(/\/chat/);
+
+  await page.getByRole("button", { name: m.chat_new_conversation() }).first().click();
+  await expect(page).toHaveURL(/\?c=/);
+  await expect(page.getByRole("textbox", { name: m.chat_composer_label() })).toBeVisible();
+
+  await session.send("Emulation.setCPUThrottlingRate", { rate: CPU_THROTTLE });
+
+  await page.evaluate(() => {
+    const gaps: number[] = [];
+    let previous = performance.now();
+    const tick = () => {
+      const now = performance.now();
+      gaps.push(now - previous);
+      previous = now;
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    (window as unknown as { __setunGaps: number[] }).__setunGaps = gaps;
+  });
+
+  await page
+    .getByRole("textbox", { name: m.chat_composer_label() })
+    .fill(`${ARTIFACT_LONG_MARKER} byg en lang side`);
+  await page.getByRole("button", { name: m.chat_send() }).click();
+
+  await expect(page.getByText("Færdig med den lange side.")).toBeVisible({ timeout: 90_000 });
+
+  const gaps = await page.evaluate(
+    () => (window as unknown as { __setunGaps: number[] }).__setunGaps,
+  );
+
+  const measured = gaps.slice(1).sort((a, b) => a - b);
+  const at = (quantile: number) => measured[Math.floor(measured.length * quantile)];
+
+  console.info(
+    `artifact frame gaps at ${CPU_THROTTLE}× throttling: ${measured.length} frames, ` +
+      `median ${at(0.5).toFixed(0)} ms, p95 ${at(0.95).toFixed(0)} ms, ` +
+      `worst ${measured.at(-1)?.toFixed(0)} ms`,
+  );
+
   expect(measured.length).toBeGreaterThan(10);
   expect(at(0.5)).toBeLessThan(50);
   expect(at(0.95)).toBeLessThan(150);

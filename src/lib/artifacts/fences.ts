@@ -51,8 +51,33 @@ function attributesOf(info: string): Record<string, string> {
   return attributes;
 }
 
-/** Every closed fenced block, in the order it appears. An unclosed fence is skipped. */
-export function fencedBlocks(markdown: string): FencedBlock[] {
+/**
+ * The fence a message ends inside, when it ends inside one.
+ *
+ * A block still arriving is not an artifact and never becomes one here — it has
+ * no source to render and no closing line to bound it. But a streaming
+ * transcript has to know that a fence is *open*, or the pupil watches
+ * `<!doctype html>` scroll past as prose (§20).
+ */
+export interface OpenFence {
+  readonly language: string | null;
+  readonly attributes: Readonly<Record<string, string>>;
+  /** Index of the opening fence line; everything from here on is inside it. */
+  readonly line: number;
+}
+
+export interface ScannedFences {
+  readonly blocks: FencedBlock[];
+  readonly open: OpenFence | null;
+}
+
+/**
+ * One pass over the markdown: every closed block, and the trailing open fence.
+ *
+ * `fencedBlocks` is this scan with the open fence discarded, which is what every
+ * caller that works on settled text wants.
+ */
+export function scanFences(markdown: string): ScannedFences {
   const lines = markdown.split("\n");
   const blocks: FencedBlock[] = [];
 
@@ -67,11 +92,20 @@ export function fencedBlocks(markdown: string): FencedBlock[] {
     // keeps inline code on the same line from opening a block.
     if (fence.startsWith("`") && info.includes("`")) continue;
 
-    const closing = findClosing(lines, index + 1, fence);
-    // An unclosed fence is a block still arriving; it is not an artifact yet (§20).
-    if (closing === -1) break;
-
     const [first, ...rest] = info.split(/\s+/);
+    const closing = findClosing(lines, index + 1, fence);
+    // An unclosed fence is a block still arriving; it is not an artifact yet
+    // (§20). Nothing after it can open another, so the scan ends here.
+    if (closing === -1) {
+      return {
+        blocks,
+        open: {
+          language: first?.toLowerCase() || null,
+          attributes: attributesOf(rest.join(" ")),
+          line: index,
+        },
+      };
+    }
 
     blocks.push({
       language: first?.toLowerCase() || null,
@@ -84,7 +118,12 @@ export function fencedBlocks(markdown: string): FencedBlock[] {
     index = closing;
   }
 
-  return blocks;
+  return { blocks, open: null };
+}
+
+/** Every closed fenced block, in the order it appears. An unclosed fence is skipped. */
+export function fencedBlocks(markdown: string): FencedBlock[] {
+  return scanFences(markdown).blocks;
 }
 
 function findClosing(lines: readonly string[], from: number, fence: string): number {

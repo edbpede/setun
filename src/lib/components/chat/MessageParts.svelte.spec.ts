@@ -91,11 +91,32 @@ describe("MessageParts artifact cards", () => {
     await expect.element(page.getByRole("img", { name: m.artifact_status_failed() })).toBeVisible();
   });
 
-  it("leaves streaming text plain, because parsing every delta drops frames", async () => {
-    render(MessageParts, { parts: text(PROSE), artifacts: [ref()], streaming: true });
+  it("leaves streaming prose unparsed but does not stream the markup at the pupil", async () => {
+    const markdown = ["Her er **siden**:", "```html id=side", "<p>hi</p>", "```", "Prøv den."].join(
+      "\n",
+    );
+    render(MessageParts, { parts: text(markdown), artifacts: [ref()], streaming: true });
 
-    // §20: markdown and cards wait until the turn settles.
-    await expect.element(page.getByText("<p>hi</p>")).toBeVisible();
+    // §20: markdown is still not parsed per delta — the emphasis stays literal.
+    await expect.element(page.getByText("Her er **siden**:")).toBeVisible();
+    expect(document.querySelector("strong")).toBeNull();
+
+    // But the artifact is a stub rather than a screenful of markup (§13).
+    await expect.element(page.getByText("<p>hi</p>")).not.toBeInTheDocument();
+    await expect.element(page.getByText(m.artifact_untitled({ language: "html" }))).toBeVisible();
+    await expect.element(page.getByText("id=side · html")).toBeVisible();
+  });
+
+  it("says what is being built while the fence is still open", async () => {
+    const markdown = ["Her er siden:", '```html id=side title="Min side"', "<p>hi</p>"].join("\n");
+    render(MessageParts, { parts: text(markdown), streaming: true });
+
+    await expect
+      .element(page.getByText(m.artifact_card_building({ title: "Min side" })))
+      .toBeVisible();
+    await expect.element(page.getByText("<p>hi</p>")).not.toBeInTheDocument();
+    // Nothing to open yet: the refs arrive with the settled message.
+    await expect.element(page.getByRole("button")).not.toBeInTheDocument();
   });
 
   it("never parses the pupil's own words", async () => {

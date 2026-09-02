@@ -8,6 +8,7 @@
   "artifact_ask_fix": "Bed om hjælp til at rette den",
   "artifact_build": "Byg",
   "artifact_build_unseen": "Opdateret",
+  "artifact_card_building": "Bygger {title}…",
   "artifact_card_label": "Bygget: {title}",
   "artifact_close": "Luk",
   "artifact_console_label": "Konsol ({count})",

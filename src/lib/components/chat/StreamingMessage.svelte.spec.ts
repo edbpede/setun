@@ -49,6 +49,32 @@ describe("StreamingMessage", () => {
     expect(document.querySelector("strong")).toBeNull();
   });
 
+  it("shows a stub while an artifact streams, and names it once the fence closes", async () => {
+    const turn = new StreamingTurn();
+    turn.begin("turn-1");
+    render(StreamingMessage, { turn });
+
+    turn.apply(
+      { type: "text-delta", text: 'Her er siden:\n```html id=side title="Min side"\n<h1>' },
+      0,
+    );
+
+    // Mid-fence: the pupil is told something is being built rather than shown
+    // the markup arriving a word at a time (§13, §20).
+    await expect
+      .element(page.getByText(m.artifact_card_building({ title: "Min side" })))
+      .toBeVisible();
+    await expect.element(page.getByText("Her er siden:")).toBeVisible();
+
+    turn.apply({ type: "text-delta", text: "</h1>\n```\nFærdig." }, 1);
+
+    await expect
+      .element(page.getByText(m.artifact_card_building({ title: "Min side" })))
+      .not.toBeInTheDocument();
+    await expect.element(page.getByText("Min side")).toBeVisible();
+    await expect.element(page.getByText("Færdig.")).toBeVisible();
+  });
+
   it("never renders model output as live HTML", async () => {
     const turn = new StreamingTurn();
     turn.begin("turn-1");

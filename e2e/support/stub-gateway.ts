@@ -86,6 +86,28 @@ export const LONG_REPLY = Array.from(
   (_, i) => `sætning ${i} om hvordan et neuralt netværk sender information videre.`,
 ).join(" ");
 
+/**
+ * A prompt containing this asks the stub for a long answer that is an artifact.
+ *
+ * `LONG_MARKER` never streams a fence, so it cannot see a regression in the
+ * boundary scan the streaming transcript now does per delta (§13, §20).
+ */
+export const ARTIFACT_LONG_MARKER = "ARTEFAKT-LANG-SIDE";
+
+/** The same shape a model writes: prose, a long complete file, prose. */
+export const ARTIFACT_LONG_REPLY = [
+  "Her er siden:",
+  '```html id=lang-side title="Den lange side"',
+  "<!doctype html>",
+  "<html>",
+  "<body>",
+  ...Array.from({ length: 150 }, (_, i) => `<p class="linje">Afsnit ${i} på den lange side.</p>`),
+  "</body>",
+  "</html>",
+  "```",
+  "Færdig med den lange side.",
+].join("\n");
+
 const SLOW_WORD_DELAY_MS = 400;
 
 /**
@@ -160,7 +182,9 @@ export async function startStubGateway(
      */
     const slow = ask.includes(SLOW_MARKER);
     const perWordDelay = slow ? SLOW_WORD_DELAY_MS : options.delayMs;
-    const body = ask.includes(ARTIFACT_REVISION_MARKER)
+    const body = ask.includes(ARTIFACT_LONG_MARKER)
+      ? ARTIFACT_LONG_REPLY
+      : ask.includes(ARTIFACT_REVISION_MARKER)
       ? ARTIFACT_REVISION_REPLY
       : ask.includes(ARTIFACT_SECOND_MARKER)
         ? ARTIFACT_SECOND_REPLY

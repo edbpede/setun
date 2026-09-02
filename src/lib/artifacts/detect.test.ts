@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { continuityDecision } from "./continuity";
 import { artifactLanguage, detectArtifacts } from "./detect";
-import { fencedBlocks } from "./fences";
+import { fencedBlocks, scanFences } from "./fences";
 import { tierOf } from "./types";
 
 /**
@@ -58,6 +58,23 @@ describe("fencedBlocks", () => {
 
   it("ignores a fence that never closes", () => {
     expect(fencedBlocks("```html\n<p>still typing")).toEqual([]);
+  });
+
+  it("hands the fence still arriving back to a caller that wants it", () => {
+    // A streaming transcript needs to know a block is open, or it renders the
+    // markup as prose while the pupil watches (§13, §20).
+    const { blocks, open } = scanFences('før\n```html id=side title="Min side"\n<p>still typing');
+
+    expect(blocks).toEqual([]);
+    expect(open).toEqual({
+      language: "html",
+      attributes: { id: "side", title: "Min side" },
+      line: 1,
+    });
+  });
+
+  it("has no open fence when every block closed", () => {
+    expect(scanFences("```html\n<p>hi</p>\n```").open).toBeNull();
   });
 
   it("keeps a shorter inner fence inside a longer outer one", () => {

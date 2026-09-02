@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { artifactSegmentCount, artifactSegments } from "./segments";
+import { artifactSegmentCount, artifactSegments, streamingSegments } from "./segments";
 
 describe("artifactSegments", () => {
   it("splits prose around an artifact block", () => {
@@ -65,5 +65,63 @@ describe("artifactSegmentCount", () => {
   it("counts what a part contributes to the running index", () => {
     expect(artifactSegmentCount("```html\na\n```\n```js\nb\n```")).toBe(1);
     expect(artifactSegmentCount("ingen kode her")).toBe(0);
+  });
+});
+
+describe("streamingSegments", () => {
+  it("leaves prose alone when there is no fence in it", () => {
+    expect(streamingSegments("Jeg bygger den nu.")).toEqual([
+      { kind: "text", text: "Jeg bygger den nu." },
+    ]);
+  });
+
+  it("collapses the fence still arriving to a pending stub with its identity", () => {
+    const segments = streamingSegments(
+      ["Her er siden:", '```html id=side title="Min side"', "<!doctype html>", "<h1>Hej"].join(
+        "\n",
+      ),
+    );
+
+    // The pupil watched `<!doctype html>` scroll past before this (§13, §20).
+    expect(segments).toEqual([
+      { kind: "text", text: "Her er siden:" },
+      { kind: "pending", language: "html", key: "side", title: "Min side" },
+    ]);
+  });
+
+  it("leaves an open fence that is not an artifact in the prose", () => {
+    const markdown = "Sådan her:\n```js\nconst x = 1;";
+
+    // An ordinary code block is prose while it streams, exactly as before.
+    expect(streamingSegments(markdown)).toEqual([{ kind: "text", text: markdown }]);
+  });
+
+  it("names a closed block and goes on to the one still arriving", () => {
+    const segments = streamingSegments(
+      ["```html id=en\n<p>en</p>\n```", "Og nu den anden:", "```svg id=to", "<svg"].join("\n"),
+    );
+
+    expect(segments.map((segment) => segment.kind)).toEqual(["artifact", "text", "pending"]);
+    expect(segments[0].kind === "artifact" && segments[0].artifact.key).toBe("en");
+    expect(segments[2]).toEqual({ kind: "pending", language: "svg", key: "to", title: null });
+  });
+
+  it("does not read a backtick inside an info string as a fence", () => {
+    const markdown = "Skriv `html` sådan her.";
+
+    expect(streamingSegments(markdown)).toEqual([{ kind: "text", text: markdown }]);
+  });
+
+  it("reads a tilde fence, whose info string may hold a backtick", () => {
+    const segments = streamingSegments("~~~html id=side\n<p>hi");
+
+    expect(segments).toEqual([{ kind: "pending", language: "html", key: "side", title: null }]);
+  });
+
+  it("scans a long buffer without parsing it", () => {
+    const body = Array.from({ length: 500 }, (_, at) => `<p>linje ${at}</p>`).join("\n");
+    const segments = streamingSegments(`Her er den:\n\`\`\`html id=lang\n${body}`);
+
+    expect(segments.map((segment) => segment.kind)).toEqual(["text", "pending"]);
   });
 });
