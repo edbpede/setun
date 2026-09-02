@@ -305,18 +305,28 @@ test("a run's outcome is recorded against the version it ran", async ({ page }) 
     .locator("[data-artifact-id]")
     .first()
     .getAttribute("data-artifact-id");
-  const stored = await (await page.request.get(`/api/artifacts/${artifactId}`)).json();
-  const versionId = stored.versions[0].id;
+  const read = async () =>
+    (await (await page.request.get(`/api/artifacts/${artifactId}`)).json()).versions[0];
 
+  // The panel is open and running the artifact, and reports that outcome itself
+  // — which is the feature under test, and the browser is the only party that
+  // knows (§13). Wait for it before writing anything: the report is a PATCH like
+  // any other, and racing it is how this test read back somebody else's answer.
+  await expect.poll(async () => (await read()).buildStatus, { timeout: 30_000 }).toBe("ok");
+
+  // Closed, so nothing further reports while the failure below is written.
+  await page.getByRole("button", { name: m.artifact_close() }).click();
+
+  const versionId = (await read()).id;
   const patched = await page.request.patch(
     `/api/artifacts/${artifactId}/versions/${versionId}`,
     { data: { buildStatus: "failed", buildMessage: "SyntaxError" } },
   );
   expect(patched.status()).toBe(200);
 
-  const after = await (await page.request.get(`/api/artifacts/${artifactId}`)).json();
-  expect(after.versions[0].buildStatus).toBe("failed");
-  expect(after.versions[0].buildMessage).toBe("SyntaxError");
+  const after = await read();
+  expect(after.buildStatus).toBe("failed");
+  expect(after.buildMessage).toBe("SyntaxError");
 
   // A status the schema does not name is refused before it reaches the database.
   const invalid = await page.request.patch(
@@ -361,11 +371,10 @@ test("a build outcome cannot be written to somebody else's artifact", async ({ b
   );
   expect(refused.status()).toBe(401);
 
-  // And nothing of the intruder's was recorded. The owner's own panel has run
-  // the artifact and reported that, which is the feature working — so what is
-  // asserted is that the status is the owner's and not the one just refused.
+  // And nothing of the intruder's was recorded. The status itself is the owner's
+  // own panel reporting its run, so the message is what proves it: only the
+  // refused write could have put that word there.
   const after = await (await ownerPage.request.get(`/api/artifacts/${target}`)).json();
-  expect(after.versions[0].buildStatus).not.toBe("failed");
   expect(after.versions[0].buildMessage).not.toBe("hacked");
 
   await ownerContext.close();
