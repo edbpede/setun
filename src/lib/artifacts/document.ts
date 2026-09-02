@@ -78,26 +78,35 @@ var seed=${seed};
 var install=function(area){
   var name=area==="local"?"localStorage":"sessionStorage";
   try{var native=window[name];native.getItem("__setun__");return}catch(e){}
-  var data=Object.assign({},seed[area]||{});
+  /* Null-prototype: assigning the key __proto__ on an ordinary object invokes
+     the prototype setter and silently drops a key the artifact stored. */
+  var data=Object.assign(Object.create(null),seed[area]||{});
   var timer=null;
   var flush=function(){if(timer){clearTimeout(timer);timer=null}send({channel:"setun-artifact",type:"storage",runId:${id},area:area,entries:data})};
   var schedule=function(){if(timer)return;timer=setTimeout(function(){timer=null;flush()},250)};
   var quota=function(){var e=new Error("The artifact's storage is full.");e.name="QuotaExceededError";return e};
+  /* The bound is bytes, and .length counts UTF-16 units — "æ" is two bytes and
+     an emoji four, so a Danish page would otherwise keep more than it is told. */
+  var sizeOf=function(s){try{return new TextEncoder().encode(s).length}catch(e){return s.length}};
   var api={
     getItem:function(k){k=String(k);return Object.prototype.hasOwnProperty.call(data,k)?data[k]:null},
     setItem:function(k,v){
       k=String(k);v=String(v);
-      var bytes=v.length+k.length;
-      for(var held in data)bytes+=held.length+data[held].length;
+      var bytes=sizeOf(k)+sizeOf(v);
+      /* Skipping k: overwriting a key replaces its value rather than adding to
+         it, and counting both copies refused a write that fits. */
+      for(var held in data){if(held===k)continue;bytes+=sizeOf(held)+sizeOf(data[held])}
       if(bytes>${STORAGE_MAX_BYTES})throw quota();
       if(!Object.prototype.hasOwnProperty.call(data,k)&&Object.keys(data).length>=${STORAGE_MAX_KEYS})throw quota();
       data[k]=v;schedule()
     },
     removeItem:function(k){delete data[String(k)];schedule()},
-    clear:function(){data={};schedule()},
+    clear:function(){data=Object.create(null);schedule()},
     key:function(i){var keys=Object.keys(data);return i<keys.length?keys[i]:null}
   };
-  Object.defineProperty(api,"length",{get:function(){return Object.keys(data).length}});
+  /* Configurable, or the Proxy's ownKeys trap below breaks an invariant — it
+     does not report length, and Object.keys(storage) would throw outright. */
+  Object.defineProperty(api,"length",{get:function(){return Object.keys(data).length},configurable:true});
   /* A Proxy, because artifacts write \`storage.score = 3\` as often as they call
      \`setItem\` — the named-property access is part of the interface, not sugar. */
   var shim=new Proxy(api,{

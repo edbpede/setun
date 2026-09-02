@@ -194,18 +194,30 @@ export function asConsoleLines(value: unknown): ConsoleLine[] | null {
   return lines;
 }
 
-/** Validate a storage snapshot: string to string, bounded in count and in bytes. */
+const UTF8 = new TextEncoder();
+
+/** Encoded length, because the bound is bytes and `.length` counts UTF-16 units. */
+function byteLength(value: string): number {
+  return UTF8.encode(value).length;
+}
+
+/**
+ * Validate a storage snapshot: string to string, bounded in count and in bytes.
+ *
+ * The map has no prototype: `entries.__proto__ = "…"` on an ordinary object
+ * invokes the prototype setter, which silently drops a key an artifact stored.
+ */
 export function asStorageEntries(value: unknown): Record<string, string> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
 
-  const entries: Record<string, string> = {};
+  const entries: Record<string, string> = Object.create(null);
   let bytes = 0;
 
   for (const [key, held] of Object.entries(value as Record<string, unknown>)) {
     if (typeof held !== "string") continue;
     if (Object.keys(entries).length >= STORAGE_MAX_KEYS) break;
 
-    bytes += key.length + held.length;
+    bytes += byteLength(key) + byteLength(held);
     if (bytes > STORAGE_MAX_BYTES) break;
 
     entries[key] = held;

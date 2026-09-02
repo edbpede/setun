@@ -353,8 +353,30 @@ describe("the document preamble", () => {
       storage: { local: { evil: "</script><script>alert(1)</script>" } },
     });
 
-    expect(html).not.toContain("</script><script>alert(1)");
-    expect(html).toContain("<\\/script>");
+    // The whole seed, not merely "an escape happened somewhere": one raw
+    // closing tag left anywhere in the value ends the preamble script early,
+    // and escaping only the first occurrence would satisfy a looser assertion.
+    expect(html).toContain(
+      '{"local":{"evil":"<\\/script><script>alert(1)<\\/script>"},"session":{}}',
+    );
+  });
+
+  it("counts the quota in bytes, and an overwrite only once", () => {
+    const html = staticDocument({ ...base, source: "<p>hi</p>" });
+
+    // "æ" is two bytes and .length says one, so the shim measures the encoding.
+    expect(html).toContain("var bytes=sizeOf(k)+sizeOf(v);");
+    // And the key being replaced is not counted twice, which refused a write
+    // that fits whenever an artifact updated an existing key near the bound.
+    expect(html).toContain("for(var held in data){if(held===k)continue;");
+  });
+
+  it("keeps the shim enumerable, so Object.keys does not throw on it", () => {
+    // A Proxy whose ownKeys omits a non-configurable property of its target is
+    // a TypeError on every enumeration — `length` has to be configurable.
+    expect(staticDocument({ ...base, source: "<p>hi</p>" })).toContain(
+      "return Object.keys(data).length},configurable:true}",
+    );
   });
 
   it("copies console output upward while still calling the original", () => {

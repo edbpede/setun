@@ -158,6 +158,37 @@ describe("asStageMessage", () => {
     expect(message?.type === "storage" && Object.keys(message.entries)).toEqual([]);
   });
 
+  it("measures the byte bound in bytes, not in UTF-16 units", () => {
+    // 40_000 Danish characters is 40_000 units and 80_000 bytes: counted as
+    // units it slips past a bound the model is told is 64 KB.
+    const message = asStageMessage({
+      ...envelope,
+      type: "storage",
+      runId: "r1",
+      area: "local",
+      entries: { danish: "æ".repeat(40_000) },
+    });
+
+    expect(message?.type === "storage" && Object.keys(message.entries)).toEqual([]);
+  });
+
+  it("keeps a key named __proto__ rather than setting a prototype", () => {
+    // A computed key, because the literal form is the prototype setter — which
+    // is the same reason the snapshot has to be built on a null-prototype map.
+    const entries: Record<string, string> = { ["__proto__"]: "12", score: "3" };
+    const message = asStageMessage({
+      ...envelope,
+      type: "storage",
+      runId: "r1",
+      area: "session",
+      entries,
+    });
+
+    const kept = message?.type === "storage" ? message.entries : {};
+    expect(Object.keys(kept).sort()).toEqual(["__proto__", "score"]);
+    expect(Object.getPrototypeOf(kept)).toBeNull();
+  });
+
   it("still reads mounted and runtime-error", () => {
     expect(asStageMessage({ ...envelope, type: "mounted", runId: "r1" })?.type).toBe("mounted");
     expect(
