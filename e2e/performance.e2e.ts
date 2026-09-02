@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { gzipSync } from "node:zlib";
 import { promisify } from "node:util";
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 import * as m from "../src/lib/paraglide/messages";
 import { E2E_DATABASE_PATH, E2E_PEPPER } from "../playwright.config";
 import { ARTIFACT_LONG_MARKER, LONG_MARKER } from "./support/stub-gateway";
@@ -59,6 +59,92 @@ async function provisionStudent(): Promise<{ label: string; code: string }> {
 test.beforeEach(clearLoginWindow);
 
 test.use({ viewport: CHROMEBOOK });
+
+/**
+ * The frame gaps a streaming answer leaves, sampled on the throttled page (§20).
+ *
+ * Both streaming budgets are the same measurement over different prose — plain
+ * text, and a reply that is mostly one long artifact — and the thresholds they
+ * assert have to stay the same number. So the scaffold lives here once: sign in
+ * unthrottled, throttle, sample `requestAnimationFrame` while the answer
+ * arrives, and hand back the sorted gaps.
+ *
+ * Signing in is deliberately outside the throttling: it is not what §20 budgets,
+ * and throttling it sixfold only makes the test slower.
+ */
+async function measureStreamingFrameGaps(
+  page: Page,
+  input: { label: string; prompt: string; doneText: string },
+): Promise<{ measured: number[]; at: (quantile: number) => number }> {
+  const { code } = await provisionStudent();
+  const session = await page.context().newCDPSession(page);
+
+  await page.goto("/login");
+  await page.getByLabel(m.login_code_label()).fill(code);
+  await page.getByRole("button", { name: m.login_submit() }).click();
+  await expect(page).toHaveURL(/\/chat/);
+
+  await page.getByRole("button", { name: m.chat_new_conversation() }).first().click();
+  // The composer is present from the first visit, so it is no longer what says
+  // the new conversation has landed; the URL is.
+  await expect(page).toHaveURL(/\?c=/);
+  await expect(page.getByRole("textbox", { name: m.chat_composer_label() })).toBeVisible();
+
+  await session.send("Emulation.setCPUThrottlingRate", { rate: CPU_THROTTLE });
+
+  // Sample the gaps between animation frames while the answer streams. A frame
+  // budget at 60 Hz is 16.7 ms; the assertions below allow a wide margin over
+  // that, because what they guard against is not jitter but the regression §20
+  // describes — re-parsing and re-highlighting the whole message on every delta,
+  // which stalls for hundreds of milliseconds at a time.
+  await page.evaluate(() => {
+    const gaps: number[] = [];
+    let previous = performance.now();
+    const tick = () => {
+      const now = performance.now();
+      gaps.push(now - previous);
+      previous = now;
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    (window as unknown as { __setunGaps: number[] }).__setunGaps = gaps;
+  });
+
+  await page.getByRole("textbox", { name: m.chat_composer_label() }).fill(input.prompt);
+  await page.getByRole("button", { name: m.chat_send() }).click();
+
+  await expect(page.getByText(input.doneText, { exact: false })).toBeVisible({ timeout: 90_000 });
+
+  const gaps = await page.evaluate(
+    () => (window as unknown as { __setunGaps: number[] }).__setunGaps,
+  );
+
+  // The first sample spans the call that installed the loop; drop it.
+  const measured = gaps.slice(1).sort((a, b) => a - b);
+  const at = (quantile: number) => measured[Math.floor(measured.length * quantile)];
+
+  console.info(
+    `${input.label} frame gaps at ${CPU_THROTTLE}× throttling: ${measured.length} frames, ` +
+      `median ${at(0.5).toFixed(0)} ms, p95 ${at(0.95).toFixed(0)} ms, ` +
+      `worst ${measured.at(-1)?.toFixed(0)} ms`,
+  );
+
+  return { measured, at };
+}
+
+/**
+ * The frame budget both streaming tests hold to, in one place.
+ *
+ * Percentiles rather than the single worst frame. The regression §20 names —
+ * re-parsing and re-highlighting the whole message on every delta — makes every
+ * frame slow, so it shows in the median; a lone outlier is another Playwright
+ * worker compiling something on the same two cores.
+ */
+function expectFrameBudget(measured: number[], at: (quantile: number) => number): void {
+  expect(measured.length).toBeGreaterThan(10);
+  expect(at(0.5)).toBeLessThan(50);
+  expect(at(0.95)).toBeLessThan(150);
+}
 
 test("the chat route stays inside its JavaScript budget (§20)", async ({ page }) => {
   const { code } = await provisionStudent();
@@ -152,71 +238,13 @@ test("streaming plain text does not drop frames under sixfold CPU throttling (§
   // is the frame gap, not the wall clock.
   test.setTimeout(120_000);
 
-  const { code } = await provisionStudent();
-
-  const session = await page.context().newCDPSession(page);
-
-  await page.goto("/login");
-  await page.getByLabel(m.login_code_label()).fill(code);
-  await page.getByRole("button", { name: m.login_submit() }).click();
-  await expect(page).toHaveURL(/\/chat/);
-
-  await page.getByRole("button", { name: m.chat_new_conversation() }).first().click();
-  // The composer is present from the first visit, so it is no longer what says
-  // the new conversation has landed; the URL is.
-  await expect(page).toHaveURL(/\?c=/);
-  await expect(page.getByRole("textbox", { name: m.chat_composer_label() })).toBeVisible();
-
-  // Throttled only for the stream itself: the sign-in above is not what §20
-  // budgets, and throttling it sixfold only makes the test slower.
-  await session.send("Emulation.setCPUThrottlingRate", { rate: CPU_THROTTLE });
-
-  // Sample the gaps between animation frames while the answer streams. A frame
-  // budget at 60 Hz is 16.7 ms; the assertion below allows a wide margin over
-  // that, because what it is guarding against is not jitter but the regression
-  // §20 describes — re-parsing and re-highlighting the whole message on every
-  // delta, which stalls for hundreds of milliseconds at a time.
-  await page.evaluate(() => {
-    const gaps: number[] = [];
-    let previous = performance.now();
-    const tick = () => {
-      const now = performance.now();
-      gaps.push(now - previous);
-      previous = now;
-      requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
-    (window as unknown as { __setunGaps: number[] }).__setunGaps = gaps;
+  const { measured, at } = await measureStreamingFrameGaps(page, {
+    label: "streaming",
+    prompt: `${LONG_MARKER} forklar neurale netværk`,
+    doneText: "sætning 119",
   });
 
-  await page
-    .getByRole("textbox", { name: m.chat_composer_label() })
-    .fill(`${LONG_MARKER} forklar neurale netværk`);
-  await page.getByRole("button", { name: m.chat_send() }).click();
-
-  await expect(page.getByText("sætning 119", { exact: false })).toBeVisible({ timeout: 90_000 });
-
-  const gaps = await page.evaluate(
-    () => (window as unknown as { __setunGaps: number[] }).__setunGaps,
-  );
-
-  // The first sample spans the call that installed the loop; drop it.
-  const measured = gaps.slice(1).sort((a, b) => a - b);
-  const at = (quantile: number) => measured[Math.floor(measured.length * quantile)];
-
-  console.info(
-    `streaming frame gaps at ${CPU_THROTTLE}× throttling: ${measured.length} frames, ` +
-      `median ${at(0.5).toFixed(0)} ms, p95 ${at(0.95).toFixed(0)} ms, ` +
-      `worst ${measured.at(-1)?.toFixed(0)} ms`,
-  );
-
-  // Percentiles rather than the single worst frame. The regression §20 names —
-  // re-parsing and re-highlighting the whole message on every delta — makes
-  // every frame slow, so it shows in the median; a lone outlier is another
-  // Playwright worker compiling something on the same two cores.
-  expect(measured.length).toBeGreaterThan(10);
-  expect(at(0.5)).toBeLessThan(50);
-  expect(at(0.95)).toBeLessThan(150);
+  expectFrameBudget(measured, at);
 });
 
 test("streaming an artifact does not drop frames under sixfold CPU throttling (§20)", async ({
@@ -227,55 +255,11 @@ test("streaming an artifact does not drop frames under sixfold CPU throttling (�
   // measurement over a reply that is mostly one long artifact (§13, §20).
   test.setTimeout(120_000);
 
-  const { code } = await provisionStudent();
-
-  const session = await page.context().newCDPSession(page);
-
-  await page.goto("/login");
-  await page.getByLabel(m.login_code_label()).fill(code);
-  await page.getByRole("button", { name: m.login_submit() }).click();
-  await expect(page).toHaveURL(/\/chat/);
-
-  await page.getByRole("button", { name: m.chat_new_conversation() }).first().click();
-  await expect(page).toHaveURL(/\?c=/);
-  await expect(page.getByRole("textbox", { name: m.chat_composer_label() })).toBeVisible();
-
-  await session.send("Emulation.setCPUThrottlingRate", { rate: CPU_THROTTLE });
-
-  await page.evaluate(() => {
-    const gaps: number[] = [];
-    let previous = performance.now();
-    const tick = () => {
-      const now = performance.now();
-      gaps.push(now - previous);
-      previous = now;
-      requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
-    (window as unknown as { __setunGaps: number[] }).__setunGaps = gaps;
+  const { measured, at } = await measureStreamingFrameGaps(page, {
+    label: "artifact",
+    prompt: `${ARTIFACT_LONG_MARKER} byg en lang side`,
+    doneText: "Færdig med den lange side.",
   });
 
-  await page
-    .getByRole("textbox", { name: m.chat_composer_label() })
-    .fill(`${ARTIFACT_LONG_MARKER} byg en lang side`);
-  await page.getByRole("button", { name: m.chat_send() }).click();
-
-  await expect(page.getByText("Færdig med den lange side.")).toBeVisible({ timeout: 90_000 });
-
-  const gaps = await page.evaluate(
-    () => (window as unknown as { __setunGaps: number[] }).__setunGaps,
-  );
-
-  const measured = gaps.slice(1).sort((a, b) => a - b);
-  const at = (quantile: number) => measured[Math.floor(measured.length * quantile)];
-
-  console.info(
-    `artifact frame gaps at ${CPU_THROTTLE}× throttling: ${measured.length} frames, ` +
-      `median ${at(0.5).toFixed(0)} ms, p95 ${at(0.95).toFixed(0)} ms, ` +
-      `worst ${measured.at(-1)?.toFixed(0)} ms`,
-  );
-
-  expect(measured.length).toBeGreaterThan(10);
-  expect(at(0.5)).toBeLessThan(50);
-  expect(at(0.95)).toBeLessThan(150);
+  expectFrameBudget(measured, at);
 });
