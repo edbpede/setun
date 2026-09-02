@@ -161,8 +161,14 @@ describe("detectArtifacts", () => {
 });
 
 describe("continuityDecision", () => {
-  const page = { id: "a1", language: "html" as const, key: "home-page", updatedAt: 10 };
-  const logo = { id: "a2", language: "svg" as const, key: null, updatedAt: 20 };
+  const page = {
+    id: "a1",
+    language: "html" as const,
+    key: "home-page",
+    updatedAt: 10,
+    createdAt: 1,
+  };
+  const logo = { id: "a2", language: "svg" as const, key: null, updatedAt: 20, createdAt: 2 };
 
   it("starts a new artifact when the conversation has none", () => {
     expect(continuityDecision({ language: "html", key: null, existing: [] })).toEqual({
@@ -199,11 +205,29 @@ describe("continuityDecision", () => {
   });
 
   it("falls back to the most recent artifact of the same language", () => {
-    const older = { id: "a3", language: "html" as const, key: null, updatedAt: 5 };
+    const older = { id: "a3", language: "html" as const, key: null, updatedAt: 5, createdAt: 3 };
 
     expect(
       continuityDecision({ language: "html", key: null, existing: [older, page, logo] }),
     ).toEqual({ kind: "version", artifactId: "a1" });
+  });
+
+  it("breaks a same-millisecond tie by creation time rather than by row order", () => {
+    // Two artifacts rewritten in one message share `updatedAt` to the
+    // millisecond, and a stable sort would otherwise hold whatever order the
+    // rows arrived in — a different anchor for the same facts (§13).
+    const first = { id: "a4", language: "html" as const, key: null, updatedAt: 30, createdAt: 1 };
+    const second = { id: "a5", language: "html" as const, key: null, updatedAt: 30, createdAt: 2 };
+
+    for (const existing of [
+      [first, second],
+      [second, first],
+    ]) {
+      expect(continuityDecision({ language: "html", key: null, existing })).toEqual({
+        kind: "version",
+        artifactId: "a5",
+      });
+    }
   });
 
   it("does not let another language steal the anchor", () => {

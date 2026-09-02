@@ -26,13 +26,15 @@ export interface ArtifactAnchor {
   readonly id: string;
   readonly language: ArtifactLanguage;
   /**
-   * The key the row answers to, which is its own or its fallback — never null.
-   * `effectiveArtifactKey` builds it, so a model adopting the fallback id it was
-   * shown in the state note resolves back to this row.
+   * The key the row *stores*, which is null for every legacy or id-less row.
+   * `effectiveArtifactKey` derives the one it answers to from this and the id,
+   * so a model adopting the fallback shown in the state note lands back here.
    */
   readonly key: string | null;
-  /** Higher is more recent. The last-written artifact of a language wins ties. */
+  /** Higher is more recent. The last-written artifact of a language wins. */
   readonly updatedAt: number;
+  /** Breaks a tie on `updatedAt`, which has only millisecond granularity. */
+  readonly createdAt: number;
 }
 
 export type ContinuityDecision =
@@ -61,9 +63,19 @@ export function continuityDecision(input: {
 
   // No key: §13's original rule, narrowed to the language so an artifact of
   // another kind cannot steal the anchor.
+  //
+  // `updatedAt` is milliseconds, so two artifacts rewritten in one message can
+  // tie; the sort is stable and would then hold whatever order the rows arrived
+  // in. Creation time and then the identifier settle it, so the same facts pick
+  // the same row every time rather than the database's row order deciding.
   const sameLanguage = input.existing
     .filter((anchor) => anchor.language === input.language)
-    .sort((a, b) => b.updatedAt - a.updatedAt);
+    .sort(
+      (a, b) =>
+        b.updatedAt - a.updatedAt ||
+        b.createdAt - a.createdAt ||
+        (a.id < b.id ? 1 : a.id > b.id ? -1 : 0),
+    );
 
   return sameLanguage[0]
     ? { kind: "version", artifactId: sameLanguage[0].id }

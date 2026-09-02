@@ -38,12 +38,29 @@ describe("normaliseArtifactKey", () => {
 
 describe("fallbackArtifactKey", () => {
   it("names an artifact whose model wrote no id", () => {
-    expect(fallbackArtifactKey({ language: "html", id: "abcdef0123" })).toBe("html-abcdef");
+    expect(fallbackArtifactKey({ language: "html", id: "abcdef0123456789" })).toBe(
+      "html-abcdef012345",
+    );
   });
 
   it("produces a key the pattern itself accepts, so a model may adopt it", () => {
     const key = fallbackArtifactKey({ language: "svelte", id: "0A1B2C3D" });
     expect(normaliseArtifactKey(key)).toBe(key);
+  });
+
+  it("keeps enough of the identifier that two rows cannot share a key", () => {
+    // Six characters merged the no-id blocks of two artifacts into one row.
+    const one = fallbackArtifactKey({
+      language: "html",
+      id: "3f2a91b0-1111-4c00-8000-000000000001",
+    });
+    const two = fallbackArtifactKey({
+      language: "html",
+      id: "3f2a91b0-2222-4c00-8000-000000000002",
+    });
+
+    expect(one).not.toBe(two);
+    expect(normaliseArtifactKey(one)).toBe(one);
   });
 });
 
@@ -73,6 +90,12 @@ describe("fenceInfo", () => {
     const info = fenceInfo("html", { key: "a", title: 'He said "hi"\nand `then`' });
 
     expect(info).toBe('html id=a title="He said hi and then"');
+  });
+
+  it("keeps an apostrophe, which the double-quoted value carries safely", () => {
+    expect(fenceInfo("html", { key: "a", title: "Ole's quiz" })).toBe(
+      'html id=a title="Ole\'s quiz"',
+    );
   });
 
   it("bounds a title at 120 characters", () => {

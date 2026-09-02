@@ -50,9 +50,15 @@ export function normaliseArtifactKey(value: string | null | undefined): string |
  * across turns and unique without a lookup. It is shown to the model in the
  * state note, so a model that adopts it lands back on the same row — which is
  * why `effectiveArtifactKey` has to resolve to the same string.
+ *
+ * Twelve characters of the identifier rather than all of it: the key is a thing
+ * a model has to rewrite verbatim, so it stays short, and a prefix short enough
+ * to collide would silently merge two artifacts' blocks into one row. Twelve
+ * hexadecimal characters is 2.8e14 values against the handful of artifacts one
+ * conversation holds, and still well inside the 64-character bound.
  */
 export function fallbackArtifactKey(input: { language: ArtifactLanguage; id: string }): string {
-  return `${input.language}-${input.id.slice(0, 6).toLowerCase()}`;
+  return `${input.language}-${input.id.slice(0, 12).toLowerCase()}`;
 }
 
 /** The key an artifact answers to: its own if it has one, else the fallback. */
@@ -64,12 +70,18 @@ export function effectiveArtifactKey(input: {
   return normaliseArtifactKey(input.key) ?? fallbackArtifactKey(input);
 }
 
-/** Titles are written into a fence info string, so they carry no quote or newline. */
+/**
+ * Titles are written into a fence info string, so they carry no quote or newline.
+ *
+ * An apostrophe is not one of them: the value is emitted double-quoted, and
+ * `fencedBlocks` reads the double-quoted form, so `Ole's quiz` survives whole
+ * rather than arriving as `Ole s quiz`.
+ */
 const TITLE_MAX = 120;
 
 function sanitiseTitle(title: string): string {
   return title
-    .replace(/[`"'\r\n]/g, " ")
+    .replace(/[`"\r\n]/g, " ")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, TITLE_MAX);

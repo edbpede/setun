@@ -122,6 +122,14 @@ describe("recordTurnArtifacts", () => {
     expect(stored?.language).toBe("svelte");
     expect(stored?.key).toBe("side");
     expect(listStudentArtifacts(db, fixtures.student.id)).toHaveLength(2);
+
+    // The row's metadata following the id is only half of it: the rewrite is a
+    // revision of that row, and a version that never landed would leave every
+    // assertion above true and the pupil's page unchanged.
+    const versions = listArtifactVersions(db, page[0].artifactId);
+    expect(versions.map((version) => version.source)).toEqual(["<p>en</p>", "<p>en igen</p>"]);
+    expect(versions.at(-1)?.id).toBe(rewritten[0].versionId);
+    expect(rewritten[0].unchanged).toBe(false);
   });
 
   it("persists a fallback key the model adopted from the state note", () => {

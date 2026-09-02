@@ -231,7 +231,7 @@ describe("ArtifactPanel", () => {
   it("derives an id for a row that stores none, so the line is never blank", async () => {
     render(ArtifactPanel, { workspace: openWorkspace(), sandboxOrigin: SANDBOX });
 
-    await expect.element(page.getByText("id=html-artifa · html · v1")).toBeVisible();
+    await expect.element(page.getByText("id=html-artifact-1 · html · v1")).toBeVisible();
   });
 
   it("offers to hand a failure back to the model", async () => {

@@ -90,6 +90,7 @@ export function recordTurnArtifacts(
         language: artifact.language,
         key: artifact.key,
         updatedAt: artifact.updatedAt.getTime(),
+        createdAt: artifact.createdAt.getTime(),
       })),
     });
 

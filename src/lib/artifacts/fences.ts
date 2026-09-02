@@ -37,7 +37,9 @@ const ATTRIBUTE = /([A-Za-z_][\w-]*)=(?:"([^"]*)"|'([^']*)'|(\S+))/g;
 
 /** The `key=value` pairs of an info string, past its first word. */
 function attributesOf(info: string): Record<string, string> {
-  const attributes: Record<string, string> = {};
+  // Null-prototype: `"constructor" in {}` is true, so a plain object would read
+  // an inherited name as an attribute already seen and drop the real one.
+  const attributes: Record<string, string> = Object.create(null);
 
   // A fresh matcher each call: a module-level `g` regex carries `lastIndex`.
   for (const match of info.matchAll(new RegExp(ATTRIBUTE.source, "g"))) {
