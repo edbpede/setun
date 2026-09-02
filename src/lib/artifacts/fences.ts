@@ -135,14 +135,17 @@ export function fencedBlocks(markdown: string): FencedBlock[] {
  * answers this with a longer fence, and `fencedBlocks` already honours one, so
  * what the model reads is unchanged for every source that did not need it.
  *
- * Leading backticks only: those are the ones that can close a fence.
+ * Counted exactly as `findClosing` reads them: a run of backticks at the start
+ * of a line, indented no more than the three spaces CommonMark allows a closing
+ * fence. A deeper indent is an indented code block and closes nothing, and a run
+ * that does not start the line cannot close anything either.
  */
 export function fenceFor(source: string): string {
   let longest = 0;
 
   for (const line of source.split("\n")) {
-    const run = /^`+/.exec(line);
-    if (run) longest = Math.max(longest, run[0].length);
+    const run = /^ {0,3}(`+)/.exec(line);
+    if (run) longest = Math.max(longest, run[1].length);
   }
 
   return "`".repeat(Math.max(3, longest + 1));

@@ -79,6 +79,22 @@ describe("fencedBlocks", () => {
     expect(fenceFor("`````\n")).toBe("``````");
     // Only a leading run can close a fence, so an inline one does not widen it.
     expect(fenceFor("skriv `kode` sådan")).toBe("```");
+    // CommonMark lets a closing fence sit under three spaces of indentation, and
+    // `findClosing` honours that — so a source holding one has to widen the
+    // wrapper, or the pupil's file is truncated at that line.
+    expect(fenceFor("<p>så:</p>\n   ```\net loop\n   ```")).toBe("````");
+    // A fourth space is an indented code block and closes nothing.
+    expect(fenceFor("<p>så:</p>\n    ```")).toBe("```");
+  });
+
+  it("wraps a source whose indented fence would otherwise close the block", () => {
+    const source = "<p>så:</p>\n   ```\net loop\n   ```";
+    const fence = fenceFor(source);
+    const blocks = fencedBlocks(`${fence}html\n${source}\n${fence}`);
+
+    // The whole file, not the two lines before its own indented fence (§13).
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].source).toBe(source);
   });
 
   it("has no open fence when every block closed", () => {
