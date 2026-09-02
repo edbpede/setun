@@ -311,6 +311,50 @@ describe("elideSupersededArtifacts", () => {
     });
   });
 
+  it("leaves an unattributable block alone when two artifacts hold its text", () => {
+    // No id on the fence, and the tag cannot tell them apart. Eliding either
+    // would drop a source that is still the other artifact's current one.
+    assistantTurn("```html\n<p>ens</p>\n```");
+    const second = assistantTurn("```html id=kopi\n<p>ens</p>\n```");
+    assistantTurn("```html id=kopi\n<p>ny</p>\n```");
+    expect(second[0].artifactId).toBeDefined();
+
+    const elided = elideSupersededArtifacts(
+      path(
+        assistant("```html\n<p>ens</p>\n```"),
+        assistant("```html id=kopi\n<p>ens</p>\n```"),
+        assistant("```html id=kopi\n<p>ny</p>\n```"),
+      ),
+      context().index,
+    );
+
+    expect(elided[0].parts[0]).toEqual({ type: "text", text: "```html\n<p>ens</p>\n```" });
+    expect(elided[1].parts[0]).toEqual({
+      type: "text",
+      text: "[artifact id=kopi (html) revision 1 — superseded; the current version appears later in this conversation]",
+    });
+  });
+
+  it("still elides an id-less block whose artifact has since changed language", () => {
+    // The refs carry the artifact's *current* language, so matching on the tag
+    // would stop compressing a legacy block the moment its row was rewritten.
+    const first = assistantTurn("```html\n<p>gammel</p>\n```");
+    assistantTurn(`\`\`\`svelte id=${first[0].key}\n<p>ny</p>\n\`\`\``);
+
+    const elided = elideSupersededArtifacts(
+      path(
+        assistant("```html\n<p>gammel</p>\n```"),
+        assistant(`\`\`\`svelte id=${first[0].key}\n<p>ny</p>\n\`\`\``),
+      ),
+      context().index,
+    );
+
+    expect(elided[0].parts[0]).toEqual({
+      type: "text",
+      text: `[artifact id=${first[0].key} (svelte) revision 1 — superseded; the current version appears later in this conversation]`,
+    });
+  });
+
   it("does nothing at all when the conversation has built nothing", () => {
     const given = path(user("hej"), assistant("```html\n<p>en</p>\n```"));
 

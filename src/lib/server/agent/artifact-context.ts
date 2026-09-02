@@ -147,10 +147,14 @@ export function formatArtifactState(state: readonly ArtifactStateLine[]): string
  * same message as that current source.
  *
  * The index is keyed by source text, and two artifacts can hold the same text —
- * so a block is matched against its *own* artifact first, by the id it carries
- * or by the id the part names. Without that, a block belonging to one artifact
- * can be elided against another artifact's later copy: the placeholder names the
- * wrong id, and the source the model still needs is gone from the path.
+ * so a block is placed by the id it carries, or by the id an `artifact-edit`
+ * part names, before anything is elided. Without that, a block belonging to one
+ * artifact is elided against another artifact's later copy: the placeholder
+ * names the wrong id, and a source the model still needs leaves the path.
+ *
+ * A block that names no id is placed only when the text itself names exactly one
+ * artifact. The tag is not enough — two same-language artifacts holding the same
+ * text is precisely the case above — and a guess here costs the model a file.
  */
 export function elideSupersededArtifacts(
   path: readonly Pick<Message, "role" | "parts">[],
@@ -172,12 +176,25 @@ export function elideSupersededArtifacts(
   });
 
   return path.map((message, at) => {
+    /** Whether this ref's artifact has moved on further down the path. */
+    const movedOn = (ref: ArtifactSourceRef): boolean => (currentAt.get(ref.artifactId) ?? -1) > at;
+
     // The ref that decides this source's fate: the block's own artifact, if its
     // current version is further down the path.
-    const superseded = (source: string, identity: BlockIdentity): ArtifactSourceRef | null =>
-      refsFor(source)
-        .filter((ref) => owns(ref, identity))
-        .find((ref) => (currentAt.get(ref.artifactId) ?? -1) > at) ?? null;
+    const superseded = (source: string, identity: BlockIdentity): ArtifactSourceRef | null => {
+      const refs = refsFor(source);
+      if (refs.length === 0) return null;
+
+      if (identity.artifactId !== undefined || identity.key !== null) {
+        return refs.filter((ref) => owns(ref, identity)).find(movedOn) ?? null;
+      }
+
+      // Unattributable: only the text can place it, and only when the text
+      // belongs to one artifact. Two artifacts sharing it is the ambiguity this
+      // rule exists for, and eliding either would drop a current source.
+      const artifactIds = new Set(refs.map((ref) => ref.artifactId));
+      return artifactIds.size === 1 ? (refs.find(movedOn) ?? null) : null;
+    };
 
     let changed = false;
     const parts = message.parts.map((part): MessagePart => {
@@ -197,13 +214,9 @@ export function elideSupersededArtifacts(
       let rewritten = false;
 
       for (const block of [...fencedBlocks(part.text)].reverse()) {
-        const language = artifactLanguage(block.language);
-        if (!language) continue;
+        if (!artifactLanguage(block.language)) continue;
 
-        const ref = superseded(block.source, {
-          key: normaliseArtifactKey(block.attributes.id),
-          language,
-        });
+        const ref = superseded(block.source, { key: normaliseArtifactKey(block.attributes.id) });
         if (!ref) continue;
 
         lines.splice(block.line, block.endLine - block.line + 1, placeholder(ref));
@@ -220,24 +233,21 @@ export function elideSupersededArtifacts(
 }
 
 /**
- * What a block says about which artifact it is, in the order that settles it.
+ * What a block says about which artifact it is.
  *
- * The id the part names is exact; the id on a fence is what the model itself
- * wrote; the tag is all a block written before ids carries.
+ * The id an `artifact-edit` part names is exact; the `id=` on a fence is what
+ * the model itself wrote. A fence written before ids says nothing, and its tag
+ * is not an identity — an artifact's language follows its key and can change
+ * under it, so a block's tag matches neither one artifact nor only one.
  */
 type BlockIdentity =
-  | { readonly artifactId: string; readonly key?: undefined; readonly language?: undefined }
-  | {
-      readonly artifactId?: undefined;
-      readonly key: string | null;
-      readonly language: ArtifactLanguage;
-    };
+  | { readonly artifactId: string; readonly key?: undefined }
+  | { readonly artifactId?: undefined; readonly key: string | null };
 
 function owns(ref: ArtifactSourceRef, identity: BlockIdentity): boolean {
-  if (identity.artifactId !== undefined) return ref.artifactId === identity.artifactId;
-  if (identity.key !== null) return ref.key === identity.key;
-
-  return ref.language === identity.language;
+  return identity.artifactId !== undefined
+    ? ref.artifactId === identity.artifactId
+    : ref.key === identity.key;
 }
 
 /** Every artifact source a message holds, from either kind of part. */
