@@ -13,9 +13,9 @@ let sending: Promise<unknown> = Promise.resolve();
 </script>
 
 <script lang="ts">
-import { effectiveArtifactKey } from "$lib/artifacts/identity";
+import { effectiveArtifactKey, effectiveLanguage } from "$lib/artifacts/identity";
 import type { ConsoleLine } from "$lib/artifacts/protocol";
-import type { BuildStatus } from "$lib/artifacts/types";
+import type { ArtifactLanguage, BuildStatus } from "$lib/artifacts/types";
 import * as m from "$lib/paraglide/messages";
 import {
   type ArtifactVersionView,
@@ -172,14 +172,19 @@ function nudgeSplit(event: KeyboardEvent): void {
  * "Edits recompile locally with no model request" — this reaches Setun and no
  * further; nothing about it touches the gateway or a student's allowance (§13).
  */
-async function store(source: string): Promise<void> {
+async function store(source: string, language: ArtifactLanguage | null): Promise<void> {
   const target = workspace.open;
-  if (!target || source === target.latest.source) return;
+  if (!target) return;
+  // Both, because a restore can bring back a source the artifact already holds
+  // under a different tag — same text, different pipeline (§13).
+  if (source === target.latest.source && language === effectiveLanguage(target, target.latest)) {
+    return;
+  }
 
   const response = await fetch(`/api/artifacts/${target.id}/versions`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ source }),
+    body: JSON.stringify({ source, language }),
   }).catch(() => null);
 
   if (!response?.ok) {
@@ -195,12 +200,16 @@ async function store(source: string): Promise<void> {
 /** A commit point: run what is on screen, and keep it. */
 async function commit(): Promise<void> {
   const source = workspace.source;
+  const language = workspace.language;
   workspace.commit();
-  await store(source);
+  await store(source, language);
 }
 
 async function restore(version: ArtifactVersionView): Promise<void> {
-  workspace.edit(version.source);
+  // Not `edit`: the revision comes back under the tag it was written with, and
+  // an html revision of an artifact since rewritten as a component must not go
+  // through the Svelte compiler (§13).
+  workspace.restore(version);
   await commit();
   workspace.view = "preview";
 }
@@ -336,8 +345,8 @@ $effect(() => {
         {#if artifact}
           <!-- Identity is always the mono face, so code-things read as code-things. -->
           <p class="truncate font-mono text-xs tabular-nums text-muted-foreground">
-            {m.artifact_id_label()}={artifactKey} · {artifact.language} · v{artifact.latest
-              .revision}
+            {m.artifact_id_label()}={artifactKey} · {workspace.language ??
+              artifact.language} · v{artifact.latest.revision}
           </p>
         {/if}
       </div>
@@ -492,7 +501,7 @@ $effect(() => {
               bind:this={frame}
               {sandboxOrigin}
               artifactId={artifact.id}
-              language={artifact.language}
+              language={workspace.runningLanguage ?? artifact.language}
               source={workspace.running}
               oncompiling={() => (workspace.status = "compiling")}
               onrunning={() => {
@@ -520,11 +529,18 @@ $effect(() => {
         </div>
 
         {#if workspace.view === "code" && workspace.layout !== "fullscreen"}
-          <ArtifactEditor
-            value={workspace.source}
-            language={artifact.language}
-            onchange={(source) => workspace.edit(source)}
-          />
+          <!--
+            Re-keyed on the language: the editor resolves its grammar once inside
+            its attachment and holds no compartment, so a restore that changes
+            the tag is only followed by a fresh editor (§13).
+          -->
+          {#key workspace.language}
+            <ArtifactEditor
+              value={workspace.source}
+              language={workspace.language ?? artifact.language}
+              onchange={(source) => workspace.edit(source)}
+            />
+          {/key}
         {/if}
 
         {#if workspace.view === "history" && workspace.layout !== "fullscreen"}
@@ -548,6 +564,11 @@ $effect(() => {
                       <span class="font-mono tabular-nums font-medium">
                         {m.artifact_version_label({ revision: version.revision })}
                       </span>
+                      {#if version.language && version.language !== artifact.language}
+                        <!-- Only when it differs: the tag a revision was written
+                             under is otherwise the one already in the header. -->
+                        <span class="font-mono text-muted-foreground">{version.language}</span>
+                      {/if}
                     </span>
                     <span>
                       {version.authoredBy === "student"

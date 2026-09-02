@@ -1,5 +1,5 @@
 import { redirect } from "@sveltejs/kit";
-import { effectiveArtifactKey } from "$lib/artifacts/identity";
+import { effectiveArtifactKey, effectiveLanguage } from "$lib/artifacts/identity";
 import type { ArtifactLanguage, BuildStatus } from "$lib/artifacts/types";
 import { generationAliases } from "$lib/server/agent/image-generation";
 import { requireStudentPage } from "$lib/server/auth/guards";
@@ -79,7 +79,9 @@ export const load: PageServerLoad = ({ locals, url }) => {
       versionId: version.id,
       revision: version.revision,
       key: effectiveArtifactKey(artifact),
-      language: artifact.language,
+      // The tag the block in this message was written under, which is not
+      // necessarily the tag the row answers to now (§13).
+      language: effectiveLanguage(artifact, version),
       title: artifact.title,
       buildStatus: version.buildStatus,
     });
@@ -174,6 +176,7 @@ export const load: PageServerLoad = ({ locals, url }) => {
             id: latest.id,
             revision: latest.revision,
             source: latest.source,
+            language: latest.language,
             authoredBy: latest.authoredBy,
             buildStatus: latest.buildStatus,
             buildMessage: latest.buildMessage,

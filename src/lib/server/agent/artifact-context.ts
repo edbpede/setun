@@ -1,6 +1,11 @@
 import { artifactLanguage } from "../../artifacts/detect";
 import { fencedBlocks, fenceFor } from "../../artifacts/fences";
-import { effectiveArtifactKey, fenceInfo, normaliseArtifactKey } from "../../artifacts/identity";
+import {
+  effectiveArtifactKey,
+  effectiveLanguage,
+  fenceInfo,
+  normaliseArtifactKey,
+} from "../../artifacts/identity";
 import type { ArtifactLanguage, BuildStatus, VersionAuthor } from "../../artifacts/types";
 import type { AppDatabase } from "../db/client";
 import { listConversationVersions } from "../db/queries/artifacts";
@@ -103,7 +108,9 @@ export function buildArtifactContext(
     refs.push({
       artifactId: artifact.id,
       key: effectiveArtifactKey(artifact),
-      language: artifact.language,
+      // The tag this revision was written under, so a placeholder names what the
+      // block actually was rather than what the row has since become (§13).
+      language: effectiveLanguage(artifact, version),
       revision: version.revision,
       isCurrent: latest.get(artifact.id)?.version.id === version.id,
     });
@@ -112,7 +119,7 @@ export function buildArtifactContext(
 
   const state = [...latest.values()].map(({ artifact, version }) => ({
     key: effectiveArtifactKey(artifact),
-    language: artifact.language,
+    language: effectiveLanguage(artifact, version),
     title: artifact.title,
     revision: version.revision,
     authoredBy: version.authoredBy,
@@ -125,7 +132,7 @@ export function buildArtifactContext(
     .filter(({ artifact }) => !held.has(artifact.id))
     .map(({ artifact, version }) => ({
       key: effectiveArtifactKey(artifact),
-      language: artifact.language,
+      language: effectiveLanguage(artifact, version),
       title: artifact.title,
       revision: version.revision,
       source: version.source,

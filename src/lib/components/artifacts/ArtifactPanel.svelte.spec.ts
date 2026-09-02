@@ -437,6 +437,109 @@ describe("ArtifactPanel", () => {
   });
 });
 
+describe("restoring a revision written under another language", () => {
+  /** An artifact the model has since rewritten as a component. */
+  function rewritten(): ArtifactView {
+    return {
+      ...artifact(),
+      language: "svelte",
+      latest: {
+        ...artifact().latest,
+        id: "version-2",
+        revision: 2,
+        source: "<p>komponent</p>",
+        language: "svelte",
+      },
+    };
+  }
+
+  const older = {
+    id: "version-1",
+    revision: 1,
+    source: "<button>Klik</button>",
+    language: "html" as const,
+    authoredBy: "model" as const,
+    createdAt: new Date(0).toISOString(),
+  };
+
+  it("reads the artifact's own tag when the version names none", () => {
+    const workspace = openWorkspace([
+      { ...artifact(), latest: { ...artifact().latest, language: null } },
+    ]);
+
+    // Null means "whatever the artifact says", which is every row that predates
+    // the column (§13).
+    expect(workspace.language).toBe("html");
+  });
+
+  it("stores the tag the restored revision was written under", async () => {
+    const workspace = openWorkspace([rewritten()]);
+    const fetched = vi.spyOn(globalThis, "fetch").mockImplementation((input) =>
+      Promise.resolve(
+        String(input).endsWith("/versions")
+          ? new Response(
+              JSON.stringify({
+                id: "version-3",
+                revision: 3,
+                source: older.source,
+                language: "html",
+                authoredBy: "student",
+                createdAt: new Date(2).toISOString(),
+              }),
+              { status: 201, headers: { "content-type": "application/json" } },
+            )
+          : new Response(
+              JSON.stringify({
+                id: "artifact-1",
+                language: "svelte",
+                title: "Klikkeren",
+                key: "klikkeren",
+                versions: [older, rewritten().latest],
+              }),
+              { status: 200, headers: { "content-type": "application/json" } },
+            ),
+      ),
+    );
+
+    try {
+      render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX });
+      await page.getByRole("tab", { name: m.artifact_tab_history() }).click();
+
+      // The oldest revision, restored onto an artifact the row now calls svelte.
+      await page.getByText(m.artifact_version_label({ revision: 1 })).click();
+      await page.getByRole("button", { name: m.artifact_restore() }).click();
+
+      const posted = fetched.mock.calls.find(([url]) => String(url).endsWith("/versions"));
+      expect(JSON.parse(String(posted?.[1]?.body))).toEqual({
+        source: older.source,
+        language: "html",
+      });
+
+      // And it runs as html: through the Svelte compiler it does not run at all.
+      await vi.waitFor(() => expect(workspace.runningLanguage).toBe("html"));
+    } finally {
+      fetched.mockRestore();
+    }
+  });
+
+  it("commits a restore that changes only the language", () => {
+    const same = {
+      ...artifact(),
+      language: "svelte" as const,
+      latest: { ...artifact().latest, language: "svelte" as const },
+    };
+    const workspace = openWorkspace([same]);
+
+    // Same text under a different tag is a different pipeline, so the commit
+    // point must not short-circuit on the source alone (§13).
+    workspace.restore({ ...same.latest, id: "version-0", revision: 0, language: "html" });
+    workspace.commit();
+
+    expect(workspace.runningLanguage).toBe("html");
+    expect(workspace.status).toBe("compiling");
+  });
+});
+
 describe("following the model's writes", () => {
   it("opens the panel on a new artifact and shows it", () => {
     const workspace = new ArtifactWorkspace();

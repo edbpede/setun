@@ -359,8 +359,9 @@ describe("elideSupersededArtifacts", () => {
   });
 
   it("still elides an id-less block whose artifact has since changed language", () => {
-    // The refs carry the artifact's *current* language, so matching on the tag
-    // would stop compressing a legacy block the moment its row was rewritten.
+    // A block is never placed by its tag, so a row rewritten under a new one
+    // goes on compressing its own legacy blocks. What the placeholder *names* is
+    // the tag that revision was written under, which is the html it really was.
     const first = assistantTurn("```html\n<p>gammel</p>\n```");
     assistantTurn(`\`\`\`svelte id=${first[0].key}\n<p>ny</p>\n\`\`\``);
 
@@ -374,7 +375,7 @@ describe("elideSupersededArtifacts", () => {
 
     expect(elided[0].parts[0]).toEqual({
       type: "text",
-      text: `[artifact id=${first[0].key} (svelte) revision 1 — superseded; the current version appears later in this conversation]`,
+      text: `[artifact id=${first[0].key} (html) revision 1 — superseded; the current version appears later in this conversation]`,
     });
   });
 

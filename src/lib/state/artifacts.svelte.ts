@@ -1,5 +1,6 @@
 import { type BuildOutcome, type BuildReport, buildReportFor } from "$lib/artifacts/build-report";
 import { followModelWrite } from "$lib/artifacts/follow";
+import { effectiveLanguage } from "$lib/artifacts/identity";
 import type { ConsoleLine } from "$lib/artifacts/protocol";
 import type { ArtifactLanguage, BuildStatus, VersionAuthor } from "$lib/artifacts/types";
 
@@ -20,6 +21,8 @@ export interface ArtifactVersionView {
   readonly id: string;
   readonly revision: number;
   readonly source: string;
+  /** The tag it was written under; null for "whatever the artifact says" (§13). */
+  readonly language?: ArtifactLanguage | null;
   readonly authoredBy: VersionAuthor;
   /** How this revision ran the last time anyone pressed Run; null for never (§13). */
   readonly buildStatus?: BuildStatus | null;
@@ -73,8 +76,18 @@ export class ArtifactWorkspace {
 
   /** What the editor holds. Null while the student has not typed anything. */
   draft = $state<string | null>(null);
+  /**
+   * The tag the draft is written under, when it is not the artifact's own.
+   *
+   * A Restore is what puts a value here: an html revision of an artifact since
+   * rewritten as a component comes back as html, and running it through the
+   * Svelte compiler is not a lesson about anything (§13).
+   */
+  draftLanguage = $state<ArtifactLanguage | null>(null);
   /** What the frame is running. Advances only at a commit point (§13). */
   running = $state<string | null>(null);
+  /** And under which tag, snapshotted at the same commit point. */
+  runningLanguage = $state<ArtifactLanguage | null>(null);
 
   status = $state<RunStatus>("idle");
   /** The compiler's or the browser's own words, rendered as text (§13). */
@@ -113,6 +126,12 @@ export class ArtifactWorkspace {
   /** The current source: the student's edit if there is one, else the stored revision. */
   get source(): string {
     return this.draft ?? this.open?.latest.source ?? "";
+  }
+
+  /** And the tag it is written under, which a Restore can move off the row's own. */
+  get language(): ArtifactLanguage | null {
+    const open = this.open;
+    return this.draftLanguage ?? (open ? effectiveLanguage(open, open.latest) : null);
   }
 
   get dirty(): boolean {
@@ -170,7 +189,9 @@ export class ArtifactWorkspace {
     if (this.openId && !items.some((item) => item.id === this.openId)) {
       this.openId = items[0]?.id ?? null;
       this.draft = null;
+      this.draftLanguage = null;
       this.running = null;
+      this.runningLanguage = null;
       this.outcome = null;
       this.consoleLines = [];
       return;
@@ -178,7 +199,9 @@ export class ArtifactWorkspace {
 
     if (previous && this.open && previous.latest.id !== this.open.latest.id) {
       this.draft = null;
+      this.draftLanguage = null;
       this.running = this.open.latest.source;
+      this.runningLanguage = effectiveLanguage(this.open, this.open.latest);
       this.outcome = null;
       this.consoleLines = [];
     }
@@ -207,12 +230,14 @@ export class ArtifactWorkspace {
 
     this.openId = artifactId;
     this.draft = null;
+    this.draftLanguage = null;
     this.status = "idle";
     this.error = null;
     this.saveFailed = false;
     this.outcome = null;
     this.consoleLines = [];
     this.running = this.open?.latest.source ?? null;
+    this.runningLanguage = this.language;
     if (this.unseen === artifactId) this.unseen = null;
   }
 
@@ -259,19 +284,23 @@ export class ArtifactWorkspace {
     this.visible = true;
     this.openId = artifactId;
     this.draft = null;
+    this.draftLanguage = null;
     this.status = "idle";
     this.error = null;
     this.saveFailed = false;
     this.outcome = null;
     this.consoleLines = [];
     this.running = this.open?.latest.source ?? null;
+    this.runningLanguage = this.language;
     if (this.unseen === artifactId) this.unseen = null;
   }
 
   close(): void {
     this.visible = false;
     this.draft = null;
+    this.draftLanguage = null;
     this.running = null;
+    this.runningLanguage = null;
     this.status = "idle";
     this.error = null;
     this.outcome = null;
@@ -283,11 +312,28 @@ export class ArtifactWorkspace {
     this.draft = source;
   }
 
+  /**
+   * Put a stored revision back on screen, under the tag it was written with.
+   *
+   * Not simply `edit`: an html revision of an artifact since rewritten as a
+   * component would otherwise be handed to the Svelte compiler (§13).
+   */
+  restore(version: ArtifactVersionView): void {
+    const open = this.open;
+    if (!open) return;
+
+    this.draft = version.source;
+    this.draftLanguage = effectiveLanguage(open, version);
+  }
+
   /** A commit point: Run, or the heavily debounced idle behind it (§13). */
   commit(): void {
-    if (this.source === this.running) return;
+    // Both, because a restore can bring back a source the artifact already holds
+    // under a different tag — same text, different pipeline.
+    if (this.source === this.running && this.language === this.runningLanguage) return;
 
     this.running = this.source;
+    this.runningLanguage = this.language;
     this.status = "compiling";
     this.error = null;
     this.outcome = null;
@@ -300,7 +346,10 @@ export class ArtifactWorkspace {
       item.id === artifactId ? { ...item, latest: version } : item,
     );
 
-    if (this.openId === artifactId && this.draft === version.source) this.draft = null;
+    if (this.openId === artifactId && this.draft === version.source) {
+      this.draft = null;
+      this.draftLanguage = null;
+    }
     this.saveFailed = false;
   }
 }

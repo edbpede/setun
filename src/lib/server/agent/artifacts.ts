@@ -1,7 +1,7 @@
 import { continuityDecision } from "../../artifacts/continuity";
 import { detectArtifacts } from "../../artifacts/detect";
 import { artifactTitle } from "../../artifacts/document";
-import { effectiveArtifactKey } from "../../artifacts/identity";
+import { effectiveArtifactKey, effectiveLanguage } from "../../artifacts/identity";
 import type { ArtifactLanguage } from "../../artifacts/types";
 import type { AppDatabase } from "../db/client";
 import {
@@ -54,7 +54,9 @@ export interface RecordedArtifact {
  *   the fallback key the state note offered it. Adopting the id it was shown is
  *   how a model that started without one settles onto a name.
  * - The language follows the key. A page rewritten as a component under the same
- *   id is one thing to the pupil, so the row changes tag rather than forking.
+ *   id is one thing to the pupil, so the row changes tag rather than forking —
+ *   and the revision records the tag *it* was written under, so restoring an
+ *   older one later does not run it through the new pipeline.
  * - An identical re-emission appends no revision. Models restate a file they did
  *   not change, and a history of eight identical revisions is a history of
  *   nothing — while every real change is still retained, which is what §13 asks.
@@ -113,6 +115,7 @@ export function recordTurnArtifacts(
         artifactId: created.id,
         messageId: input.messageId,
         source: detected.source,
+        language: detected.language,
         authoredBy: "model",
       });
 
@@ -168,6 +171,7 @@ export function recordTurnArtifacts(
       artifactId: existing.artifact.id,
       messageId: input.messageId,
       source: detected.source,
+      language: detected.language,
       authoredBy: "model",
     });
 
@@ -205,7 +209,9 @@ function toEditPart({
     type: "artifact-edit",
     artifactId: artifact.id,
     versionId: latest.id,
-    language: artifact.language,
+    // The tag *this* revision was written under: an artifact since rewritten as
+    // a component still carries the pupil's html edit as html (§13).
+    language: effectiveLanguage(artifact, latest),
     title: artifact.title,
     source: latest.source,
     // The id the model must reuse to change it — the same identity it writes on

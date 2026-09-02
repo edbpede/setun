@@ -147,6 +147,23 @@ test("a student builds an artifact, edits it, and the edit travels back", async 
   expect(body.versions[0].authoredBy).toBe("model");
   expect(body.versions[1].authoredBy).toBe("student");
   expect(body.versions[1].source).toContain("Min knap");
+  // Each revision carries the tag it was written under, so restoring one later
+  // does not run it through the pipeline the row has since moved to (§13).
+  expect(body.versions[0].language).toBe("html");
+  expect(body.versions[1].language).toBe("html");
+
+  // Named explicitly, the endpoint stores and echoes it.
+  const posted = await page.request.post(`/api/artifacts/${artifactId}/versions`, {
+    data: { source: "<p>en komponent</p>", language: "svelte" },
+  });
+  expect(posted.status()).toBe(201);
+  expect((await posted.json()).language).toBe("svelte");
+
+  // And a tag Setun does not recognise is refused before it reaches the database.
+  const refused = await page.request.post(`/api/artifacts/${artifactId}/versions`, {
+    data: { source: "<p>nej</p>", language: "cobol" },
+  });
+  expect(refused.status()).toBe(400);
 
   await page.getByRole("button", { name: m.artifact_close() }).click();
 

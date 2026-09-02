@@ -82,6 +82,18 @@ export const artifactVersion = sqliteTable(
     /** 1-based and contiguous per artifact: the "ordered revisions" of §19. */
     revision: integer().notNull(),
     source: text().notNull(),
+    /**
+     * The tag this revision was written under; null for "whatever the artifact
+     * says" (§13).
+     *
+     * The artifact's own `language` is the current one and follows the key: a
+     * page rewritten as a component under the same id is one thing, and the row
+     * changes tag rather than forking. That leaves every older revision holding
+     * a source written under a tag the row no longer names — and restoring one
+     * ran an html file through the Svelte compiler. Additive and nullable rather
+     * than backfilled: the rows that predate the column really are unknown.
+     */
+    language: text({ enum: ARTIFACT_LANGUAGES }),
     authoredBy: text({ enum: VERSION_AUTHORS }).notNull(),
     /**
      * When this version was carried to the model as the student's edited source.

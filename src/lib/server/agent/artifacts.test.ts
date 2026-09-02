@@ -505,6 +505,49 @@ describe("an edited prompt re-carrying what it replaces", () => {
   });
 });
 
+describe("the language a version was written under", () => {
+  it("records each revision's own tag while the row follows the newest", () => {
+    const [first] = assistantTurn("```html id=side\n<p>en</p>\n```");
+    assistantTurn("```svelte id=side\n<p>to</p>\n```");
+
+    const versions = listArtifactVersions(db, first.artifactId);
+    const row = getOwnedArtifact(db, {
+      artifactId: first.artifactId,
+      studentId: fixtures.student.id,
+    });
+
+    // One thing to the pupil, so the row changes tag rather than forking — but
+    // restoring revision 1 must not hand an html file to the Svelte compiler.
+    expect(row?.language).toBe("svelte");
+    expect(versions.map((version) => version.language)).toEqual(["html", "svelte"]);
+  });
+
+  it("carries a pupil's edit under the tag their revision holds", () => {
+    const [recorded] = assistantTurn("```html id=side\n<p>en</p>\n```");
+    appendArtifactVersion(db, {
+      artifactId: recorded.artifactId,
+      source: "<p>min</p>",
+      language: "html",
+      authoredBy: "student",
+    });
+    // The model rewrites it as a component; the pupil's html edit is still html.
+    assistantTurn("```svelte id=side\n<p>tre</p>\n```");
+    appendArtifactVersion(db, {
+      artifactId: recorded.artifactId,
+      source: "<p>min igen</p>",
+      language: "html",
+      authoredBy: "student",
+    });
+
+    const [part] = pendingArtifactEditParts(db, {
+      conversationId,
+      studentId: fixtures.student.id,
+    });
+
+    expect(part.language).toBe("html");
+  });
+});
+
 describe("an artifact whose newest revision is off the active path", () => {
   it("carries its complete source into the request the branch assembles", () => {
     // Turn one writes the page, turn two revises it. Then the pupil edits the
