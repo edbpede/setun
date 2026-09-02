@@ -25,10 +25,10 @@ const LoginSchema = v.object({
   code: v.pipe(v.string(), v.trim(), v.minLength(1)),
 });
 
-export const load: PageServerLoad = ({ locals }) => {
+export const load: PageServerLoad = ({ locals, url }) => {
   // Already signed in: nothing to do here.
   if (locals.student) redirect(303, "/chat");
-  return {};
+  return { noScriptFragmentCleanup: url.searchParams.get("manual") !== "1" };
 };
 
 export const actions: Actions = {

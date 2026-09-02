@@ -141,6 +141,27 @@ test("an educator creates a classroom, provisions pupils, opens, locks and rotat
   });
   await qrContext.close();
 
+  // The document bootstrap erases the fragment even when hydration fails.
+  const unhydratedContext = await browser.newContext();
+  await unhydratedContext.route(/\/_app\/immutable\/.*\.js$/, (route) => route.abort());
+  const unhydratedPage = await unhydratedContext.newPage();
+  await unhydratedPage.goto(`/login#code=${encodeURIComponent(codes[2])}`, {
+    waitUntil: "domcontentloaded",
+  });
+  expect(new URL(unhydratedPage.url()).hash).toBe("");
+  await unhydratedContext.close();
+
+  // With JavaScript disabled, the immediate noscript refresh replaces the
+  // secret-bearing history entry and leaves manual code entry available.
+  const noScriptContext = await browser.newContext({ javaScriptEnabled: false });
+  const noScriptPage = await noScriptContext.newPage();
+  await noScriptPage.goto(`/login#code=${encodeURIComponent(codes[2])}`);
+  await expect(noScriptPage).toHaveURL(/\/login\?manual=1$/);
+  expect(new URL(noScriptPage.url()).hash).toBe("");
+  expect(await noScriptPage.goBack()).toBeNull();
+  expect(noScriptPage.url()).toBe("about:blank");
+  await noScriptContext.close();
+
   // --- The code works, at the login endpoint ---
   expect(await codeSignsIn(browser, codes[0])).toBe(true);
 
@@ -193,11 +214,23 @@ test("an educator creates a classroom, provisions pupils, opens, locks and rotat
   expect(await codeSignsIn(browser, codes[0])).toBe(false);
 
   // --- Rotate the server-selected active classroom as one batch ---
+  let bulkRotationRequests = 0;
+  const bulkRotationUrl = /\/roster\?\/rotateClassroom$/;
+  await page.route(bulkRotationUrl, async (route) => {
+    bulkRotationRequests += 1;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    await route.continue();
+  });
   page.once("dialog", (dialog) => dialog.accept());
-  await page
-    .getByRole("button", { name: m.educator_slip_bulk_submit({ count: 9 }) })
-    .click();
+  const bulkRotation = page.getByRole("button", {
+    name: m.educator_slip_bulk_submit({ count: 9 }),
+  });
+  await bulkRotation.click();
+  await expect(bulkRotation).toBeDisabled();
+  await bulkRotation.click({ force: true });
   await expect(page.locator("[data-slip-code]")).toHaveCount(9);
+  expect(bulkRotationRequests).toBe(1);
+  await page.unroute(bulkRotationUrl);
   const classroomCodes = await page.locator("[data-slip-code]").allTextContents();
   expect(classroomCodes).toHaveLength(9);
   expect(await codeSignsIn(browser, rotated)).toBe(false);

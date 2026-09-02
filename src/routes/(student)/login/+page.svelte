@@ -3,7 +3,7 @@ import { onMount } from "svelte";
 import { enhance } from "$app/forms";
 import SetunMark from "$lib/components/brand/SetunMark.svelte";
 import * as m from "$lib/paraglide/messages";
-import type { ActionData } from "./$types";
+import type { PageProps } from "./$types";
 
 /**
  * The student login screen (PRD §7).
@@ -17,33 +17,40 @@ import type { ActionData } from "./$types";
  * and not of any code; a pupil told their code was wrong when the limiter had
  * simply run out goes looking for a typo that is not there.
  */
-interface Props {
-  form: ActionData;
-}
-
-let { form }: Props = $props();
+let { data, form }: PageProps = $props();
 
 let loginForm: HTMLFormElement;
 let codeInput: HTMLInputElement;
 
 onMount(() => {
+  const loginWindow = window as Window & { __setunLoginCode?: string };
+  const stagedCode = loginWindow.__setunLoginCode;
+  delete loginWindow.__setunLoginCode;
+
   const fragment = new URLSearchParams(window.location.hash.slice(1));
-  const code = fragment.get("code");
+  const code = stagedCode ?? fragment.get("code");
   if (!code) return;
 
-  // Erase the bearer credential before it is submitted or another navigation
-  // can copy it into history. Fragments never reach the server in the request.
-  window.history.replaceState(
-    window.history.state,
-    "",
-    `${window.location.pathname}${window.location.search}`,
-  );
+  // The document bootstrap already erases a direct navigation before
+  // hydration. Keep this fallback for client-side navigation to the fragment.
+  if (window.location.hash) {
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${window.location.pathname}${window.location.search}`,
+    );
+  }
   codeInput.value = code;
   loginForm.requestSubmit();
 });
 </script>
 
-<svelte:head><title>{m.login_title()} · {m.app_name()}</title></svelte:head>
+<svelte:head>
+  <title>{m.login_title()} · {m.app_name()}</title>
+  {#if data.noScriptFragmentCleanup}
+    <noscript><meta http-equiv="refresh" content="0;url=/login?manual=1" /></noscript>
+  {/if}
+</svelte:head>
 
 <main class="mx-auto flex min-h-svh w-full max-w-sm flex-col justify-center gap-6 p-6">
   <div class="flex flex-col items-center gap-3 text-center">

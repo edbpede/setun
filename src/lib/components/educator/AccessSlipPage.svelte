@@ -163,7 +163,7 @@ const SLIP_HEIGHT = 69.25;
       >{loginAddress}</text>
       <text
         x="5"
-        y="57"
+        y="65"
         fill="#444"
         font-family="Helvetica, Arial, sans-serif"
         font-size={keepInstructionSize}

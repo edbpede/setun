@@ -1,4 +1,5 @@
 <script lang="ts">
+import type { SubmitFunction } from "@sveltejs/kit";
 import { enhance } from "$app/forms";
 import CredentialCards from "$lib/components/educator/CredentialCards.svelte";
 import RosterTable from "$lib/components/educator/RosterTable.svelte";
@@ -13,6 +14,7 @@ import type { PageProps } from "./$types";
  * educator must not have to scroll to find them before navigating away (§7).
  */
 let { data, form }: PageProps = $props();
+let rotatingClassroom = $state(false);
 
 const batch = $derived(
   form && "batch" in form
@@ -25,6 +27,17 @@ const slipIssueFailure = $derived(
 const confirmMismatch = $derived(
   form && "confirmMismatch" in form ? ((form.confirmMismatch as string | null) ?? null) : null,
 );
+
+const enhanceClassroomRotation: SubmitFunction = () => {
+  rotatingClassroom = true;
+  return async ({ update }) => {
+    try {
+      await update();
+    } finally {
+      rotatingClassroom = false;
+    }
+  };
+};
 </script>
 
 <div class="flex max-w-4xl flex-col gap-8">
@@ -68,11 +81,11 @@ const confirmMismatch = $derived(
     <form
       method="POST"
       action="?/rotateClassroom"
-      use:enhance
+      use:enhance={enhanceClassroomRotation}
     >
       <button
         type="submit"
-        disabled={data.activeStudentCount === 0}
+        disabled={data.activeStudentCount === 0 || rotatingClassroom}
         onclick={(event) => {
           if (!window.confirm(m.educator_slip_bulk_confirm({ count: data.activeStudentCount }))) {
             event.preventDefault();
