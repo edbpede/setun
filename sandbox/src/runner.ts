@@ -35,10 +35,8 @@ const stage = document.getElementById("stage") as HTMLIFrameElement;
 
 /** The render currently on screen; results from earlier ones are dropped. */
 let currentRunId: string | null = null;
-/** Which artifact that render belongs to, so its storage is kept apart. */
-let currentArtifactId: string | null = null;
 /**
- * The run this one replaced, kept only for its final storage snapshot.
+ * Which artifact each staged document belongs to, newest last.
  *
  * Replacing the stage's document fires `pagehide` in the old one, and the shim
  * flushes there — with the run id it was started under, from a window the frame
@@ -46,8 +44,26 @@ let currentArtifactId: string | null = null;
  * that was no longer current, and it came from a source that was no longer
  * `stage.contentWindow`. So every write made inside the shim's 250 ms debounce
  * was lost whenever a pupil pressed Run, which for a game is its saved state.
+ *
+ * A map rather than a single slot for the run just replaced: renders overlap, so
+ * the document on screen can be several runs behind the current one, and its
+ * last word is the one that matters. Filled where a document is *staged*, since
+ * a run whose result was discarded mid-compile never had one and can never post
+ * anything. Bounded, like the snapshots it places.
  */
-let replacedRun: { runId: string; artifactId: string } | null = null;
+const STAGED_RUNS_KEPT = 8;
+const artifactByRun = new Map<string, string>();
+
+function stageDocument(runId: string, artifactId: string, srcdoc: string): void {
+  artifactByRun.set(runId, artifactId);
+  while (artifactByRun.size > STAGED_RUNS_KEPT) {
+    const oldest = artifactByRun.keys().next().value;
+    if (oldest === undefined) break;
+    artifactByRun.delete(oldest);
+  }
+
+  stage.srcdoc = srcdoc;
+}
 
 /**
  * What each artifact's storage shim held, kept for as long as this page lives
@@ -81,10 +97,9 @@ function storageFor(artifactId: string): ArtifactStorageSeed {
   return held;
 }
 
-/** Which artifact a snapshot belongs to: the run on screen, or the one it replaced. */
+/** Which artifact a snapshot belongs to — any document this page has staged. */
 function storageOwnerOf(runId: string): string | null {
-  if (runId === currentRunId) return currentArtifactId;
-  return replacedRun?.runId === runId ? replacedRun.artifactId : null;
+  return artifactByRun.get(runId) ?? null;
 }
 
 function rememberStorage(
@@ -316,14 +331,7 @@ async function render(
   language: ArtifactLanguage,
   source: string,
 ): Promise<void> {
-  // Held before it is overwritten: the document about to be replaced still owes
-  // its final storage flush, and it posts that under the run id it has now.
-  if (currentRunId && currentArtifactId && currentRunId !== runId) {
-    replacedRun = { runId: currentRunId, artifactId: currentArtifactId };
-  }
-
   currentRunId = runId;
-  currentArtifactId = artifactId;
 
   // Read before the awaits below: the shim is seeded with what this artifact
   // held, and a snapshot arriving mid-render belongs to the document being
@@ -338,13 +346,11 @@ async function render(
     // same reason the compiled path below rechecks before it assigns.
     if (currentRunId !== runId) return;
 
-    stage.srcdoc = staticDocument({
-      language: language as "html" | "svg",
-      source,
-      runtimes,
+    stageDocument(
       runId,
-      storage,
-    });
+      artifactId,
+      staticDocument({ language: language as "html" | "svg", source, runtimes, runId, storage }),
+    );
     return;
   }
 
@@ -368,13 +374,11 @@ async function render(
     return;
   }
 
-  stage.srcdoc = compiledDocument({
-    framework,
-    module: result.code,
-    runtimes,
+  stageDocument(
     runId,
-    storage,
-  });
+    artifactId,
+    compiledDocument({ framework, module: result.code, runtimes, runId, storage }),
+  );
 }
 
 window.addEventListener("message", (event) => {
@@ -444,8 +448,9 @@ window.addEventListener("message", (event) => {
   }
 
   if (message.type === "clear") {
+    // The document on screen is torn down here too, and `artifactByRun` still
+    // holds its owner — so its final flush lands like any other.
     currentRunId = null;
-    currentArtifactId = null;
     stage.srcdoc = "";
     return;
   }
