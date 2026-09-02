@@ -98,12 +98,13 @@ export type StreamingSegment =
     };
 
 export function streamingSegments(markdown: string): StreamingSegment[] {
-  const { blocks, open } = scanFences(markdown);
+  // The scanner's own line array, not a second split of the same string: this
+  // runs on every delta of a growing message, and §20 budgets it at one pass.
+  const { blocks, open, lines } = scanFences(markdown);
   const pendingLanguage = open ? artifactLanguage(open.language) : null;
 
   // A fence that is open but not an artifact — a bare ``` or a js block — is
   // ordinary prose and stays in the paragraph, exactly as it does today.
-  const lines = markdown.split("\n");
   const end = pendingLanguage && open ? open.line : lines.length;
 
   const segments: StreamingSegment[] = [];

@@ -69,6 +69,12 @@ export interface OpenFence {
 export interface ScannedFences {
   readonly blocks: FencedBlock[];
   readonly open: OpenFence | null;
+  /**
+   * The lines the scan read, so a caller that works by line does not split
+   * again. A streaming transcript rescans the whole accumulated message on every
+   * delta, and one split per delta is the budget §20 sets for it.
+   */
+  readonly lines: readonly string[];
 }
 
 /**
@@ -99,6 +105,7 @@ export function scanFences(markdown: string): ScannedFences {
     if (closing === -1) {
       return {
         blocks,
+        lines,
         open: {
           language: first?.toLowerCase() || null,
           attributes: attributesOf(rest.join(" ")),
@@ -118,7 +125,7 @@ export function scanFences(markdown: string): ScannedFences {
     index = closing;
   }
 
-  return { blocks, open: null };
+  return { blocks, lines, open: null };
 }
 
 /** Every closed fenced block, in the order it appears. An unclosed fence is skipped. */
