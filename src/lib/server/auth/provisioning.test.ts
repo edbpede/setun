@@ -1,9 +1,7 @@
 import { beforeEach, describe, expect, it } from "bun:test";
-import { eq } from "drizzle-orm";
 import type { AppDatabase } from "../db/client";
 import { createClassroom } from "../db/queries/classrooms";
 import { getStudentById, setStudentStatus } from "../db/queries/students";
-import { session } from "../db/schema";
 import { createTestDatabase } from "../db/testing";
 import { attemptStudentLogin } from "./login";
 import {
@@ -127,9 +125,11 @@ describe("active-classroom credential rotation", () => {
     const classroom = createClassroom(db, { name: "7.B" });
     const first = await provisionStudent(db, { classroomId: classroom.id, pepper: PEPPER });
     const second = await provisionStudent(db, { classroomId: classroom.id, pepper: PEPPER });
+    const live = createSession(db, { ownerKind: "student", ownerId: first.student.id });
     const before = [first, second].map(
       ({ student }) => getStudentById(db, student.id)?.credentialDigest,
     );
+    expect(resolveStudentSession(db, live.token)).not.toBeNull();
 
     const pending = rotateActiveClassroomCredentials(db, {
       classroomId: classroom.id,
@@ -145,7 +145,7 @@ describe("active-classroom credential rotation", () => {
     expect(
       [first, second].map(({ student }) => getStudentById(db, student.id)?.credentialDigest),
     ).toEqual(before);
-    expect(db.select().from(session).where(eq(session.ownerKind, "student")).all()).toHaveLength(0);
+    expect(resolveStudentSession(db, live.token)).not.toBeNull();
   });
 });
 
