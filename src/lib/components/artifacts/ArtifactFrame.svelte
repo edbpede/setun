@@ -1,6 +1,11 @@
 <script lang="ts">
 import { isSandboxAssetPath, sandboxAssetUrl } from "$lib/artifacts/assets";
-import { ARTIFACT_CHANNEL, asSandboxMessage, type HostMessage } from "$lib/artifacts/protocol";
+import {
+  ARTIFACT_CHANNEL,
+  asSandboxMessage,
+  type ConsoleLine,
+  type HostMessage,
+} from "$lib/artifacts/protocol";
 import type { ArtifactLanguage } from "$lib/artifacts/types";
 import * as m from "$lib/paraglide/messages";
 
@@ -59,15 +64,46 @@ function loadAsset(origin: string, path: string): Promise<ArrayBuffer> {
 interface Props {
   /** A distinct hostname from the application's; isolation is by origin (§14). */
   sandboxOrigin: string;
+  /**
+   * Which artifact is running (§13).
+   *
+   * The runner keeps each artifact's storage snapshot under this, so a game that
+   * saved a high score finds it again after a Run and the artifact beside it
+   * starts empty. Opaque to the sandbox: a grouping key, never a lookup.
+   */
+  artifactId: string;
   language: ArtifactLanguage;
   /** The source to run. Advanced only at a commit point, never per keystroke (§13). */
   source: string;
   oncompiling?: () => void;
   onrunning?: () => void;
   onfailed?: (message: string) => void;
+  /** What the artifact printed. Rendered as text, never as markup (§13, §21). */
+  onconsole?: (lines: readonly ConsoleLine[]) => void;
 }
 
-let { sandboxOrigin, language, source, oncompiling, onrunning, onfailed }: Props = $props();
+let {
+  sandboxOrigin,
+  artifactId,
+  language,
+  source,
+  oncompiling,
+  onrunning,
+  onfailed,
+  onconsole,
+}: Props = $props();
+
+/**
+ * Put the keyboard in the artifact (§13, §20).
+ *
+ * A canvas game listens on its own window, so a pupil who has not clicked inside
+ * the frame is pressing arrow keys at the conversation. Exported rather than
+ * taken automatically: the panel decides when it is the pupil's intent, and a
+ * frame that grabs focus as it renders steals the composer mid-sentence.
+ */
+export function focus(): void {
+  send({ channel: ARTIFACT_CHANNEL, type: "focus" });
+}
 
 let frame = $state<HTMLIFrameElement | null>(null);
 let ready = $state(false);
@@ -127,6 +163,7 @@ $effect(() => {
 
     if (message.type === "compiling") oncompiling?.();
     else if (message.type === "rendered") onrunning?.();
+    else if (message.type === "console") onconsole?.(message.lines);
     else onfailed?.(message.message);
   }
 
@@ -138,13 +175,15 @@ $effect(() => {
 $effect(() => {
   const running = source;
   const kind = language;
-  if (!ready) return;
+  const owner = artifactId;
+  if (!ready || !owner) return;
 
   currentRunId = crypto.randomUUID();
   send({
     channel: ARTIFACT_CHANNEL,
     type: "render",
     runId: currentRunId,
+    artifactId,
     language: kind,
     source: running,
   });

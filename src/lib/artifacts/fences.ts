@@ -18,9 +18,38 @@ export interface FencedBlock {
   readonly source: string;
   /** Index of the opening fence line, which orders blocks within a message. */
   readonly line: number;
+  /** Index of the closing fence line, so a whole block can be replaced by line. */
+  readonly endLine: number;
+  /**
+   * `key=value` pairs written after the language, lowercased keys, in either
+   * quote style or bare (§13). CommonMark says nothing about the info string
+   * past the language, and neither `marked` nor `hasOpenFence` reads it, so this
+   * is Setun's own use of space the renderer already ignores.
+   *
+   * First match per key wins: a model that writes `id=a id=b` meant the first.
+   */
+  readonly attributes: Readonly<Record<string, string>>;
 }
 
 const OPENING = /^ {0,3}(`{3,}|~{3,})[ \t]*(.*)$/;
+
+const ATTRIBUTE = /([A-Za-z_][\w-]*)=(?:"([^"]*)"|'([^']*)'|(\S+))/g;
+
+/** The `key=value` pairs of an info string, past its first word. */
+function attributesOf(info: string): Record<string, string> {
+  // Null-prototype: `"constructor" in {}` is true, so a plain object would read
+  // an inherited name as an attribute already seen and drop the real one.
+  const attributes: Record<string, string> = Object.create(null);
+
+  // A fresh matcher each call: a module-level `g` regex carries `lastIndex`.
+  for (const match of info.matchAll(new RegExp(ATTRIBUTE.source, "g"))) {
+    const key = match[1].toLowerCase();
+    if (key in attributes) continue;
+    attributes[key] = match[2] ?? match[3] ?? match[4] ?? "";
+  }
+
+  return attributes;
+}
 
 /** Every closed fenced block, in the order it appears. An unclosed fence is skipped. */
 export function fencedBlocks(markdown: string): FencedBlock[] {
@@ -42,10 +71,14 @@ export function fencedBlocks(markdown: string): FencedBlock[] {
     // An unclosed fence is a block still arriving; it is not an artifact yet (§20).
     if (closing === -1) break;
 
+    const [first, ...rest] = info.split(/\s+/);
+
     blocks.push({
-      language: info.split(/\s+/)[0]?.toLowerCase() || null,
+      language: first?.toLowerCase() || null,
       source: lines.slice(index + 1, closing).join("\n"),
       line: index,
+      endLine: closing,
+      attributes: attributesOf(rest.join(" ")),
     });
 
     index = closing;

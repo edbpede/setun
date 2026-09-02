@@ -1,9 +1,16 @@
 <script lang="ts">
+import { effectiveArtifactKey } from "$lib/artifacts/identity";
+import type { ConsoleLine } from "$lib/artifacts/protocol";
 import * as m from "$lib/paraglide/messages";
-import type { ArtifactVersionView, ArtifactWorkspace } from "$lib/state/artifacts.svelte";
+import {
+  type ArtifactVersionView,
+  type ArtifactWorkspace,
+  CONSOLE_KEPT,
+} from "$lib/state/artifacts.svelte";
 import ArtifactDiff from "./ArtifactDiff.svelte";
 import ArtifactEditor from "./ArtifactEditor.svelte";
 import ArtifactFrame from "./ArtifactFrame.svelte";
+import ArtifactTrit from "./ArtifactTrit.svelte";
 
 /**
  * The artifact workspace (PRD §13, §20).
@@ -17,15 +24,22 @@ import ArtifactFrame from "./ArtifactFrame.svelte";
  * The panel owns the commit points. A keystroke reaches the workspace and stops
  * there; a Run, or the heavily debounced idle behind it, is what compiles and
  * what stores a revision — "never per keystroke" (§13).
+ *
+ * It also owns the report back. The browser is the only party that knows whether
+ * an artifact ran, so a run against the stored source is PATCHed onto that
+ * version and the next turn's prompt states it — which is what turns "it does not
+ * work" into an error the model can act on.
  */
 
 interface Props {
   workspace: ArtifactWorkspace;
   /** A distinct hostname from this one; isolation is by origin (§14). */
   sandboxOrigin: string;
+  /** The pupil asking the model to fix what did not run; the page pre-fills the composer. */
+  onaskforhelp?: () => void;
 }
 
-let { workspace, sandboxOrigin }: Props = $props();
+let { workspace, sandboxOrigin, onaskforhelp }: Props = $props();
 
 /**
  * The idle behind the commit. Long on purpose: the compiler worker competes
@@ -36,10 +50,21 @@ const IDLE_MS = 3_000;
 
 let versions = $state<ArtifactVersionView[]>([]);
 let selectedVersionId = $state<string | null>(null);
+let consoleOpen = $state(false);
+let frame = $state<ReturnType<typeof ArtifactFrame> | null>(null);
+
+/** Reports already sent, so a re-render does not PATCH the same outcome twice. */
+let reported = $state<string | null>(null);
 
 const artifact = $derived(workspace.open);
 const title = $derived(
   artifact?.title ?? (artifact ? m.artifact_untitled({ language: artifact.language }) : ""),
+);
+const artifactKey = $derived(
+  artifact
+    ? (artifact.key ??
+        effectiveArtifactKey({ language: artifact.language, id: artifact.id, key: null }))
+    : "",
 );
 
 const selected = $derived(versions.find((version) => version.id === selectedVersionId) ?? null);
@@ -54,6 +79,15 @@ const tabs = $derived([
   { value: "code" as const, label: m.artifact_tab_code() },
   { value: "history" as const, label: m.artifact_tab_history() },
 ]);
+
+/** What the trit shows: this run's outcome if there is one, else what is stored. */
+const runStatus = $derived(
+  workspace.status === "failed"
+    ? ("failed" as const)
+    : workspace.status === "running"
+      ? ("ok" as const)
+      : (artifact?.latest.buildStatus ?? null),
+);
 
 const shell = $derived(
   workspace.layout === "split"
@@ -152,6 +186,27 @@ async function loadVersions(artifactId: string): Promise<void> {
   selectedVersionId = body.versions.at(-1)?.id ?? null;
 }
 
+/**
+ * Take the keyboard, unless the pupil is typing something (§13, §20).
+ *
+ * A canvas game listens on its own window and is unplayable until the frame has
+ * focus. Pulling the caret out of the composer or the editor mid-word is worse
+ * than a game that needs one tap, so the active element decides.
+ */
+function focusArtifact(): void {
+  const active = document.activeElement;
+  const tag = active?.tagName;
+  if (
+    tag === "INPUT" ||
+    tag === "TEXTAREA" ||
+    (active instanceof HTMLElement && active.isContentEditable)
+  ) {
+    return;
+  }
+
+  frame?.focus();
+}
+
 // The heavily debounced idle (§13). Re-armed on every keystroke, so it fires
 // once the student stops rather than while they are still typing.
 $effect(() => {
@@ -168,6 +223,37 @@ $effect(() => {
   if (!id || workspace.view !== "history" || !newest) return;
 
   void loadVersions(id);
+});
+
+/**
+ * Report the run onto the version it ran (§13).
+ *
+ * `pendingBuildReport` is null for a draft the version does not hold and null
+ * when the stored status already says this, so the guard here is only against
+ * sending the same report twice while the effect re-runs.
+ */
+$effect(() => {
+  const report = workspace.pendingBuildReport;
+  if (!report) return;
+
+  const stamp = `${report.versionId}:${report.status}`;
+  if (reported === stamp) return;
+  reported = stamp;
+
+  void fetch(`/api/artifacts/${report.artifactId}/versions/${report.versionId}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ buildStatus: report.status, buildMessage: report.message }),
+  })
+    .then((response) => {
+      // Folded back in either way is wrong: an unrecorded outcome would be
+      // re-sent on the next render, and the model would be told nothing.
+      if (response.ok) workspace.applyBuildStatus(report);
+      else reported = null;
+    })
+    .catch(() => {
+      reported = null;
+    });
 });
 </script>
 
@@ -204,15 +290,27 @@ $effect(() => {
   {/if}
 
   <section
-    class="{shell} flex flex-col bg-background"
+    class="{shell} flex flex-col bg-background motion-safe:animate-in motion-safe:duration-200 {workspace.layout ===
+    'split'
+      ? 'motion-safe:slide-in-from-right-4'
+      : 'motion-safe:slide-in-from-bottom-4'}"
     style={shellStyle}
     aria-label={m.artifact_panel_title()}
     data-artifact-id={artifact?.id ?? ""}
   >
     <header class="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-2">
-      <span class="mr-auto min-w-0 truncate text-sm font-medium text-foreground">
-        {title || m.artifact_panel_title()}
-      </span>
+      <div class="mr-auto min-w-0">
+        <p class="truncate text-base font-semibold tracking-tight text-foreground">
+          {title || m.artifact_panel_title()}
+        </p>
+        {#if artifact}
+          <!-- Identity is always the mono face, so code-things read as code-things. -->
+          <p class="truncate font-mono text-xs tabular-nums text-muted-foreground">
+            {m.artifact_id_label()}={artifactKey} · {artifact.language} · v{artifact.latest
+              .revision}
+          </p>
+        {/if}
+      </div>
 
       {#if workspace.items.length > 1}
         <label class="sr-only" for="artifact-select">{m.artifact_select_label()}</label>
@@ -220,7 +318,7 @@ $effect(() => {
           id="artifact-select"
           value={workspace.openId}
           onchange={(event) => workspace.select(event.currentTarget.value)}
-          class="h-8 max-w-32 rounded-md border border-input bg-background px-1.5 text-xs text-foreground"
+          class="h-9 max-w-32 rounded-md border border-input bg-background px-1.5 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           {#each workspace.items as item (item.id)}
             <option value={item.id}>
@@ -233,17 +331,16 @@ $effect(() => {
       <button
         type="button"
         onclick={() => void commit()}
-        class="min-h-8 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+        class="min-h-9 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {m.artifact_run()}
       </button>
 
       <button
         type="button"
-        onclick={() =>
-          (workspace.layout = workspace.layout === "split" ? "overlay" : "split")}
+        onclick={() => (workspace.layout = workspace.layout === "split" ? "overlay" : "split")}
         aria-pressed={workspace.layout === "split"}
-        class="hidden min-h-8 rounded-md border border-input px-2.5 py-1.5 text-xs text-foreground hover:bg-secondary sm:block"
+        class="hidden min-h-9 rounded-md border border-input px-2.5 text-xs text-foreground hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:block"
       >
         {m.artifact_layout_split()}
       </button>
@@ -253,7 +350,7 @@ $effect(() => {
         onclick={() =>
           (workspace.layout = workspace.layout === "fullscreen" ? "overlay" : "fullscreen")}
         aria-pressed={workspace.layout === "fullscreen"}
-        class="min-h-8 rounded-md border border-input px-2.5 py-1.5 text-xs text-foreground hover:bg-secondary"
+        class="min-h-9 rounded-md border border-input px-2.5 text-xs text-foreground hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {m.artifact_layout_fullscreen()}
       </button>
@@ -261,7 +358,7 @@ $effect(() => {
       <button
         type="button"
         onclick={() => workspace.close()}
-        class="min-h-8 rounded-md border border-input px-2.5 py-1.5 text-xs text-foreground hover:bg-secondary"
+        class="min-h-9 rounded-md border border-input px-2.5 text-xs text-foreground hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {m.artifact_close()}
       </button>
@@ -276,7 +373,7 @@ $effect(() => {
         <div
           role="tablist"
           aria-label={m.artifact_panel_title()}
-          class="flex shrink-0 items-center gap-1 border-b border-border px-3 py-1"
+          class="flex shrink-0 items-center gap-1 border-b border-border px-3"
         >
           {#each tabs as tab (tab.value)}
             <button
@@ -285,19 +382,31 @@ $effect(() => {
               id="artifact-tab-{tab.value}"
               aria-controls="artifact-view"
               aria-selected={workspace.view === tab.value}
-              onclick={() => (workspace.view = tab.value)}
+              onclick={() => {
+                workspace.view = tab.value;
+                if (tab.value === "preview") focusArtifact();
+              }}
               class={[
-                "min-h-8 rounded-md px-2.5 py-1.5 text-xs font-medium",
+                "min-h-11 border-b-2 px-2.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 workspace.view === tab.value
-                  ? "bg-secondary text-secondary-foreground"
-                  : "text-muted-foreground hover:text-foreground",
+                  ? "border-primary text-foreground"
+                  : "border-transparent text-muted-foreground hover:text-foreground",
               ]}
             >
               {tab.label}
             </button>
           {/each}
+        </div>
 
-          <span class="ml-auto min-w-0 truncate pl-2 text-xs text-muted-foreground" role="status">
+        <!--
+          The status strip: the same trit the transcript card and the History list
+          use, so build state means one thing everywhere it appears (§13, §20).
+        -->
+        <div
+          class="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-xs"
+        >
+          <ArtifactTrit status={runStatus} />
+          <span class="min-w-0 truncate text-muted-foreground" role="status">
             {#if workspace.saveFailed}
               {m.artifact_save_failed()}
             {:else if workspace.dirty}
@@ -308,8 +417,23 @@ $effect(() => {
               {m.artifact_status_failed()}
             {:else if workspace.status === "running"}
               {m.artifact_status_ready()}
+            {:else if runStatus === null}
+              {m.artifact_status_not_run()}
+            {:else}
+              {m.artifact_status_ran()}
             {/if}
           </span>
+
+          {#if workspace.consoleLines.length > 0}
+            <button
+              type="button"
+              onclick={() => (consoleOpen = !consoleOpen)}
+              aria-expanded={consoleOpen}
+              class="ml-auto min-h-8 shrink-0 rounded-md border border-input px-2 font-mono text-xs tabular-nums text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {m.artifact_console_label({ count: workspace.consoleLines.length })}
+            </button>
+          {/if}
         </div>
       {/if}
 
@@ -333,18 +457,26 @@ $effect(() => {
         >
           {#if workspace.running !== null}
             <ArtifactFrame
+              bind:this={frame}
               {sandboxOrigin}
+              artifactId={artifact.id}
               language={artifact.language}
               source={workspace.running}
               oncompiling={() => (workspace.status = "compiling")}
               onrunning={() => {
                 workspace.status = "running";
                 workspace.error = null;
+                workspace.recordOutcome("ok", null);
+                // A game is unplayable until its own window has the keyboard,
+                // and the pupil is looking at it the moment it renders.
+                focusArtifact();
               }}
               onfailed={(message) => {
                 workspace.status = "failed";
                 workspace.error = message;
+                workspace.recordOutcome("failed", message);
               }}
+              onconsole={(lines: readonly ConsoleLine[]) => workspace.appendConsole(lines)}
             />
           {/if}
         </div>
@@ -367,20 +499,28 @@ $effect(() => {
                     onclick={() => (selectedVersionId = version.id)}
                     aria-current={selectedVersionId === version.id}
                     class={[
-                      "flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left text-xs",
+                      "flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
                       selectedVersionId === version.id
                         ? "bg-secondary text-secondary-foreground"
                         : "text-muted-foreground hover:bg-secondary/50",
                     ]}
                   >
-                    <span class="font-medium">
-                      {m.artifact_version_label({ revision: version.revision })}
+                    <span class="flex items-center gap-1.5">
+                      <ArtifactTrit status={version.buildStatus ?? null} />
+                      <span class="font-mono tabular-nums font-medium">
+                        {m.artifact_version_label({ revision: version.revision })}
+                      </span>
                     </span>
                     <span>
                       {version.authoredBy === "student"
                         ? m.artifact_version_by_student()
                         : m.artifact_version_by_model()}
                     </span>
+                    {#if version.buildStatus === "failed"}
+                      <span class="text-destructive">{m.artifact_version_build_failed()}</span>
+                    {:else if !version.buildStatus}
+                      <span>{m.artifact_status_not_run()}</span>
+                    {/if}
                   </button>
                 </li>
               {/each}
@@ -404,7 +544,7 @@ $effect(() => {
                   <button
                     type="button"
                     onclick={() => void restore(selected)}
-                    class="min-h-8 rounded-md border border-input px-2.5 py-1.5 text-xs text-foreground hover:bg-secondary"
+                    class="min-h-9 rounded-md border border-input px-2.5 text-xs text-foreground hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     {m.artifact_restore()}
                   </button>
@@ -415,11 +555,48 @@ $effect(() => {
         {/if}
       </div>
 
+      {#if consoleOpen && workspace.consoleLines.length > 0}
+        <!--
+          What the artifact printed. Text, never markup, at both hops (§13, §21).
+        -->
+        <div class="shrink-0 border-t border-border">
+          <pre
+            role="log"
+            class="max-h-32 overflow-auto bg-muted p-2 font-mono text-xs whitespace-pre-wrap text-foreground">{workspace.consoleLines
+              .map((line) => `${line.level === "log" ? "" : `${line.level}: `}${line.text}`)
+              .join("\n")}</pre>
+          {#if workspace.consoleLines.length >= CONSOLE_KEPT}
+            <!-- A rAF loop with a stray log prints sixty lines a second; the
+                 useful ones are the newest, so the older ones are gone. -->
+            <p class="px-2 py-1 text-xs text-muted-foreground">
+              {m.artifact_console_truncated()}
+            </p>
+          {/if}
+        </div>
+      {/if}
+
       {#if workspace.error}
         <!-- The compiler's own words. Rendered as text, never as markup (§13, §21). -->
-        <pre
-          class="max-h-24 shrink-0 overflow-auto border-t border-border bg-destructive/10 p-2 text-xs whitespace-pre-wrap text-foreground"
-          role="status">{workspace.error}</pre>
+        <div class="flex shrink-0 items-start gap-2 border-t border-border bg-destructive/10 p-2">
+          <pre
+            class="max-h-24 min-w-0 flex-1 overflow-auto text-xs whitespace-pre-wrap text-foreground"
+            role="status">{workspace.error}</pre>
+          {#if onaskforhelp}
+            <!--
+              The one thing a pupil can do about an error they cannot read: hand
+              it back with the failure already recorded against the version, so
+              the next answer is about this error rather than about "it broke".
+            -->
+            <button
+              type="button"
+              onclick={onaskforhelp}
+              disabled={workspace.pendingBuildReport !== null}
+              class="min-h-9 shrink-0 rounded-md border border-input bg-background px-2.5 text-xs font-medium text-foreground hover:bg-secondary disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {m.artifact_ask_fix()}
+            </button>
+          {/if}
+        </div>
       {/if}
 
       {#if workspace.editedByStudent}
@@ -429,7 +606,9 @@ $effect(() => {
       {/if}
     {:else}
       <div class="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
-        <h2 class="text-base font-semibold text-foreground">{m.artifact_empty_heading()}</h2>
+        <h2 class="text-base font-semibold tracking-tight text-foreground">
+          {m.artifact_empty_heading()}
+        </h2>
         <p class="max-w-sm text-sm text-muted-foreground">{m.artifact_empty_body()}</p>
       </div>
     {/if}

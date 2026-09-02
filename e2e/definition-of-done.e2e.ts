@@ -126,7 +126,13 @@ test("the definition of done, start to finish (§25)", async ({ page, browser })
   await pupil.getByRole("button", { name: m.chat_send({}, PUPIL_LOCALE) }).click();
 
   // --- …and gets one they can read, change and break ---
-  await pupil.getByRole("button", { name: /Build \(1\)|Byg \(1\)/ }).click({ timeout: 30_000 });
+  // The panel opens on the model's write; the pupil does not have to find it.
+  await expect(pupil.getByRole("button", { name: /Build \(1\)|Byg \(1\)/ })).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(
+    pupil.getByRole("tab", { name: m.artifact_tab_preview({}, PUPIL_LOCALE) }),
+  ).toBeVisible({ timeout: 30_000 });
 
   const stage = pupil
     .frameLocator(`iframe[title="${m.artifact_frame_title({}, PUPIL_LOCALE)}"]`)

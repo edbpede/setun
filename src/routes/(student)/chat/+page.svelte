@@ -133,7 +133,10 @@ const visibleMessages = $derived(
 // writes re-runs itself forever.
 $effect(() => {
   const next = data.artifacts;
-  untrack(() => artifacts.replace(next));
+  const conversationId = data.conversation?.id ?? null;
+  // The conversation is named so that switching threads re-seeds rather than
+  // reading a different conversation's artifacts as things just written (§13).
+  untrack(() => artifacts.replace(next, conversationId));
 });
 
 // A turn was still streaming when this tab loaded: replay the buffer and tail
@@ -522,6 +525,48 @@ async function deleteConversation(conversationId: string): Promise<void> {
   await invalidateAll();
 }
 
+/**
+ * Open an artifact from its card in the transcript (§13, §20).
+ *
+ * The pupil's route from "here is the page" to the page is one tap. An artifact
+ * the conversation no longer holds — deleted from the gallery, or on a branch
+ * that is not on screen — simply does nothing rather than opening an empty panel.
+ *
+ * Tapping the card of the artifact already on screen only brings the panel
+ * forward. `show` resets the editor, and in split view the pupil can reach a
+ * card while they are typing into that very artifact — so re-showing it would
+ * throw away the draft rather than show them anything they were not already
+ * looking at. A closed panel is a different matter: it holds no running source,
+ * so reopening it is what puts the artifact back on screen.
+ */
+function openArtifact(artifactId: string): void {
+  if (!artifacts.items.some((item) => item.id === artifactId)) return;
+
+  const showing = artifacts.visible && artifacts.openId === artifactId;
+  artifacts.visible = true;
+  if (showing) return;
+
+  artifacts.show(artifactId);
+}
+
+/**
+ * Hand a failure back to the model (§13).
+ *
+ * The error is already recorded against the version by the time this is
+ * reachable, so the next turn's prompt states it; this only puts the sentence in
+ * the composer and gets the panel out of the way. The overlay is closed because
+ * it covers the composer; a split panel does not, so it stays.
+ */
+function askForHelp(): void {
+  // A question, sent now, as text. An edit in progress would send it as a
+  // sibling of some earlier prompt, and image mode would draw the sentence
+  // instead of answering it (§10, §15).
+  composer.editingMessageId = null;
+  composer.mode = "text";
+  composer.setDraft(m.artifact_fix_request());
+  if (artifacts.layout !== "split") artifacts.close();
+}
+
 async function abort(): Promise<void> {
   const turnId = conversation.turn.turnId;
 
@@ -550,7 +595,30 @@ async function abort(): Promise<void> {
   open={drawerOpen}
   onclose={() => (drawerOpen = false)}
   ondelete={deleteConversation}
-/>
+>
+  {#snippet footer()}
+    <a
+      href="/creations"
+      class="flex min-h-11 items-center rounded-md px-2 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      {m.creations_link()}
+    </a>
+    <a
+      href="/skills"
+      class="flex min-h-11 items-center rounded-md px-2 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      {m.student_skills_link()}
+    </a>
+    <form method="POST" action="?/logout" use:enhance>
+      <button
+        type="submit"
+        class="flex min-h-11 w-full items-center rounded-md px-2 text-left text-xs text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {m.chat_sign_out()}
+      </button>
+    </form>
+  {/snippet}
+</ConversationDrawer>
 
 <!--
   Sized to the visual viewport rather than to `100svh`, so the on-screen keyboard
@@ -639,41 +707,27 @@ async function abort(): Promise<void> {
         obscure toggle, and it opens whether or not anything has been built —
         the empty panel is where a pupil learns that building is a thing (§13).
       -->
+      <!--
+        The primary action of this strip: everything else on the row is context,
+        and the four navigation links have moved into the drawer, which is where
+        a pupil goes between lessons rather than during one (§20).
+      -->
       <button
         type="button"
         onclick={() => artifacts.toggle()}
         aria-expanded={artifacts.visible}
-        class="shrink-0 rounded-md bg-primary px-2.5 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+        class="relative min-h-9 shrink-0 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {m.artifact_build()}{artifacts.items.length > 0 ? ` (${artifacts.items.length})` : ""}
+        {#if artifacts.unseen}
+          <!-- Something was built while the panel was closed (§13). -->
+          <span
+            class="absolute -right-0.5 -top-0.5 size-2.5 rounded-full bg-destructive ring-2 ring-background"
+          >
+            <span class="sr-only">{m.artifact_build_unseen()}</span>
+          </span>
+        {/if}
       </button>
-
-      <a
-        href="/dashboard"
-        class="shrink-0 text-xs text-muted-foreground hover:text-foreground"
-      >
-        {m.student_dashboard_link()}
-      </a>
-
-      <a
-        href="/creations"
-        class="shrink-0 text-xs text-muted-foreground hover:text-foreground"
-      >
-        {m.creations_link()}
-      </a>
-
-      <a
-        href="/skills"
-        class="shrink-0 text-xs text-muted-foreground hover:text-foreground"
-      >
-        {m.student_skills_link()}
-      </a>
-
-      <form method="POST" action="?/logout" use:enhance>
-        <button type="submit" class="px-1 text-xs text-muted-foreground hover:text-foreground">
-          {m.chat_sign_out()}
-        </button>
-      </form>
     </div>
   </header>
 
@@ -713,6 +767,7 @@ async function abort(): Promise<void> {
           onedit={(target) => composer.beginEdit(target.id, target.text)}
           onregenerate={regenerate}
           onswitch={switchBranch}
+          onopenartifact={openArtifact}
         />
       {/each}
 
@@ -786,5 +841,9 @@ async function abort(): Promise<void> {
     Over the conversation rather than beside it: at 1366x768 a second column
     costs more than it shows, so split view is a choice and not the default (§20).
   -->
-  <ArtifactPanel workspace={artifacts} sandboxOrigin={data.sandboxOrigin} />
+  <ArtifactPanel
+    workspace={artifacts}
+    sandboxOrigin={data.sandboxOrigin}
+    onaskforhelp={askForHelp}
+  />
 </div>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { BASE_SYSTEM_PROMPT, buildSystemPrompt } from "./system-prompt";
+import { ARTIFACT_INSTRUCTIONS, buildSystemPrompt, FIXED_SYSTEM_PROMPT } from "./system-prompt";
 
 /**
  * System-prompt layering (plan 1.5, PRD §10, §22).
@@ -10,8 +10,8 @@ import { BASE_SYSTEM_PROMPT, buildSystemPrompt } from "./system-prompt";
 
 describe("buildSystemPrompt", () => {
   it("is the base prompt alone when every optional layer is absent", () => {
-    expect(buildSystemPrompt()).toBe(BASE_SYSTEM_PROMPT);
-    expect(buildSystemPrompt({})).toBe(BASE_SYSTEM_PROMPT);
+    expect(buildSystemPrompt()).toBe(FIXED_SYSTEM_PROMPT);
+    expect(buildSystemPrompt({})).toBe(FIXED_SYSTEM_PROMPT);
   });
 
   it("orders base, then classroom, then student, then the skill index", () => {
@@ -22,7 +22,7 @@ describe("buildSystemPrompt", () => {
     });
 
     const positions = [
-      prompt.indexOf(BASE_SYSTEM_PROMPT),
+      prompt.indexOf(FIXED_SYSTEM_PROMPT),
       prompt.indexOf("Answer in Danish."),
       prompt.indexOf("Explain before showing code."),
       prompt.indexOf("essay-feedback"),
@@ -35,17 +35,17 @@ describe("buildSystemPrompt", () => {
 
   it("omits a layer that is absent, empty or whitespace rather than emitting an empty heading", () => {
     for (const empty of [undefined, null, "", "   ", "\n\t"]) {
-      expect(buildSystemPrompt({ classroomInstructions: empty })).toBe(BASE_SYSTEM_PROMPT);
-      expect(buildSystemPrompt({ studentInstructions: empty })).toBe(BASE_SYSTEM_PROMPT);
+      expect(buildSystemPrompt({ classroomInstructions: empty })).toBe(FIXED_SYSTEM_PROMPT);
+      expect(buildSystemPrompt({ studentInstructions: empty })).toBe(FIXED_SYSTEM_PROMPT);
     }
-    expect(buildSystemPrompt({ skillIndex: [] })).toBe(BASE_SYSTEM_PROMPT);
+    expect(buildSystemPrompt({ skillIndex: [] })).toBe(FIXED_SYSTEM_PROMPT);
   });
 
   it("includes a student layer even when the classroom layer is absent", () => {
     const prompt = buildSystemPrompt({ studentInstructions: "Use short sentences." });
 
     expect(prompt).toContain("Use short sentences.");
-    expect(prompt.startsWith(BASE_SYSTEM_PROMPT)).toBe(true);
+    expect(prompt.startsWith(FIXED_SYSTEM_PROMPT)).toBe(true);
   });
 
   it("lists each skill as a name and one-line description, not a body", () => {
@@ -62,7 +62,39 @@ describe("buildSystemPrompt", () => {
 
   it("skips a nameless skill entry", () => {
     expect(buildSystemPrompt({ skillIndex: [{ name: "  ", description: "orphan" }] })).toBe(
-      BASE_SYSTEM_PROMPT,
+      FIXED_SYSTEM_PROMPT,
     );
+  });
+});
+
+describe("the artifact layer", () => {
+  it("is part of the fixed prefix, before any educator layer", () => {
+    const prompt = buildSystemPrompt({ classroomInstructions: "Svar altid på dansk." });
+
+    // In the fixed prefix itself, not merely somewhere ahead of the classroom
+    // layer: appended as a mutable layer it would still order correctly below
+    // while breaking the cacheable prefix this names (§10, §13).
+    expect(FIXED_SYSTEM_PROMPT).toContain(ARTIFACT_INSTRUCTIONS);
+    expect(prompt.indexOf(ARTIFACT_INSTRUCTIONS)).toBeGreaterThan(-1);
+    // Platform fact first, pedagogy after: a classroom rule reads as refining a
+    // fact already stated, and the cacheable prefix stays identical (§10, §13).
+    expect(prompt.indexOf(ARTIFACT_INSTRUCTIONS)).toBeLessThan(
+      prompt.indexOf("Svar altid på dansk."),
+    );
+  });
+
+  it("tells the model what a fenced artifact block does and what replaces it", () => {
+    // The failure this exists to stop: a fragment answering "add a quiz", which
+    // became the whole new source and took the page with it (§13).
+    expect(ARTIFACT_INSTRUCTIONS).toContain("write the");
+    expect(ARTIFACT_INSTRUCTIONS).toContain("COMPLETE file again under the same id");
+    expect(ARTIFACT_INSTRUCTIONS).toContain("id=home-page");
+  });
+
+  it("does not ask a svelte artifact for a default export", () => {
+    // The Svelte compiler refuses a component with one, so following the
+    // instruction would have made every svelte artifact fail to build (§13).
+    expect(ARTIFACT_INSTRUCTIONS).toContain("jsx and tsx must");
+    expect(ARTIFACT_INSTRUCTIONS).toContain("never an export default");
   });
 });

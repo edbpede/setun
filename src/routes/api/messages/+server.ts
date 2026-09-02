@@ -173,6 +173,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     path,
     attachmentPayloads: prepared.attachmentPayloads,
     promptLayers: prepared.promptLayers,
+    artifacts: prepared.artifacts,
     budgets: budgetsOf(access.classroom),
     tools: prepared.tools,
     toolContext: prepared.toolContext,

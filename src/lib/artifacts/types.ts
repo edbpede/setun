@@ -34,3 +34,14 @@ export function isArtifactLanguage(value: string): value is ArtifactLanguage {
 export function tierOf(language: ArtifactLanguage): ArtifactTier {
   return language === "html" || language === "svg" ? 0 : 1;
 }
+
+/**
+ * What happened the last time a version was run in the sandbox (§13).
+ *
+ * Two states, not three. "Ran" and "did not run" is what a pupil needs to see
+ * and what the model needs to be told; a run that mounted and then threw later
+ * is a distinction neither of them can act on yet. Absent means "not run",
+ * which is the third value and is spelled `null` rather than enumerated.
+ */
+export const BUILD_STATUSES = ["ok", "failed"] as const;
+export type BuildStatus = (typeof BUILD_STATUSES)[number];

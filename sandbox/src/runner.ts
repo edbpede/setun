@@ -5,7 +5,12 @@ import {
   SANDBOX_MANIFEST_PATH,
   UNOCSS_ENTRY,
 } from "$lib/artifacts/assets";
-import { compiledDocument, type RuntimeSources, staticDocument } from "$lib/artifacts/document";
+import {
+  type ArtifactStorageSeed,
+  compiledDocument,
+  type RuntimeSources,
+  staticDocument,
+} from "$lib/artifacts/document";
 import {
   ARTIFACT_CHANNEL,
   asHostMessage,
@@ -30,6 +35,92 @@ const stage = document.getElementById("stage") as HTMLIFrameElement;
 
 /** The render currently on screen; results from earlier ones are dropped. */
 let currentRunId: string | null = null;
+/**
+ * Which artifact each staged document belongs to, newest last.
+ *
+ * Replacing the stage's document fires `pagehide` in the old one, and the shim
+ * flushes there — with the run id it was started under, from a window the frame
+ * no longer holds. Both of those made the flush unrecognisable: it named a run
+ * that was no longer current, and it came from a source that was no longer
+ * `stage.contentWindow`. So every write made inside the shim's 250 ms debounce
+ * was lost whenever a pupil pressed Run, which for a game is its saved state.
+ *
+ * A map rather than a single slot for the run just replaced: renders overlap, so
+ * the document on screen can be several runs behind the current one, and its
+ * last word is the one that matters. Filled where a document is *staged*, since
+ * a run whose result was discarded mid-compile never had one and can never post
+ * anything. Bounded, like the snapshots it places.
+ */
+const STAGED_RUNS_KEPT = 8;
+const artifactByRun = new Map<string, string>();
+
+function stageDocument(runId: string, artifactId: string, srcdoc: string): void {
+  artifactByRun.set(runId, artifactId);
+  while (artifactByRun.size > STAGED_RUNS_KEPT) {
+    const oldest = artifactByRun.keys().next().value;
+    if (oldest === undefined) break;
+    artifactByRun.delete(oldest);
+  }
+
+  stage.srcdoc = srcdoc;
+}
+
+/**
+ * What each artifact's storage shim held, kept for as long as this page lives
+ * (PRD §13).
+ *
+ * The artifact's own frame has an opaque origin, where `localStorage` throws, so
+ * the document installs an in-memory stand-in and posts its contents here. This
+ * is where "survives a Run" comes from — and where "the artifact beside it starts
+ * empty" comes from, since the snapshots are keyed by artifact.
+ *
+ * It stops here. Nothing about it is posted to the application: what an artifact
+ * stores is the artifact's, it is not durable, and the model is told as much.
+ * Bounded so a lesson that opens twenty artifacts does not accumulate all of
+ * them; the oldest goes first, which is the one nobody is looking at.
+ */
+const MAX_STORAGE_SNAPSHOTS = 16;
+const storageByArtifact = new Map<
+  string,
+  { local: Record<string, string>; session: Record<string, string> }
+>();
+
+function storageFor(artifactId: string): ArtifactStorageSeed {
+  const held = storageByArtifact.get(artifactId);
+  if (!held) return { local: {}, session: {} };
+
+  // Reading is use. Without this a rerun that writes nothing never refreshes
+  // its recency, and the artifact on screen is the next one evicted.
+  storageByArtifact.delete(artifactId);
+  storageByArtifact.set(artifactId, held);
+
+  return held;
+}
+
+/** Which artifact a snapshot belongs to — any document this page has staged. */
+function storageOwnerOf(runId: string): string | null {
+  return artifactByRun.get(runId) ?? null;
+}
+
+function rememberStorage(
+  artifactId: string,
+  area: "local" | "session",
+  entries: Record<string, string>,
+): void {
+  const held = storageByArtifact.get(artifactId) ?? { local: {}, session: {} };
+  held[area] = entries;
+
+  // Re-inserted so the map's insertion order is recency, which is what makes
+  // "drop the oldest" mean "drop the one nobody has run in longest".
+  storageByArtifact.delete(artifactId);
+  storageByArtifact.set(artifactId, held);
+
+  while (storageByArtifact.size > MAX_STORAGE_SNAPSHOTS) {
+    const oldest = storageByArtifact.keys().next().value;
+    if (oldest === undefined) break;
+    storageByArtifact.delete(oldest);
+  }
+}
 
 let worker: Promise<Worker> | null = null;
 const pending = new Map<string, (response: CompileResponse) => void>();
@@ -234,8 +325,18 @@ async function compile(request: CompileRequest): Promise<CompileResponse> {
   });
 }
 
-async function render(runId: string, language: ArtifactLanguage, source: string): Promise<void> {
+async function render(
+  runId: string,
+  artifactId: string,
+  language: ArtifactLanguage,
+  source: string,
+): Promise<void> {
   currentRunId = runId;
+
+  // Read before the awaits below: the shim is seeded with what this artifact
+  // held, and a snapshot arriving mid-render belongs to the document being
+  // replaced rather than to the one being built.
+  const storage = storageFor(artifactId);
 
   if (tierOf(language) === 0) {
     const runtimes = await runtimeSources(null);
@@ -245,12 +346,11 @@ async function render(runId: string, language: ArtifactLanguage, source: string)
     // same reason the compiled path below rechecks before it assigns.
     if (currentRunId !== runId) return;
 
-    stage.srcdoc = staticDocument({
-      language: language as "html" | "svg",
-      source,
-      runtimes,
+    stageDocument(
       runId,
-    });
+      artifactId,
+      staticDocument({ language: language as "html" | "svg", source, runtimes, runId, storage }),
+    );
     return;
   }
 
@@ -274,35 +374,66 @@ async function render(runId: string, language: ArtifactLanguage, source: string)
     return;
   }
 
-  stage.srcdoc = compiledDocument({
-    framework,
-    module: result.code,
-    runtimes,
+  stageDocument(
     runId,
-  });
+    artifactId,
+    compiledDocument({ framework, module: result.code, runtimes, runId, storage }),
+  );
 }
 
 window.addEventListener("message", (event) => {
-  // From the artifact below: mounted, or an error it threw at runtime.
-  if (stage.contentWindow && event.source === stage.contentWindow) {
+  // From the artifact below — which is anything that is not the application
+  // above. The frame's *current* window is not the test: a document being torn
+  // down posts its final storage snapshot from `pagehide`, and by then the
+  // browser has swapped `stage.contentWindow` for the document replacing it.
+  if (event.source !== parent) {
     const staged = asStageMessage(event.data);
-    if (!staged || staged.runId !== currentRunId) return;
+    if (!staged) return;
 
-    toHost(
-      staged.type === "mounted"
-        ? { channel: ARTIFACT_CHANNEL, type: "rendered", runId: staged.runId }
-        : {
-            channel: ARTIFACT_CHANNEL,
-            type: "failed",
-            runId: staged.runId,
-            message: staged.message,
-          },
-    );
+    // Kept here and forwarded no further: what an artifact stores belongs to
+    // the artifact, and the application has no use for it (§13, §14).
+    //
+    // Placed by the run it names rather than by its sender, which is what lets
+    // the replaced document's last word still count. A run id is minted by the
+    // application per render, so it names a document this page staged itself.
+    if (staged.type === "storage") {
+      const owner = storageOwnerOf(staged.runId);
+      if (owner) rememberStorage(owner, staged.area, { ...staged.entries });
+      return;
+    }
+
+    // Everything else describes what is on screen, so it has to come from the
+    // document that is on screen and name the run that is running in it.
+    if (event.source !== stage.contentWindow || staged.runId !== currentRunId) return;
+
+    if (staged.type === "console") {
+      toHost({
+        channel: ARTIFACT_CHANNEL,
+        type: "console",
+        runId: staged.runId,
+        lines: staged.lines,
+      });
+      return;
+    }
+
+    if (staged.type === "mounted") {
+      toHost({ channel: ARTIFACT_CHANNEL, type: "rendered", runId: staged.runId });
+      // A game listens for keys on its own window, and a pupil who has not
+      // clicked inside the frame is typing at the conversation. Taken only when
+      // this page already holds focus, so a render that lands while the pupil is
+      // writing does not pull the caret out of the composer.
+      if (document.hasFocus()) stage.contentWindow?.focus();
+      return;
+    }
+
+    toHost({
+      channel: ARTIFACT_CHANNEL,
+      type: "failed",
+      runId: staged.runId,
+      message: staged.message,
+    });
     return;
   }
-
-  // From the application above. Anything else on this window is ignored.
-  if (event.source !== parent) return;
 
   const message = asHostMessage(event.data);
   if (!message) return;
@@ -317,21 +448,32 @@ window.addEventListener("message", (event) => {
   }
 
   if (message.type === "clear") {
+    // The document on screen is torn down here too, and `artifactByRun` still
+    // holds its owner — so its final flush lands like any other.
     currentRunId = null;
     stage.srcdoc = "";
     return;
   }
 
+  // The application asking for the artifact to take the keyboard: a pupil who
+  // tapped the preview means to play the game, not to type into the composer.
+  if (message.type === "focus") {
+    stage.contentWindow?.focus();
+    return;
+  }
+
   // Nothing here may fail silently: a rejected render would leave the panel
   // waiting on a build that is never coming, with nothing to tell the pupil.
-  void render(message.runId, message.language, message.source).catch((cause) => {
-    toHost({
-      channel: ARTIFACT_CHANNEL,
-      type: "failed",
-      runId: message.runId,
-      message: cause instanceof Error ? cause.message : String(cause),
-    });
-  });
+  void render(message.runId, message.artifactId, message.language, message.source).catch(
+    (cause) => {
+      toHost({
+        channel: ARTIFACT_CHANNEL,
+        type: "failed",
+        runId: message.runId,
+        message: cause instanceof Error ? cause.message : String(cause),
+      });
+    },
+  );
 });
 
 toHost({ channel: ARTIFACT_CHANNEL, type: "ready" });

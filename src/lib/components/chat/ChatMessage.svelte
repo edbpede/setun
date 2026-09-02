@@ -16,9 +16,11 @@ interface Props {
   onregenerate?: (message: ChatMessage) => void;
   /** Step to the sibling variant at `messageId` — the branch picker (§10). */
   onswitch?: (messageId: string) => void;
+  /** Open an artifact this message built, from its card in the transcript (§13). */
+  onopenartifact?: (artifactId: string) => void;
 }
 
-let { message, onedit, onregenerate, onswitch }: Props = $props();
+let { message, onedit, onregenerate, onswitch, onopenartifact }: Props = $props();
 
 let isUser = $derived(message.role === "user");
 let branch = $derived(message.branch ?? null);
@@ -31,13 +33,26 @@ let branch = $derived(message.branch ?? null);
   ]}
   data-role={message.role}
 >
+  <!--
+    The pupil's words are a bubble; the answer is not (§20). A column of grey
+    boxes reads as a form, and on 640 pixels of usable height the box around
+    every answer costs a line of the answer itself. A rule in the accent colour
+    is enough to say where an answer begins.
+  -->
   <div
     class={[
-      "max-w-[85%] rounded-lg px-3 py-2 text-sm leading-relaxed",
-      isUser ? "bg-primary text-primary-foreground" : "bg-card text-card-foreground border border-border",
+      "text-sm leading-relaxed",
+      isUser
+        ? "max-w-[85%] rounded-lg bg-primary px-3 py-2 text-primary-foreground"
+        : "w-full border-l-2 border-primary/40 pl-3 text-foreground",
     ]}
   >
-    <MessageParts parts={message.parts} plain={isUser} />
+    <MessageParts
+      parts={message.parts}
+      plain={isUser}
+      artifacts={message.artifacts}
+      {onopenartifact}
+    />
   </div>
 
   {#if branch && onswitch}

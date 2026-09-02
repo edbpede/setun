@@ -64,6 +64,13 @@
       "when": 1788188504195,
       "tag": "0008_hot_psylocke",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1788342494389,
+      "tag": "0009_artifact_identity",
+      "breakpoints": true
     }
   ]
 }

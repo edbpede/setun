@@ -1,5 +1,5 @@
 import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
-import { ARTIFACT_LANGUAGES, VERSION_AUTHORS } from "../../../artifacts/types";
+import { ARTIFACT_LANGUAGES, BUILD_STATUSES, VERSION_AUTHORS } from "../../../artifacts/types";
 import { conversation } from "./conversation";
 import { createdAt, primaryId, updatedAt } from "./helpers";
 import { message } from "./message";
@@ -29,6 +29,16 @@ export const artifact = sqliteTable(
     conversationId: text().references(() => conversation.id, { onDelete: "set null" }),
     /** The §19 "type": the fence tag, which decides the renderer and the tier (§13). */
     language: text({ enum: ARTIFACT_LANGUAGES }).notNull(),
+    /**
+     * The id the model writes on the fence, and what continuity resolves on (§13).
+     *
+     * Null for an artifact whose model wrote none, and for every row that
+     * predates the fence attribute; `effectiveArtifactKey` then derives one from
+     * the identifier, so every artifact answers to a key whether or not it
+     * stores one. Nullable rather than backfilled: the derivation is cheap and a
+     * stored copy of a derived value is a second thing that can disagree.
+     */
+    key: text(),
     /** Read out of the source where it offers one; the interface names it otherwise. */
     title: text(),
     createdAt: createdAt(),
@@ -39,6 +49,15 @@ export const artifact = sqliteTable(
     index("artifact_student_idx").on(t.studentId, t.updatedAt),
     // The continuity heuristic asks for the conversation's most recent artifact (§13).
     index("artifact_conversation_idx").on(t.conversationId, t.updatedAt),
+    /**
+     * And now for the conversation's artifact under a given key (§13).
+     *
+     * Plain, not unique. `conversationId` goes null when a conversation expires,
+     * and a nulled row must not collide with a live one under the same key;
+     * uniqueness within a live conversation holds by construction instead, since
+     * recording is the only writer and resolves before it inserts.
+     */
+    index("artifact_conversation_key_idx").on(t.conversationId, t.key),
   ],
 );
 
@@ -72,6 +91,17 @@ export const artifactVersion = sqliteTable(
      * *next* message, so a delivered edit is not sent again on every later turn.
      */
     deliveredAt: integer({ mode: "timestamp_ms" }),
+    /**
+     * What happened the last time this revision ran in the sandbox (§13).
+     *
+     * The browser is the only party that knows, so it reports the outcome back
+     * onto the version it ran; the next turn's prompt then states it. Null means
+     * "not run", which is the honest third value for a revision nobody has
+     * pressed Run on — a version the model wrote and the pupil never opened.
+     */
+    buildStatus: text({ enum: BUILD_STATUSES }),
+    /** The compiler's or the browser's own words. Text, never markup (§13, §21). */
+    buildMessage: text(),
     createdAt: createdAt(),
   },
   (t) => [uniqueIndex("artifact_version_revision_idx").on(t.artifactId, t.revision)],

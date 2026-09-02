@@ -27,9 +27,19 @@ interface Props {
   onclose: () => void;
   /** Absent while the drawer is used somewhere deletion does not belong. */
   ondelete?: (conversationId: string) => void;
+  /**
+   * The rest of the pupil's navigation (§20).
+   *
+   * The header is one compact strip on a 640-pixel screen, and four text links
+   * across it left the title and the Build button fighting for what remained. The
+   * links are consulted between lessons rather than during one, which is exactly
+   * what this drawer already is — so the caller passes them here, keeping the
+   * sign-out form on the route whose action it posts to.
+   */
+  footer?: import("svelte").Snippet;
 }
 
-let { conversations, activeId, open, onclose, ondelete }: Props = $props();
+let { conversations, activeId, open, onclose, ondelete, footer }: Props = $props();
 
 /**
  * The row whose delete control is awaiting confirmation (§16).
@@ -126,11 +136,14 @@ $effect(() => {
       {/each}
     </nav>
 
-    <a
-      href="/dashboard"
-      class="flex min-h-11 items-center rounded-md px-2 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground"
-    >
-      {m.student_dashboard_link()}
-    </a>
+    <div class="flex flex-col border-t border-border pt-1">
+      <a
+        href="/dashboard"
+        class="flex min-h-11 items-center rounded-md px-2 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {m.student_dashboard_link()}
+      </a>
+      {@render footer?.()}
+    </div>
   </aside>
 {/if}

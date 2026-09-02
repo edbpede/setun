@@ -3,7 +3,7 @@ import { GatewayAdapter } from "../gateway/adapter";
 import type { GatewayEvent } from "../gateway/events";
 import { streamingResponse, stubFetch } from "../gateway/testing";
 import { assembleContext, runTurn } from "./loop";
-import { BASE_SYSTEM_PROMPT } from "./system-prompt";
+import { FIXED_SYSTEM_PROMPT } from "./system-prompt";
 
 /**
  * Agent-loop termination conditions and context assembly
@@ -45,7 +45,7 @@ describe("assembleContext", () => {
   it("puts the layered system prompt first, then the path oldest first", () => {
     const messages = assembleContext(path);
 
-    expect(messages[0]).toEqual({ role: "system", content: BASE_SYSTEM_PROMPT });
+    expect(messages[0]).toEqual({ role: "system", content: FIXED_SYSTEM_PROMPT });
     expect(messages.slice(1)).toEqual([
       { role: "user", content: "Hej" },
       { role: "assistant", content: "Hej med dig" },
@@ -62,6 +62,44 @@ describe("assembleContext", () => {
   it("sends only the active path, not every message in the tree", () => {
     // The caller supplies one branch; the loop never widens it (§10).
     expect(assembleContext([path[0]])).toHaveLength(2);
+  });
+
+  it("is unchanged when no artifact context is supplied", () => {
+    expect(assembleContext(path)).toEqual(assembleContext(path, undefined, undefined, undefined));
+  });
+
+  it("appends the state note to the last user message, not to the system prompt", () => {
+    const artifacts = {
+      index: new Map(),
+      state: [
+        {
+          key: "side",
+          language: "html" as const,
+          title: "Min side",
+          revision: 2,
+          authoredBy: "model" as const,
+          buildStatus: "failed" as const,
+          buildMessage: "SyntaxError",
+        },
+      ],
+    };
+
+    const messages = assembleContext(path, undefined, undefined, artifacts);
+
+    // The system prefix stays byte-identical, so it stays cacheable (§10, §13).
+    expect(messages[0]).toEqual({ role: "system", content: FIXED_SYSTEM_PROMPT });
+    expect(messages.at(-1)?.role).toBe("user");
+    expect(messages.at(-1)?.content).toContain("Forklar loops");
+    expect(messages.at(-1)?.content).toContain("id=side (html)");
+    expect(messages.at(-1)?.content).toContain("last run failed: SyntaxError");
+    // And nowhere else: the note describes this moment and belongs to one message.
+    expect(messages[1].content).not.toContain("id=side");
+  });
+
+  it("appends no note when the conversation has built nothing", () => {
+    const messages = assembleContext(path, undefined, undefined, { index: new Map(), state: [] });
+
+    expect(messages).toEqual(assembleContext(path));
   });
 });
 

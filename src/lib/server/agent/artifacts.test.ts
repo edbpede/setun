@@ -97,6 +97,85 @@ describe("recordTurnArtifacts", () => {
     expect(listStudentArtifacts(db, fixtures.student.id)).toHaveLength(2);
   });
 
+  it("does not let another language steal the anchor", () => {
+    // The observed failure: an interleaved drawing made the next page a fork.
+    const page = assistantTurn("```html\n<p>en</p>\n```");
+    assistantTurn("```svg\n<svg/>\n```");
+    const again = assistantTurn("```html\n<p>to</p>\n```");
+
+    expect(again[0].artifactId).toBe(page[0].artifactId);
+    expect(listStudentArtifacts(db, fixtures.student.id)).toHaveLength(2);
+  });
+
+  it("keeps two ids apart, and follows one id across a language change", () => {
+    const page = assistantTurn('```html id=side title="Min side"\n<p>en</p>\n```');
+    const quiz = assistantTurn("```html id=quiz\n<p>quiz</p>\n```");
+    expect(quiz[0].artifactId).not.toBe(page[0].artifactId);
+
+    const rewritten = assistantTurn("```svelte id=side\n<p>en igen</p>\n```");
+    expect(rewritten[0].artifactId).toBe(page[0].artifactId);
+
+    const stored = getOwnedArtifact(db, {
+      artifactId: page[0].artifactId,
+      studentId: fixtures.student.id,
+    });
+    expect(stored?.language).toBe("svelte");
+    expect(stored?.key).toBe("side");
+    expect(listStudentArtifacts(db, fixtures.student.id)).toHaveLength(2);
+
+    // The row's metadata following the id is only half of it: the rewrite is a
+    // revision of that row, and a version that never landed would leave every
+    // assertion above true and the pupil's page unchanged.
+    const versions = listArtifactVersions(db, page[0].artifactId);
+    expect(versions.map((version) => version.source)).toEqual(["<p>en</p>", "<p>en igen</p>"]);
+    expect(versions.at(-1)?.id).toBe(rewritten[0].versionId);
+    expect(rewritten[0].unchanged).toBe(false);
+  });
+
+  it("persists a fallback key the model adopted from the state note", () => {
+    const [first] = assistantTurn("```html\n<p>en</p>\n```");
+    const fallback = first.key;
+
+    const again = assistantTurn(`\`\`\`html id=${fallback}\n<p>to</p>\n\`\`\``);
+
+    expect(again[0].artifactId).toBe(first.artifactId);
+    expect(
+      getOwnedArtifact(db, { artifactId: first.artifactId, studentId: fixtures.student.id })?.key,
+    ).toBe(fallback);
+  });
+
+  it("lets an explicit title rename, and reads one out of the source only while unnamed", () => {
+    const [first] = assistantTurn("```html id=side\n<p>uden navn</p>\n```");
+    expect(
+      getOwnedArtifact(db, { artifactId: first.artifactId, studentId: fixtures.student.id })?.title,
+    ).toBeNull();
+
+    assistantTurn("```html id=side\n<title>Fundet</title>\n```");
+    expect(
+      getOwnedArtifact(db, { artifactId: first.artifactId, studentId: fixtures.student.id })?.title,
+    ).toBe("Fundet");
+
+    // A later source heading does not quietly retitle what is already named.
+    assistantTurn("```html id=side\n<title>Noget andet</title><p>x</p>\n```");
+    expect(
+      getOwnedArtifact(db, { artifactId: first.artifactId, studentId: fixtures.student.id })?.title,
+    ).toBe("Fundet");
+
+    assistantTurn('```html id=side title="Valgt navn"\n<p>y</p>\n```');
+    expect(
+      getOwnedArtifact(db, { artifactId: first.artifactId, studentId: fixtures.student.id })?.title,
+    ).toBe("Valgt navn");
+  });
+
+  it("appends no revision for an identical re-emission", () => {
+    const [first] = assistantTurn("```html id=side\n<p>en</p>\n```");
+    const again = assistantTurn("```html id=side\n<p>en</p>\n```");
+
+    expect(again[0].unchanged).toBe(true);
+    expect(again[0].versionId).toBe(first.versionId);
+    expect(listArtifactVersions(db, first.artifactId)).toHaveLength(1);
+  });
+
   it("keeps every revision, so a wrong continuity guess loses nothing", () => {
     assistantTurn("```html\n<p>en</p>\n```");
     assistantTurn("```html\n<p>to</p>\n```");
@@ -193,6 +272,51 @@ describe("the student's edit travelling back to the model", () => {
     expect(sent).toContain("Jeg ødelagde den");
     expect(sent).toContain("student's edited version");
     expect(sent).toContain("<p>min rettelse</p>");
+  });
+
+  it("carries the artifact's id, so the model can answer with a complete file", () => {
+    const [recorded] = assistantTurn('```html id=side title="Kort"\n<p>en</p>\n```');
+    appendArtifactVersion(db, {
+      artifactId: recorded.artifactId,
+      source: "<p>min rettelse</p>",
+      authoredBy: "student",
+    });
+
+    const [part] = pendingArtifactEditParts(db, {
+      conversationId,
+      studentId: fixtures.student.id,
+    });
+    expect(part.key).toBe("side");
+
+    const sent = String(
+      assembleContext([{ role: "user", parts: [{ type: "text", text: "hjælp" }, part] }]).at(-1)
+        ?.content,
+    );
+    expect(sent).toContain('```html id=side title="Kort"');
+    expect(sent).toContain("To change it, reuse id=side and write the complete file.");
+  });
+
+  it("encodes a part written before ids existed in the form it was written in", () => {
+    const sent = String(
+      assembleContext([
+        {
+          role: "user",
+          parts: [
+            {
+              type: "artifact-edit",
+              artifactId: crypto.randomUUID(),
+              versionId: crypto.randomUUID(),
+              language: "html",
+              title: null,
+              source: "<p>gammel</p>",
+            },
+          ],
+        },
+      ]).at(-1)?.content,
+    );
+
+    expect(sent).toContain("```html\n<p>gammel</p>");
+    expect(sent).not.toContain("reuse id=");
   });
 
   it("is scoped to its owner: another student's edit never travels", () => {

@@ -1,5 +1,5 @@
-import { and, count, desc, eq, inArray, isNull, max, sql } from "drizzle-orm";
-import type { ArtifactLanguage, VersionAuthor } from "../../../artifacts/types";
+import { and, asc, count, desc, eq, inArray, isNull, max, sql } from "drizzle-orm";
+import type { ArtifactLanguage, BuildStatus, VersionAuthor } from "../../../artifacts/types";
 import type { AppDatabase } from "../client";
 import { type Artifact, type ArtifactVersion, artifact, artifactVersion } from "../schema";
 
@@ -60,6 +60,8 @@ export function createArtifact(
     conversationId?: string | null;
     language: ArtifactLanguage;
     title?: string | null;
+    /** The id the model wrote on the fence; null when it wrote none (§13). */
+    key?: string | null;
   },
 ): Artifact {
   return db
@@ -68,6 +70,7 @@ export function createArtifact(
       studentId: input.studentId,
       conversationId: input.conversationId ?? null,
       language: input.language,
+      key: input.key ?? null,
       title: input.title ?? null,
     })
     .returning()
@@ -117,20 +120,66 @@ export function appendArtifactVersion(
 }
 
 /**
- * The conversation's most recent artifact — the anchor of the continuity
- * heuristic (§13).
+ * What continuity resolves over: each artifact's identity and when it was last
+ * written (§13).
+ *
+ * `updatedAt` is milliseconds, and two artifacts rewritten in one message tie on
+ * it — so the anchor also carries the `rowid` of the artifact's newest version.
+ * That is SQLite's own insertion counter, so it is the write order `updatedAt`
+ * cannot express, and it moves only when a revision lands: renaming an artifact
+ * touches `updatedAt` and is not a write of the thing itself.
  */
-export function latestConversationArtifact(
+export interface ArtifactAnchorRow {
+  readonly id: string;
+  readonly language: ArtifactLanguage;
+  readonly key: string | null;
+  readonly updatedAt: Date;
+  readonly writtenAt: number;
+}
+
+export function listConversationAnchors(
   db: AppDatabase,
-  conversationId: string,
-): Artifact | undefined {
+  input: { conversationId: string; studentId: string },
+): ArtifactAnchorRow[] {
   return db
-    .select()
+    .select({
+      id: artifact.id,
+      language: artifact.language,
+      key: artifact.key,
+      updatedAt: artifact.updatedAt,
+      writtenAt: sql<number>`max("artifact_version"."rowid")`,
+    })
     .from(artifact)
-    .where(eq(artifact.conversationId, conversationId))
-    .orderBy(desc(artifact.updatedAt), desc(artifact.createdAt))
-    .limit(1)
-    .get();
+    .innerJoin(artifactVersion, eq(artifactVersion.artifactId, artifact.id))
+    .where(
+      and(
+        eq(artifact.conversationId, input.conversationId),
+        eq(artifact.studentId, input.studentId),
+      ),
+    )
+    .groupBy(artifact.id)
+    .all();
+}
+
+/** Persist the key a model adopted, so the next turn resolves to this row (§13). */
+export function setArtifactKey(db: AppDatabase, input: { artifactId: string; key: string }): void {
+  db.update(artifact).set({ key: input.key }).where(eq(artifact.id, input.artifactId)).run();
+}
+
+/**
+ * A rewrite under the same id changed the language (§13).
+ *
+ * The key is the identity, not the tag: a page reworked as a Svelte component is
+ * one thing to the pupil, so the row follows rather than forking.
+ */
+export function setArtifactLanguage(
+  db: AppDatabase,
+  input: { artifactId: string; language: ArtifactLanguage },
+): void {
+  db.update(artifact)
+    .set({ language: input.language })
+    .where(eq(artifact.id, input.artifactId))
+    .run();
 }
 
 /** One artifact, for its owner. Absent for anyone else (§21). */
@@ -208,6 +257,97 @@ export function markVersionsDelivered(db: AppDatabase, versionIds: readonly stri
     .set({ deliveredAt: new Date() })
     .where(inArray(artifactVersion.id, [...versionIds]))
     .run();
+}
+
+/**
+ * Every version of every artifact in one conversation, in one query (§13).
+ *
+ * The prompt needs two things from the same rows — which message holds the
+ * current source of each artifact, so superseded copies can be elided, and each
+ * artifact's revision count and last run result for the state note — and asking
+ * per artifact would be one query per thing the pupil has built.
+ *
+ * Ordered by artifact and then revision, so a caller folds it in one pass — the
+ * last row of each group being that artifact's current source. The identifier
+ * joins the sort because `createdAt` is milliseconds: two artifacts created in
+ * one message tie on it, and the groups would otherwise interleave.
+ */
+export function listConversationVersions(
+  db: AppDatabase,
+  input: { conversationId: string; studentId: string },
+): { artifact: Artifact; version: ArtifactVersion }[] {
+  return db
+    .select({ artifact, version: artifactVersion })
+    .from(artifact)
+    .innerJoin(artifactVersion, eq(artifactVersion.artifactId, artifact.id))
+    .where(
+      and(
+        eq(artifact.conversationId, input.conversationId),
+        eq(artifact.studentId, input.studentId),
+      ),
+    )
+    .orderBy(asc(artifact.createdAt), asc(artifact.id), asc(artifactVersion.revision))
+    .all();
+}
+
+/**
+ * Every version recorded against a message, for the transcript's cards (§13).
+ *
+ * In recording order, which is what the transcript aligns its cards against: a
+ * message that rewrites one artifact and creates another holds a fifth revision
+ * and a first, and ordering by revision would put them back to front — the card
+ * under each block would name the other block's artifact.
+ *
+ * Recording order is insertion order, and `createdAt` is only milliseconds, so
+ * SQLite's own `rowid` breaks the ties that two blocks of one message produce.
+ */
+export function versionsByMessage(
+  db: AppDatabase,
+  messageIds: readonly string[],
+): { artifact: Artifact; version: ArtifactVersion }[] {
+  if (messageIds.length === 0) return [];
+
+  return db
+    .select({ artifact, version: artifactVersion })
+    .from(artifactVersion)
+    .innerJoin(artifact, eq(artifact.id, artifactVersion.artifactId))
+    .where(inArray(artifactVersion.messageId, [...messageIds]))
+    .orderBy(asc(artifactVersion.createdAt), sql`"artifact_version"."rowid"`)
+    .all();
+}
+
+/**
+ * What happened when the browser ran this revision (§13).
+ *
+ * Owner-scoped in the statement itself, so a request naming somebody else's
+ * artifact writes nothing and reports nothing (§21). It deliberately does *not*
+ * bump `updatedAt`: running an artifact is not editing it, and the panel's
+ * follow rule and the gallery's ordering both read recency as "last written".
+ */
+export function recordVersionBuild(
+  db: AppDatabase,
+  input: {
+    artifactId: string;
+    versionId: string;
+    studentId: string;
+    status: BuildStatus;
+    message: string | null;
+  },
+): boolean {
+  const owned = getOwnedArtifact(db, {
+    artifactId: input.artifactId,
+    studentId: input.studentId,
+  });
+  if (!owned) return false;
+
+  const updated = db
+    .update(artifactVersion)
+    .set({ buildStatus: input.status, buildMessage: input.message })
+    .where(and(eq(artifactVersion.id, input.versionId), eq(artifactVersion.artifactId, owned.id)))
+    .returning({ id: artifactVersion.id })
+    .all();
+
+  return updated.length > 0;
 }
 
 export function setArtifactTitle(

@@ -1,8 +1,11 @@
 <script lang="ts">
+import { artifactSegmentCount, artifactSegments } from "$lib/artifacts/segments";
 import { toolLabel } from "$lib/chat/tool-labels";
 import { turnNoticeText } from "$lib/chat/turn-notices";
 import * as m from "$lib/paraglide/messages";
 import type { MessagePart } from "$lib/server/db/schema";
+import type { MessageArtifactRef } from "$lib/state/conversation.svelte";
+import ArtifactCard from "./ArtifactCard.svelte";
 import MarkdownMessage from "./MarkdownMessage.svelte";
 import ToolAttribution from "./ToolAttribution.svelte";
 
@@ -25,9 +28,54 @@ interface Props {
   streaming?: boolean;
   /** User messages are the pupil's own words and are never parsed as markdown. */
   plain?: boolean;
+  /** What the server recorded for this message, in the order the blocks came (§13). */
+  artifacts?: readonly MessageArtifactRef[];
+  onopenartifact?: (artifactId: string) => void;
 }
 
-let { parts, streaming = false, plain = false }: Props = $props();
+let { parts, streaming = false, plain = false, artifacts, onopenartifact }: Props = $props();
+
+/**
+ * Where each text part starts counting artifacts (§13).
+ *
+ * A message's prose arrives as several parts and the refs are numbered across
+ * the whole message, so each part needs to know how many came before it.
+ */
+const firstIndexOf = $derived.by(() => {
+  const offsets = new Map<number, number>();
+  let seen = 0;
+
+  parts.forEach((part, index) => {
+    if (part.type !== "text") return;
+    offsets.set(index, seen);
+    seen += artifactSegmentCount(part.text);
+  });
+
+  return { offsets, total: seen };
+});
+
+/**
+ * Whether the cards can be trusted to name what the blocks are.
+ *
+ * The refs come from the database and the blocks from the text, and the two are
+ * produced by the same `detectArtifacts` — but a message edited on the server, a
+ * deleted artifact, or an identical re-emission that appended no revision can
+ * leave them out of step. When the count or the languages disagree the fence is
+ * rendered as it was written, which is the old behaviour and never wrong.
+ */
+const aligned = $derived.by(() => {
+  const refs = artifacts ?? [];
+  if (refs.length === 0 || refs.length !== firstIndexOf.total) return false;
+
+  return parts.every((part, index) => {
+    if (part.type !== "text") return true;
+
+    return artifactSegments(part.text, firstIndexOf.offsets.get(index) ?? 0).every(
+      (segment) =>
+        segment.kind !== "artifact" || refs[segment.index]?.language === segment.artifact.language,
+    );
+  });
+});
 
 const results = $derived(
   parts.filter(
@@ -46,8 +94,23 @@ const failed = $derived(
   {#if part.type === "text"}
     {#if plain || streaming}
       <p class="whitespace-pre-wrap break-words">{part.text}</p>
-    {:else}
+    {:else if !aligned}
       <MarkdownMessage text={part.text} />
+    {:else}
+      <!--
+        The artifacts pulled out of the prose and shown as cards; everything
+        between them is ordinary markdown, and `renderMarkdown` stays the only
+        producer of `{@html}` in the transcript (§5).
+      -->
+      {#each artifactSegments(part.text, firstIndexOf.offsets.get(index) ?? 0) as segment, at (at)}
+        {#if segment.kind === "text"}
+          <MarkdownMessage text={segment.text} />
+        {:else if artifacts?.[segment.index]}
+          <ArtifactCard artifact={artifacts[segment.index]} onopen={onopenartifact} />
+        {:else}
+          <MarkdownMessage text={segment.raw} />
+        {/if}
+      {/each}
     {/if}
   {:else if part.type === "tool-call"}
     <!--

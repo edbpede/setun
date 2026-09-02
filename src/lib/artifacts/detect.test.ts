@@ -85,6 +85,36 @@ describe("fencedBlocks", () => {
     expect(blocks.map((block) => block.language)).toEqual(["html", "css"]);
     expect(blocks[0].line).toBeLessThan(blocks[1].line);
   });
+
+  it("reports the closing fence, so a whole block can be replaced by line", () => {
+    const blocks = fencedBlocks("intro\n```html\na\nb\n```\nafter");
+
+    expect(blocks[0].line).toBe(1);
+    expect(blocks[0].endLine).toBe(4);
+  });
+
+  it("reads key=value pairs past the language, in either quote style or bare", () => {
+    const blocks = fencedBlocks(
+      `\`\`\`html id=home-page title="Min hjemmeside" note='kort' bare=x\nb\n\`\`\``,
+    );
+
+    expect(blocks[0].attributes).toEqual({
+      id: "home-page",
+      title: "Min hjemmeside",
+      note: "kort",
+      bare: "x",
+    });
+  });
+
+  it("takes the first of a repeated key", () => {
+    const blocks = fencedBlocks("~~~html id=first id=second\nb\n~~~");
+
+    expect(blocks[0].attributes.id).toBe("first");
+  });
+
+  it("has no attributes when the info string is only a language", () => {
+    expect(fencedBlocks("```html\na\n```")[0].attributes).toEqual({});
+  });
 });
 
 describe("detectArtifacts", () => {
@@ -107,6 +137,20 @@ describe("detectArtifacts", () => {
     expect(found[0].source).toBe("<button>Klik</button>");
   });
 
+  it("carries the identity the model wrote on the fence", () => {
+    const [found] = detectArtifacts('```html id=Home-Page title="Min side"\n<p>hi</p>\n```');
+
+    expect(found.key).toBe("home-page");
+    expect(found.title).toBe("Min side");
+    expect(found.endLine).toBe(2);
+  });
+
+  it("treats an id that is not a slug as no id at all", () => {
+    expect(detectArtifacts("```html id=min/side\n<p>hi</p>\n```")[0].key).toBeNull();
+    expect(detectArtifacts('```html id="min side"\n<p>hi</p>\n```')[0].key).toBeNull();
+    expect(detectArtifacts("```html\n<p>hi</p>\n```")[0].key).toBeNull();
+  });
+
   it("skips an empty artifact block", () => {
     expect(detectArtifacts("```html\n\n```")).toEqual([]);
   });
@@ -117,19 +161,81 @@ describe("detectArtifacts", () => {
 });
 
 describe("continuityDecision", () => {
+  const page = {
+    id: "a1",
+    language: "html" as const,
+    key: "home-page",
+    updatedAt: 10,
+    writtenAt: 1,
+  };
+  const logo = { id: "a2", language: "svg" as const, key: null, updatedAt: 20, writtenAt: 2 };
+
   it("starts a new artifact when the conversation has none", () => {
-    expect(continuityDecision({ language: "html", latest: null })).toEqual({ kind: "new" });
+    expect(continuityDecision({ language: "html", key: null, existing: [] })).toEqual({
+      kind: "new",
+      key: null,
+    });
   });
 
-  it("versions the most recent artifact when the language matches", () => {
+  it("versions the artifact whose key matches", () => {
     expect(
-      continuityDecision({ language: "html", latest: { id: "a1", language: "html" } }),
+      continuityDecision({ language: "html", key: "home-page", existing: [page, logo] }),
     ).toEqual({ kind: "version", artifactId: "a1" });
   });
 
-  it("starts a new artifact when the language differs", () => {
-    expect(continuityDecision({ language: "tsx", latest: { id: "a1", language: "jsx" } })).toEqual({
+  it("keeps the key across a language change: a rewrite is still one thing", () => {
+    expect(continuityDecision({ language: "svelte", key: "home-page", existing: [page] })).toEqual({
+      kind: "version",
+      artifactId: "a1",
+    });
+  });
+
+  it("resolves a fallback key a model adopted from the state note", () => {
+    expect(continuityDecision({ language: "svg", key: "svg-a2", existing: [logo] })).toEqual({
+      kind: "version",
+      artifactId: "a2",
+    });
+  });
+
+  it("starts a new artifact under a key that matches nothing", () => {
+    expect(continuityDecision({ language: "html", key: "quiz", existing: [page] })).toEqual({
       kind: "new",
+      key: "quiz",
+    });
+  });
+
+  it("falls back to the most recent artifact of the same language", () => {
+    const older = { id: "a3", language: "html" as const, key: null, updatedAt: 5, writtenAt: 3 };
+
+    expect(
+      continuityDecision({ language: "html", key: null, existing: [older, page, logo] }),
+    ).toEqual({ kind: "version", artifactId: "a1" });
+  });
+
+  it("breaks a same-millisecond tie by which revision landed last", () => {
+    // Two artifacts rewritten in one message share `updatedAt` to the
+    // millisecond, and a stable sort would otherwise hold whatever order the
+    // rows arrived in — a different anchor for the same facts (§13).
+    const first = { id: "a4", language: "html" as const, key: null, updatedAt: 30, writtenAt: 7 };
+    const second = { id: "a5", language: "html" as const, key: null, updatedAt: 30, writtenAt: 8 };
+
+    for (const existing of [
+      [first, second],
+      [second, first],
+    ]) {
+      expect(continuityDecision({ language: "html", key: null, existing })).toEqual({
+        kind: "version",
+        artifactId: "a5",
+      });
+    }
+  });
+
+  it("does not let another language steal the anchor", () => {
+    // The observed failure: an interleaved svg is the conversation's most recent
+    // artifact, and the next html block forked a row of its own because of it.
+    expect(continuityDecision({ language: "html", key: null, existing: [logo] })).toEqual({
+      kind: "new",
+      key: null,
     });
   });
 });

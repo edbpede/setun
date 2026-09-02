@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { expect, test } from "@playwright/test";
 import * as m from "../src/lib/paraglide/messages";
 import { APP_ORIGIN, E2E_DATABASE_PATH, E2E_PEPPER, SANDBOX_ORIGIN } from "../playwright.config";
-import { mountArtifact } from "./support/artifact-host";
+import { mountArtifact, sandboxMessageTypes } from "./support/artifact-host";
 
 /**
  * The artifact escape suite (plan 4.7, PRD §14, §22).
@@ -58,8 +58,20 @@ probe("parent-dom", () => !!parent.document.body);
 probe("top-dom", () => !!top.document.body);
 probe("top-location-read", () => !!top.location.href);
 probe("cookie", () => document.cookie.length > 0);
-probe("local-storage", () => { localStorage.setItem("x", "1"); return true; });
-probe("session-storage", () => { sessionStorage.setItem("x", "1"); return true; });
+// The storage probes changed meaning when the shim arrived, and the property
+// they assert is unchanged: nothing an artifact writes reaches a real Storage,
+// this origin, or the application. What is different is that the write no longer
+// *throws* — an opaque origin makes localStorage throw, which killed any game
+// that saved a score on the line where it tried. So: the native object is still
+// unreachable, and what stands in its place is an in-memory object whose
+// contents never leave the sandbox (asserted from the host, below).
+probe("native-local-storage", () => localStorage instanceof Storage);
+probe("native-session-storage", () => sessionStorage instanceof Storage);
+probe("storage-shim", () => {
+  localStorage.setItem("score", "12");
+  sessionStorage.setItem("turn", "3");
+  return localStorage.getItem("score") === "12" && sessionStorage.getItem("turn") === "3";
+});
 // Navigation is attempted, not probed: a browser that refuses it logs and moves
 // on rather than throwing, so the assertion that it failed is that nothing moved
 // — checked from outside, where the URLs are readable.
@@ -133,8 +145,8 @@ test("every escape an artifact can attempt fails", async ({ page }) => {
     "top-location-read",
     // Cookie and storage access (§14).
     "cookie",
-    "local-storage",
-    "session-storage",
+    "native-local-storage",
+    "native-session-storage",
     // Popup abuse (§14).
     "popup",
     // Outbound network: external, authenticated, and by every transport (§14).
@@ -155,6 +167,23 @@ test("every escape an artifact can attempt fails", async ({ page }) => {
 
   const frames = page.frames().map((frame) => frame.url());
   expect(frames.some((url) => url.includes("escape.invalid"))).toBe(false);
+
+  // The shim is real storage as far as the artifact is concerned — a game that
+  // saves a score works — and it is nobody else's storage (§13).
+  expect(results, "the in-memory shim stands in for the native object").toContain(
+    "storage-shim:ALLOWED",
+  );
+
+  // And its contents stop at the runner: no snapshot is posted to the
+  // application, and the application origin's own storage is untouched (§13, §14).
+  const posted = await sandboxMessageTypes(page);
+  expect(posted).not.toContain("storage");
+
+  const appStorage = await page.evaluate(() => ({
+    score: localStorage.getItem("score"),
+    turn: sessionStorage.getItem("turn"),
+  }));
+  expect(appStorage).toEqual({ score: null, turn: null });
 });
 
 test("the sandbox origin serves the isolating policy", async ({ request }) => {
