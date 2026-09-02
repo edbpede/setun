@@ -122,16 +122,19 @@ describe("streamingSegments", () => {
     const info = "```html id=`x`\n<p>hi";
     expect(streamingSegments(info)).toEqual([{ kind: "text", text: info }]);
 
-    // A tilde fence's info string may hold one, which is the case beside it.
-    expect(streamingSegments("~~~html id=side\n<p>hi")).toEqual([
-      { kind: "pending", language: "html", key: "side", title: null },
+    // A tilde fence's info string may hold one, so the same info string that is
+    // not a fence above opens one here.
+    expect(streamingSegments("~~~html id=side title=`x`\n<p>hi")).toEqual([
+      { kind: "pending", language: "html", key: "side", title: "`x`" },
     ]);
   });
 
   it("reads a tilde fence, whose info string may hold a backtick", () => {
-    const segments = streamingSegments("~~~html id=side\n<p>hi");
+    const segments = streamingSegments("~~~html id=side title=`x`\n<p>hi");
 
-    expect(segments).toEqual([{ kind: "pending", language: "html", key: "side", title: null }]);
+    // The backtick is what makes this a tilde fence's case: the same info string
+    // after three backticks is not a fence at all.
+    expect(segments).toEqual([{ kind: "pending", language: "html", key: "side", title: "`x`" }]);
   });
 
   it("scans a long buffer without parsing it", () => {
@@ -155,9 +158,21 @@ describe("streamingMessageSegments", () => {
     // pupil's page arrived as prose (§13, §20).
     expect(before).toEqual([
       { kind: "text", text: "Her er siden:" },
-      { kind: "pending", language: "html", key: "side", title: "Min side" },
+      // Named rather than still "being built": the fence closed in the part
+      // after the tool call, and the stub stays where it opened.
+      {
+        kind: "artifact",
+        artifact: {
+          language: "html",
+          source: "<h1>Hej</h1>",
+          line: 1,
+          endLine: -1,
+          key: "side",
+          title: "Min side",
+        },
+      },
     ]);
-    // One artifact is one stub, owned by the part that opened it.
+    // One artifact is one card, owned by the part that opened it.
     expect(after).toEqual([{ kind: "text", text: "Færdig." }]);
   });
 
@@ -168,9 +183,42 @@ describe("streamingMessageSegments", () => {
       "</h1>\n```",
     ]);
 
-    expect(scans[0]).toEqual([{ kind: "pending", language: "html", key: "side", title: null }]);
+    // The source is the whole file, gathered from every part it crossed.
+    expect(scans[0]).toEqual([
+      {
+        kind: "artifact",
+        artifact: {
+          language: "html",
+          source: "<h1>Hej<p>mere</p></h1>",
+          line: 0,
+          endLine: -1,
+          key: "side",
+          title: null,
+        },
+      },
+    ]);
     expect(scans[1]).toEqual([]);
     expect(scans[2]).toEqual([]);
+  });
+
+  it("keeps the stub pending while the fence it opened is still open", () => {
+    const scans = streamingMessageSegments(["```html id=side\n<h1>Hej", "<p>mere</p>"]);
+
+    expect(scans[0]).toEqual([{ kind: "pending", language: "html", key: "side", title: null }]);
+    expect(scans[1]).toEqual([]);
+  });
+
+  it("does not read a code block's closing line as an opening one in the next part", () => {
+    // The `js` block closes in the second part. Carrying only artifact fences
+    // left that ``` reading as an *opening* fence, and the html artifact behind
+    // it was parsed as the body of a code block and rendered as prose.
+    const scans = streamingMessageSegments([
+      "Sådan:\n```js\nconst x = 1;",
+      "```\n```html id=side\n<p>hi</p>\n```",
+    ]);
+
+    expect(scans[1].map((segment) => segment.kind)).toEqual(["text", "artifact"]);
+    expect(scans[1][1].kind === "artifact" && scans[1][1].artifact.key).toBe("side");
   });
 
   it("does not leak the closing fence when a part begins with it", () => {

@@ -141,9 +141,12 @@ describe("MessageParts artifact cards", () => {
     // pupil's page arrived as prose (§13, §20).
     await expect.element(page.getByText("<p>og mere</p>")).not.toBeInTheDocument();
     await expect.element(page.getByText("<p>hi</p>")).not.toBeInTheDocument();
+    // And the stub names what was built rather than still saying it is building:
+    // the fence closed, two parts along from where it opened.
+    await expect.element(page.getByText("Min side")).toBeVisible();
     await expect
       .element(page.getByText(m.artifact_card_building({ title: "Min side" })))
-      .toBeVisible();
+      .not.toBeInTheDocument();
     await expect.element(page.getByText("Prøv den.")).toBeVisible();
   });
 

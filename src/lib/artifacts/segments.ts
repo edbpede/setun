@@ -112,27 +112,85 @@ export function streamingSegments(markdown: string): StreamingSegment[] {
  * opening line, so the pupil watches the rest of their page arrive as prose,
  * which is the one thing the stub card exists to prevent.
  *
- * So the open fence is carried from part to part. The part that *opened* it owns
- * the card, and the parts continuing it render only what comes after it closes:
- * one artifact is one stub, wherever the tool call fell inside it.
+ * So every open fence is carried from part to part, an ordinary code block's as
+ * much as an artifact's: a `js` block whose closing line lands in the next part
+ * would otherwise leave that line reading as an *opening* one, and the artifact
+ * behind it parsed as the body of a code block.
+ *
+ * The part that opened a fence owns its card, and the parts continuing it render
+ * only what follows the close — so one artifact is one stub, wherever the tool
+ * call fell inside it. When the fence does close, that stub stops saying the
+ * artifact is being built and names it, in the place it has been all along.
+ *
+ * Each part is still scanned by line, so a boundary that fell mid-line leaves
+ * the two halves as two lines for the length of the scan. That is only ever
+ * wrong for a delta that stopped immediately before a line the scan would read
+ * as a fence, and only until the turn settles.
  *
  * Returns one segment list per text given, in the order they were given.
  */
 export function streamingMessageSegments(texts: readonly string[]): StreamingSegment[][] {
   const scans: StreamingSegment[][] = [];
   let carried: OpenFence | null = null;
+  /** The scan whose stub owns the open fence, and the source it holds so far. */
+  let stub: { at: number; open: OpenFence; source: string[] } | null = null;
 
-  for (const text of texts) {
+  texts.forEach((text, at) => {
     const scanned = scanFences(text, carried);
     scans.push(segmentsOf(scanned, carried !== null));
 
-    // Only an artifact fence is worth carrying: an ordinary code block is prose
-    // on both sides of the boundary, which is what it already renders as.
+    // At most one block can have opened before this part: the carried one, and
+    // nothing else can open until it closes.
+    const closed = scanned.blocks.find((block) => block.line === CARRIED);
+    if (stub && closed) {
+      stub.source.push(closed.source);
+      // Joined with nothing: each piece is the exact substring of its part, and
+      // `StreamingTurn` concatenates deltas rather than adding a line between
+      // them — a boundary that fell mid-line is one line again here.
+      nameStub(scans[stub.at], stub.open, stub.source.join(""));
+      stub = null;
+    } else if (stub) {
+      // Still open, so the whole of this part is inside it.
+      stub.source.push(text);
+    }
+
     const open = scanned.open;
-    carried = open && artifactLanguage(open.language) ? open : null;
-  }
+    carried = open;
+    if (!open || open.line === CARRIED) return;
+
+    // A fence opened here and is still open: this part owns its stub, if the
+    // fence is one the transcript shows a stub for at all.
+    stub = artifactLanguage(open.language)
+      ? { at, open, source: [scanned.lines.slice(open.line + 1).join("\n")] }
+      : null;
+  });
 
   return scans;
+}
+
+/**
+ * Turn the stub that said an artifact was being built into the artifact itself.
+ *
+ * It stays in the part that opened the fence rather than moving to the one that
+ * closed it: a card that jumps below the tool call which interrupted it, halfway
+ * through a stream, is worse than one that stays where the pupil last saw it.
+ */
+function nameStub(segments: StreamingSegment[], open: OpenFence, source: string): void {
+  const at = segments.findIndex((segment) => segment.kind === "pending");
+  const language = artifactLanguage(open.language);
+  if (at === -1 || !language) return;
+
+  segments[at] = {
+    kind: "artifact",
+    artifact: {
+      language,
+      source,
+      line: open.line,
+      endLine: CARRIED,
+      key: normaliseArtifactKey(open.attributes.id),
+      title: open.attributes.title?.trim() || null,
+    },
+  };
 }
 
 /**

@@ -74,11 +74,12 @@ export interface OpenFence {
 }
 
 /**
- * The line index of a block or fence that opened before this chunk began (§20).
+ * A line of this block that belongs to another chunk of the same message (§20).
  *
  * A streaming message's prose arrives in parts, split wherever a tool call or a
  * generated image landed between two deltas — and a fence can span one of those.
- * A block carried in has no opening line *here*; it starts at the top.
+ * A block whose opening line is in an earlier part carries this as its `line`,
+ * and one whose closing line is in a later part carries it as its `endLine`.
  */
 export const CARRIED = -1;
 
