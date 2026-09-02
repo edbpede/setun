@@ -412,6 +412,46 @@ describe("ArtifactPanel", () => {
     }
   });
 
+  it("sends a superseded report once, when the one before it did not land", async () => {
+    const workspace = openWorkspace();
+
+    // The mount's `ok` is held open until the `threw` behind it is queued, so
+    // the refusal lands while the second report is the one the panel owes.
+    let refuse: ((response: Response) => void) | null = null;
+    const held = new Promise<Response>((resolve) => {
+      refuse = resolve;
+    });
+
+    const fetched = vi
+      .spyOn(globalThis, "fetch")
+      .mockReturnValueOnce(held)
+      .mockResolvedValue(new Response("{}", { status: 200 }));
+
+    try {
+      render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX });
+
+      workspace.recordOutcome("ok", null);
+      await vi.waitFor(() => expect(fetched).toHaveBeenCalledTimes(1));
+
+      // Reports travel one chain, so this one waits on the held request.
+      workspace.recordOutcome("threw", "TypeError");
+      await vi.waitFor(() => expect(workspace.pendingBuildReport?.status).toBe("threw"));
+
+      refuse?.(new Response("nej", { status: 500 }));
+      await vi.waitFor(() => expect(workspace.open?.latest.buildStatus).toBe("threw"));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      // Clearing the stamp on the refusal would have reopened the effect on the
+      // stamp the throw already held, and sent the throw a second time.
+      const threw = fetched.mock.calls.filter(([, init]) =>
+        String((init as RequestInit | undefined)?.body ?? "").includes("threw"),
+      );
+      expect(threw).toHaveLength(1);
+    } finally {
+      fetched.mockRestore();
+    }
+  });
+
   it("reports nothing for a draft the version does not hold", async () => {
     const workspace = openWorkspace();
     const fetched = vi

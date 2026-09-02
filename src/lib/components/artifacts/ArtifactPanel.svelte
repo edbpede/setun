@@ -76,6 +76,20 @@ let frame = $state<ReturnType<typeof ArtifactFrame> | null>(null);
 /** Reports already sent, so a re-render does not PATCH the same outcome twice. */
 let reported = $state<string | null>(null);
 
+/**
+ * Clear the stamp so a report that did not land can be re-sent — but only while
+ * it is still the report the panel owes.
+ *
+ * One run produces two outcomes, `ok` at the mount and `threw` a moment later,
+ * and they are sent along one chain. Clearing unconditionally when the first
+ * fails would reopen the effect on a stamp the *second* already holds, and the
+ * second would be PATCHed twice. A superseded report has nothing to retry: the
+ * outcome it described is no longer the one the panel is reporting.
+ */
+function release(stamp: string): void {
+  if (reported === stamp) reported = null;
+}
+
 const artifact = $derived(workspace.open);
 const title = $derived(
   artifact?.title ?? (artifact ? m.artifact_untitled({ language: artifact.language }) : ""),
@@ -287,11 +301,9 @@ $effect(() => {
         // Folded back in either way is wrong: an unrecorded outcome would be
         // re-sent on the next render, and the model would be told nothing.
         if (response.ok) workspace.applyBuildStatus(report);
-        else reported = null;
+        else release(stamp);
       })
-      .catch(() => {
-        reported = null;
-      }),
+      .catch(() => release(stamp)),
   );
 });
 </script>
