@@ -249,6 +249,32 @@ describe("streamingMessageSegments", () => {
     expect(scans[1].map((segment) => segment.kind)).toEqual(["text"]);
   });
 
+  it("keeps an empty carried block as the prose it was written as", () => {
+    const texts = ["Her er siden:\n```html id=side", "\n```\nFærdig."];
+    const scans = streamingMessageSegments(texts);
+
+    // An empty body is not an artifact: `detectArtifacts` skips it and the
+    // settled transcript renders the fence as written, so a card here would be
+    // the streaming view and the database disagreeing about what was built.
+    expect(scans).toEqual([
+      [{ kind: "text", text: "Her er siden:\n```html id=side" }],
+      [{ kind: "text", text: "\n```\nFærdig." }],
+    ]);
+
+    // Which is the same prose a single scan of the whole message gives, split
+    // only where the parts are.
+    expect(streamingSegments(texts.join(""))).toEqual([
+      { kind: "text", text: "Her er siden:\n```html id=side\n```\nFærdig." },
+    ]);
+  });
+
+  it("keeps a whitespace-only carried block as prose too", () => {
+    const scans = streamingMessageSegments(["```html id=side\n   ", "  \n```\nFærdig."]);
+
+    expect(scans[0]).toEqual([{ kind: "text", text: "```html id=side\n   " }]);
+    expect(scans[1].map((segment) => segment.kind)).toEqual(["text"]);
+  });
+
   it("is one scan per text, in the order they were given", () => {
     expect(streamingMessageSegments([])).toEqual([]);
     expect(streamingMessageSegments(["en", "to", "tre"])).toHaveLength(3);

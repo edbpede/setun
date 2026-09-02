@@ -100,7 +100,7 @@ export type StreamingSegment =
 export function streamingSegments(markdown: string): StreamingSegment[] {
   // The scanner's own line array, not a second split of the same string: this
   // runs on every delta of a growing message, and §20 budgets it at one pass.
-  return segmentsOf(scanFences(markdown), false);
+  return segmentsOf(scanFences(markdown), null);
 }
 
 /**
@@ -137,17 +137,22 @@ export function streamingMessageSegments(texts: readonly string[]): StreamingSeg
 
   texts.forEach((text, at) => {
     const scanned = scanFences(text, carried);
-    scans.push(segmentsOf(scanned, carried !== null));
 
     // At most one block can have opened before this part: the carried one, and
     // nothing else can open until it closes.
     const closed = scanned.blocks.find((block) => block.line === CARRIED);
+    // Joined with nothing: each piece is the exact substring of its part, and
+    // `StreamingTurn` concatenates deltas rather than adding a line between them
+    // — a boundary that fell mid-line is one line again here.
+    const body = stub ? [...stub.source, closed ? closed.source : text].join("") : "";
+
+    // Whether the carried block has a body at all is the caller's to know: it is
+    // spread across the parts the fence crossed, and the scan sees one of them.
+    scans.push(segmentsOf(scanned, carried ? { bodied: body.trim().length > 0 } : null));
+
     if (stub && closed) {
-      stub.source.push(closed.source);
-      // Joined with nothing: each piece is the exact substring of its part, and
-      // `StreamingTurn` concatenates deltas rather than adding a line between
-      // them — a boundary that fell mid-line is one line again here.
-      nameStub(scans[stub.at], stub.open, stub.source.join(""));
+      if (body.trim()) nameStub(scans[stub.at], stub.open, body);
+      else unbuildStub(scans[stub.at], texts[stub.at], stub.open);
       stub = null;
     } else if (stub) {
       // Still open, so the whole of this part is inside it.
@@ -194,11 +199,39 @@ function nameStub(segments: StreamingSegment[], open: OpenFence, source: string)
 }
 
 /**
- * `continued` says the scan began inside a fence an earlier part opened, whose
- * stub that part is already showing — so the block it closes here, and the
- * pending it may still be inside, belong there and are not repeated.
+ * Put a stub back as the fence it was written as, when it held nothing.
+ *
+ * An empty block is not an artifact — `detectArtifacts` skips it and the settled
+ * transcript renders it as written — and the two must not disagree about which
+ * blocks were artifacts. Folded into the prose above it where there is any, so
+ * what the pupil sees is what a single scan of the whole message would give.
  */
-function segmentsOf(scanned: ScannedFences, continued: boolean): StreamingSegment[] {
+function unbuildStub(segments: StreamingSegment[], text: string, open: OpenFence): void {
+  const at = segments.findIndex((segment) => segment.kind === "pending");
+  if (at === -1) return;
+
+  const raw = text.split("\n").slice(open.line).join("\n");
+  const above = segments[at - 1];
+
+  if (above?.kind === "text") {
+    segments.splice(at - 1, 2, { kind: "text", text: `${above.text}\n${raw}` });
+    return;
+  }
+
+  segments[at] = { kind: "text", text: raw };
+}
+
+/**
+ * `carriedIn` says the scan began inside a fence an earlier part opened, whose
+ * stub that part is already showing — so the block it closes here, and the
+ * pending it may still be inside, belong there and are not repeated. Its
+ * `bodied` is whether that block has a body anywhere across the parts it
+ * crossed, which this scan cannot see for itself.
+ */
+function segmentsOf(
+  scanned: ScannedFences,
+  carriedIn: { readonly bodied: boolean } | null,
+): StreamingSegment[] {
   const { blocks, open, lines } = scanned;
   const pendingLanguage = open ? artifactLanguage(open.language) : null;
 
@@ -212,9 +245,11 @@ function segmentsOf(scanned: ScannedFences, continued: boolean): StreamingSegmen
   for (const block of blocks) {
     const language = artifactLanguage(block.language);
     const carried = block.line === CARRIED;
-    // An empty body is not an artifact — but a carried block's body is in the
-    // part before this one, so emptiness here says nothing about it.
-    if (!language || (!carried && !block.source.trim())) continue;
+    // An empty body is not an artifact, here as on the settled path — but a
+    // carried block's body is spread over the parts it crossed, so what this
+    // scan holds of it says nothing about whether there is one.
+    const empty = carried ? !carriedIn?.bodied : !block.source.trim();
+    if (!language || empty) continue;
 
     const before = lines.slice(at, Math.max(block.line, 0)).join("\n");
     if (before.trim()) segments.push({ kind: "text", text: before });
@@ -238,7 +273,7 @@ function segmentsOf(scanned: ScannedFences, continued: boolean): StreamingSegmen
   const after = lines.slice(at, end).join("\n");
   if (after.trim()) segments.push({ kind: "text", text: after });
 
-  if (pendingLanguage && open && !(continued && open.line === CARRIED)) {
+  if (pendingLanguage && open && !(carriedIn && open.line === CARRIED)) {
     segments.push({
       kind: "pending",
       language: pendingLanguage,
