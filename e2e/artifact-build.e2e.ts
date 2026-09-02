@@ -201,6 +201,17 @@ test("the keyboard reaches an artifact the pupil has focused", async ({ page }) 
 
   await expect(stage.locator("#out")).toHaveText("ingen", { timeout: 20_000 });
 
+  // Take the keyboard back to the application first. The runner focuses the
+  // frame itself when a render mounts, so without this the artifact already has
+  // the keyboard and the assertion below would pass with no focus protocol at
+  // all — which is the thing this test exists to hold.
+  await page.evaluate(() => {
+    const probe = document.createElement("button");
+    probe.id = "e2e-focus-probe";
+    document.body.append(probe);
+    probe.focus();
+  });
+
   await focusArtifact(page);
   await page.keyboard.press("ArrowRight");
 
