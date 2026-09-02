@@ -60,6 +60,8 @@ export interface RecordedArtifact {
  * - An identical re-emission appends no revision. Models restate a file they did
  *   not change, and a history of eight identical revisions is a history of
  *   nothing — while every real change is still retained, which is what §13 asks.
+ *   Identical means the text *and* the tag: the same file re-emitted under a new
+ *   language is a different thing to run, and the revision is what carries it.
  */
 export function recordTurnArtifacts(
   db: AppDatabase,
@@ -156,7 +158,14 @@ export function recordTurnArtifacts(
       key: detected.key ?? existing.artifact.key,
     });
 
-    if (existing.latest.source === detected.source) {
+    // Both, for the same reason a commit point in the panel compares both: the
+    // same text under a new tag is a different pipeline, and leaving it on the
+    // old revision would tag the row `svelte` while its current version still
+    // says `html` — which is the tag anything running it resolves through (§13).
+    if (
+      existing.latest.source === detected.source &&
+      effectiveLanguage(existing.artifact, existing.latest) === detected.language
+    ) {
       recorded.push({
         artifactId: existing.artifact.id,
         versionId: existing.latest.id,

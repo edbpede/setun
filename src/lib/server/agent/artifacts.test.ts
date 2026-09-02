@@ -177,6 +177,21 @@ describe("recordTurnArtifacts", () => {
     expect(listArtifactVersions(db, first.artifactId)).toHaveLength(1);
   });
 
+  it("appends a revision when only the tag changed", () => {
+    const [first] = assistantTurn("```html id=side\n<p>en</p>\n```");
+    const retagged = assistantTurn("```svelte id=side\n<p>en</p>\n```");
+
+    // Same text, different pipeline. Left on the old revision the row would say
+    // `svelte` while its current version still said `html`, and that is the tag
+    // Restore and the sandbox both resolve through (§13).
+    expect(retagged[0].unchanged).toBe(false);
+    expect(retagged[0].versionId).not.toBe(first.versionId);
+
+    const versions = listArtifactVersions(db, first.artifactId);
+    expect(versions).toHaveLength(2);
+    expect(versions.at(-1)?.language).toBe("svelte");
+  });
+
   it("keeps every revision, so a wrong continuity guess loses nothing", () => {
     assistantTurn("```html\n<p>en</p>\n```");
     assistantTurn("```html\n<p>to</p>\n```");
