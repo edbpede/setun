@@ -42,12 +42,15 @@ let currentRunId: string | null = null;
  * divides by nothing — is on the pupil's screen, and reporting that as `failed`
  * told the model a working artifact never ran at all, which is answered by a
  * rewrite rather than by a fix. So an error is `threw` once its run has acked
- * its mount, and `failed` before that; and a `mounted` arriving *after* a
- * failure is dropped, because a document that threw on its way up can still
- * finish parsing and ack.
+ * its mount, and `failed` before that.
+ *
+ * `settledRunId` is either of those words having been said, and a `mounted`
+ * arriving after one is dropped: a document that broke on its way up can still
+ * finish parsing and ack, and a `rendered` behind a `threw` would tell the panel
+ * the page is fine while the pupil is looking at the error it just reported.
  */
 let mountedRunId: string | null = null;
-let failedRunId: string | null = null;
+let settledRunId: string | null = null;
 /**
  * Which artifact each staged document belongs to, newest last.
  *
@@ -346,7 +349,7 @@ async function render(
 ): Promise<void> {
   currentRunId = runId;
   mountedRunId = null;
-  failedRunId = null;
+  settledRunId = null;
 
   // Read before the awaits below: the shim is seeded with what this artifact
   // held, and a snapshot arriving mid-render belongs to the document being
@@ -385,7 +388,7 @@ async function render(
 
   if (!result.ok) {
     stage.srcdoc = "";
-    failedRunId = runId;
+    settledRunId = runId;
     toHost({ channel: ARTIFACT_CHANNEL, type: "failed", runId, message: result.message });
     return;
   }
@@ -433,9 +436,9 @@ window.addEventListener("message", (event) => {
     }
 
     if (staged.type === "mounted") {
-      // A run that already reported a failure has said its word; the document
-      // finishing its parse afterwards does not take it back.
-      if (staged.runId === failedRunId) return;
+      // A run that already reported `failed` or `threw` has said its word; the
+      // document finishing its parse afterwards does not take it back.
+      if (staged.runId === settledRunId) return;
 
       mountedRunId = staged.runId;
       toHost({ channel: ARTIFACT_CHANNEL, type: "rendered", runId: staged.runId });
@@ -451,6 +454,7 @@ window.addEventListener("message", (event) => {
     // be reported to the application as this artifact having failed.
     if (staged.type === "runtime-error") {
       if (staged.runId === mountedRunId) {
+        settledRunId = staged.runId;
         toHost({
           channel: ARTIFACT_CHANNEL,
           type: "threw",
@@ -460,7 +464,7 @@ window.addEventListener("message", (event) => {
         return;
       }
 
-      failedRunId = staged.runId;
+      settledRunId = staged.runId;
       toHost({
         channel: ARTIFACT_CHANNEL,
         type: "failed",
@@ -502,7 +506,7 @@ window.addEventListener("message", (event) => {
   // waiting on a build that is never coming, with nothing to tell the pupil.
   void render(message.runId, message.artifactId, message.language, message.source).catch(
     (cause) => {
-      failedRunId = message.runId;
+      settledRunId = message.runId;
       toHost({
         channel: ARTIFACT_CHANNEL,
         type: "failed",
