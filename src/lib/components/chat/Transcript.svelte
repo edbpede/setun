@@ -92,7 +92,14 @@ $effect(() => {
   untrack(() => {
     const added = total - counted;
     counted = total;
-    if (added > 0 && !pinned) windowSize += added;
+    if (added <= 0 || pinned) return;
+
+    windowSize += added;
+    // The widened window is part of the stored position. Nothing was added
+    // above the viewport — that is the point — so the offset still stands, and
+    // a discard before the next scroll would otherwise come back to this offset
+    // over a narrower column.
+    remember();
   });
 });
 
@@ -179,6 +186,9 @@ $effect(() => {
   const element = scroller;
   if (!element || !conversationId) return;
 
+  /** Cleared on teardown, so a restore still in the air is abandoned. */
+  let live = true;
+
   const stored = untrack(() => readTranscriptPosition(conversationId));
   if (stored) {
     untrack(() => {
@@ -191,6 +201,11 @@ $effect(() => {
     });
 
     void tick().then(() => {
+      // The pupil can switch conversations inside that update, and the scroller
+      // is the same element either way — this offset belongs to the thread that
+      // has gone.
+      if (!live) return;
+
       element.scrollTo({ top: stored.offset });
       measure();
     });
@@ -201,7 +216,10 @@ $effect(() => {
     measure();
   };
   element.addEventListener("scroll", onscroll, { passive: true });
-  return () => element.removeEventListener("scroll", onscroll);
+  return () => {
+    live = false;
+    element.removeEventListener("scroll", onscroll);
+  };
 });
 </script>
 
@@ -215,10 +233,13 @@ $effect(() => {
       {#if hidden > 0}
         <button
           type="button"
-          onclick={() => {
+          onclick={async () => {
             windowSize += MESSAGE_WINDOW;
             // Part of the position, not a separate preference: coming back to
-            // the same line means coming back to the same mounted thread.
+            // the same line means coming back to the same mounted thread. After
+            // the update, because thirty more messages mounting *above* moves
+            // the offset this is about to store.
+            await tick();
             remember();
           }}
           class="mx-auto min-h-9 rounded-full border border-border px-3 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
