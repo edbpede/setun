@@ -19,10 +19,20 @@ export async function openDrawer(page: Page, options: LocaleOptions = {}): Promi
 
 /** Start a conversation and wait until the page is on it. */
 export async function startConversation(page: Page, options: LocaleOptions = {}): Promise<void> {
+  const previous = new URL(page.url()).searchParams.get("c");
+
   await openDrawer(page, options);
   await page.getByRole("button", { name: m.chat_new_conversation({}, options) }).click();
 
   // The composer is present from the first visit — the conversation is minted on
   // the first send — so its appearance is not the implicit wait it once was.
-  await expect(page).toHaveURL(/\?c=/);
+  //
+  // Which conversation, not merely that there is one: a suite already on a
+  // thread carries a `?c=` the moment it clicks, so a pattern match is satisfied
+  // by the conversation it is trying to leave and the rest of the test runs
+  // against the wrong one.
+  await expect(page).toHaveURL((url) => {
+    const id = url.searchParams.get("c");
+    return id !== null && id !== previous;
+  });
 }
