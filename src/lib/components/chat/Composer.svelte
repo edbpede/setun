@@ -103,8 +103,16 @@ $effect(() => {
   element.style.height = `${Math.min(element.scrollHeight, 200)}px`;
 });
 
+/**
+ * The composer's controls, at the size a finger needs (§20).
+ *
+ * `size-11` is 44 pixels. The target device is a touchscreen convertible and
+ * these are the most-pressed controls on the route, so they keep the touch
+ * target the rest of the interface uses rather than the smaller one the icons
+ * alone would need.
+ */
 const iconButton =
-  "grid size-9 shrink-0 place-items-center rounded-lg text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+  "grid size-11 shrink-0 place-items-center rounded-lg text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 </script>
 
 <form class="shrink-0 bg-background px-3 pb-3 pt-1" onsubmit={submit}>
@@ -211,7 +219,7 @@ const iconButton =
             type="button"
             onclick={onabort}
             aria-label={m.chat_stop()}
-            class="ml-auto grid size-9 shrink-0 place-items-center rounded-full border border-input text-foreground hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            class="ml-auto grid size-11 shrink-0 place-items-center rounded-full border border-input text-foreground hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <Square size={13} fill="currentColor" aria-hidden="true" />
           </button>
@@ -221,7 +229,7 @@ const iconButton =
             disabled={!composer.canSend}
             aria-label={sendLabel}
             title={sendLabel}
-            class="ml-auto grid size-9 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-safe:transition-opacity"
+            class="ml-auto grid size-11 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-safe:transition-opacity"
           >
             {#if isImageMode}
               <Image size={17} aria-hidden="true" />
