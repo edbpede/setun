@@ -1,6 +1,6 @@
 <script lang="ts">
 import Plus from "@lucide/svelte/icons/plus";
-import { untrack } from "svelte";
+import { tick, untrack } from "svelte";
 import { enhance } from "$app/forms";
 import { goto, invalidateAll, replaceState } from "$app/navigation";
 import { page } from "$app/state";
@@ -523,7 +523,7 @@ function openArtifact(artifactId: string): void {
  * the composer and puts the caret in it. Nothing has to be closed first — the
  * composer is beside the error rather than underneath it.
  */
-function askForHelp(status: BuildStatus): void {
+async function askForHelp(status: BuildStatus): Promise<void> {
   // A question, sent now, as text. An edit in progress would send it as a
   // sibling of some earlier prompt, and image mode would draw the sentence
   // instead of answering it (§10, §15).
@@ -533,8 +533,13 @@ function askForHelp(status: BuildStatus): void {
   // page that mounted and then threw did run, and saying otherwise asks for a
   // rewrite of a file that nearly works.
   composer.setDraft(status === "threw" ? m.artifact_fix_request_threw() : m.artifact_fix_request());
-  // The conversation has to be on screen for the composer to be reachable.
-  if (artifacts.stage === "build") artifacts.setStage("both");
+  // The conversation has to be on screen for the composer to be reachable — and
+  // it is only on screen after the update that reveals it, so the caret waits
+  // for that. Focusing a textarea inside a `hidden` pane does nothing at all.
+  if (artifacts.stage === "build") {
+    artifacts.setStage("both");
+    await tick();
+  }
   composerRef?.focus();
 }
 
@@ -760,7 +765,7 @@ async function abort(): Promise<void> {
         <ArtifactPanel
           workspace={artifacts}
           sandboxOrigin={data.sandboxOrigin}
-          onaskforhelp={askForHelp}
+          onaskforhelp={(status) => void askForHelp(status)}
         />
       {/snippet}
     </WorkspaceShell>
