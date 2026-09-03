@@ -138,6 +138,8 @@ function ontablistkeydown(event: KeyboardEvent): void {
     values: tabs.map((candidate) => candidate.value),
     current: tab,
     attribute: "data-tab",
+    // A horizontal tab list, so Up and Down are the page's, not this list's.
+    orientation: "inline",
   });
   if (!next) return;
 
@@ -200,15 +202,24 @@ async function restore(version: ArtifactVersionView): Promise<void> {
   workspace.tab = "preview";
 }
 
+/**
+ * Which history request is the current one.
+ *
+ * Two can be in flight at once and they can land in either order — the pupil
+ * moved to another artifact, or a revision of *this* one landed and reopened the
+ * effect. Both cases are the same mistake if the loser is what gets assigned, so
+ * only the newest request is allowed to write.
+ */
+let versionsRequest = 0;
+
 async function loadVersions(artifactId: string): Promise<void> {
+  const request = ++versionsRequest;
+
   const response = await fetch(`/api/artifacts/${artifactId}`).catch(() => null);
   if (!response?.ok) return;
 
   const body = (await response.json()) as { versions: ArtifactVersionView[] };
-  // The pupil can move to another artifact while this is in flight, and two
-  // requests can land in either order. A late answer about the artifact they
-  // have left must not become the history of the one they are looking at.
-  if (workspace.openId !== artifactId) return;
+  if (request !== versionsRequest) return;
 
   versions = body.versions;
   selectedVersionId = body.versions.at(-1)?.id ?? null;
