@@ -86,7 +86,27 @@ Never run `shadcn-svelte init`; `components.json` is hand-written. Add component
 bunx shadcn-svelte add <component> --skip-preflight
 ```
 
-Theme variables live in `uno.config.ts` as bare **oklch** components, not HSL.
+Theme variables live in `uno.config.ts` as bare **oklch** components, not HSL — `0.967 0.0029
+264.54`, with no function around them, because the preset's own colour utilities supply the
+wrapper. So a `<style>` block must write `oklch(var(--muted))`; a plain `var(--muted)` resolves to
+an invalid colour and silently falls back to transparent.
+
+Light and dark both ship. `<html class="dark">` is what switches the preset's dark block on; the
+inline script in `src/app.html` sets it before first paint and `$lib/state/theme.svelte.ts` keeps
+it in step, with `setun:theme` as the contract between the two. Never hardcode a light-only
+colour — use the tokens, and check both themes.
+
+## The student workspace
+
+`src/routes/(student)/chat/` is wiring only: the turn stream, the endpoints, the refusals. The
+layout belongs to `$lib/components/workspace/`.
+
+`ArtifactWorkspace` (`$lib/state/artifacts.svelte.ts`) holds one `stage` — `chat`, `both` or
+`build` — and one `fraction`, and knows nothing about geometry. `WorkspaceShell` splits along the
+inline axis above `64rem` (`$lib/workspace/axis.ts`) and stacks below it; the same divider is the
+sheet's grab handle. Anything that wants to show an artifact calls `reveal()` or `select()` rather
+than setting a stage directly, so a pupil already reading one fullscreen is not knocked back into
+the split.
 
 ## Biome does not parse `.svelte` markup
 

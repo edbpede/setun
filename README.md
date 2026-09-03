@@ -40,16 +40,20 @@ states: minus, zero, and plus.
   instructions, retention, and daily or per-student budgets.
 - **Streaming AI chat** — run classroom-scoped conversations with attachments, search, cancellation,
   and model aliases chosen by the educator.
-- **Live artifacts** — preview, edit, rerun, and version HTML, SVG, JSX, TSX, and Svelte creations in
-  an isolated workspace, built up over several turns: the model writes an id on the fence
-  (` ```html id=home-page `) and reuses it to revise the same thing, and a run's outcome travels
-  back so the next answer can fix the error the pupil saw.
+- **Live artifacts beside the conversation** — preview, edit, rerun, and version HTML, SVG, JSX,
+  TSX, and Svelte creations in a pane that never covers the composer, so a student can look at what
+  the model made while asking for the next change. One control moves the workspace between the
+  conversation, both, and the build. Artifacts are built up over several turns: the model writes an
+  id on the fence (` ```html id=home-page `) and reuses it to revise the same thing, and a run's
+  outcome travels back so the next answer can fix the error the student saw.
 - **Curated capabilities** — publish reusable skills and expose only approved MCP tools, with
   per-classroom controls for tools that require confirmation.
 - **Image workflows** — support image attachments and model-generated images without exposing the
   underlying storage directory.
 - **English and Danish** — complete localized interfaces, with a classroom default and per-student
   override.
+- **Light and dark** — the interface follows the device by default, with an explicit choice stored
+  in the browser and never against the student.
 - **Self-hosted operations** — SQLite persistence, automatic migrations, retention jobs, nightly
   snapshots, and a Compose deployment behind Caddy.
 
@@ -313,7 +317,9 @@ Test filenames select their runner:
 - Use `bun run check` as the authority for Svelte templates. Biome does not fully understand Svelte
   markup, so never apply its unsafe fixes to a component.
 - The design baseline is tweakcn's clean-slate theme, ported to bare oklch components in
-  `uno.config.ts`.
+  `uno.config.ts`. A `<style>` block reading one of those variables must wrap it —
+  `oklch(var(--muted))` — because the preset's utilities supply the wrapper and a bare `var()`
+  silently resolves to transparent. Dark mode is `<html class="dark">`; check both themes.
 - Install `prek` before committing. Hooks enforce Conventional Commits, protect `main`, and scan for
   secrets.
 
