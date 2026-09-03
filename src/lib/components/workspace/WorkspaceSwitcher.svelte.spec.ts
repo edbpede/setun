@@ -74,6 +74,16 @@ describe("WorkspaceSwitcher", () => {
     expect(chosen).toHaveBeenLastCalledWith("both");
   });
 
+  it("answers to both arrow pairs, as a radio group does whichever way it lies", async () => {
+    const chosen = vi.fn();
+    render(WorkspaceSwitcher, { stage: "chat", axis: "inline", onstage: chosen });
+
+    await page.getByRole("radio", { name: m.workspace_stage_chat() }).click();
+    await userEvent.keyboard("{ArrowDown}");
+
+    expect(chosen).toHaveBeenLastCalledWith("both");
+  });
+
   it("badges the switcher when something was built that the pupil has not seen", async () => {
     render(WorkspaceSwitcher, {
       stage: "chat",

@@ -22,20 +22,32 @@
  * new value would then skip straight past the position that was just selected.
  *
  * `attribute` names the data attribute each control carries its own value in.
+ *
+ * `orientation` says which arrows belong to the control. A radio group answers
+ * to both pairs whichever way it is laid out, which is the pattern's own rule;
+ * a horizontal tab list answers to Left and Right only, and leaves Up and Down
+ * to the page they would otherwise scroll.
  */
 export function rovingTarget<T extends string>(
   event: KeyboardEvent,
-  options: { values: readonly T[]; current: T; attribute: string },
+  options: {
+    values: readonly T[];
+    current: T;
+    attribute: string;
+    orientation?: "inline" | "both";
+  },
 ): T | null {
+  const { values, current, attribute, orientation = "both" } = options;
+  const blockAxis = orientation === "both";
+
   const step =
-    event.key === "ArrowRight" || event.key === "ArrowDown"
+    event.key === "ArrowRight" || (blockAxis && event.key === "ArrowDown")
       ? 1
-      : event.key === "ArrowLeft" || event.key === "ArrowUp"
+      : event.key === "ArrowLeft" || (blockAxis && event.key === "ArrowUp")
         ? -1
         : 0;
   if (step === 0) return null;
 
-  const { values, current, attribute } = options;
   if (values.length === 0) return null;
 
   const focused =
