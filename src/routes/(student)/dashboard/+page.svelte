@@ -2,6 +2,7 @@
 import { enhance } from "$app/forms";
 import AllowanceMeter from "$lib/components/classroom/AllowanceMeter.svelte";
 import ConversationSearch from "$lib/components/student/ConversationSearch.svelte";
+import ThemeControl from "$lib/components/ui/ThemeControl.svelte";
 import * as m from "$lib/paraglide/messages";
 import { getLocale } from "$lib/paraglide/runtime";
 import type { PageProps } from "./$types";
@@ -155,6 +156,18 @@ const action =
     <a href="/skills" class="self-start text-xs text-primary underline underline-offset-2">
       {m.student_open_skills()}
     </a>
+  </section>
+
+  <!--
+    How the interface is coloured (§20).
+
+    A device setting rather than an account one: it is stored in this browser and
+    reaches neither the server nor another pupil's Chromebook, so nothing about
+    how a pupil likes to read is recorded against them (§16).
+  -->
+  <section class="flex flex-col gap-2">
+    <h2 class="text-sm font-medium text-foreground">{m.theme_label()}</h2>
+    <div class="max-w-56"><ThemeControl /></div>
   </section>
 
   <!-- The pupil's own language, overriding the classroom's (§8, §18). -->

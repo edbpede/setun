@@ -38,12 +38,17 @@ button:not(:disabled),
 }
 
 /*
- * Light is the default and the only mode the pilot ships. The preset still emits
- * the `.dark` block; it stays dormant until a `.dark` class is applied.
+ * Light is the default; `.dark` is applied to `<html>` by the inline script in
+ * `src/app.html` and kept in step by `$lib/state/theme.svelte.ts`, which is what
+ * switches the preset's own `.dark` block on.
  */
 :root {
   color-scheme: light;
   --tracking-normal: 0em;
+}
+
+:root.dark {
+  color-scheme: dark;
 }
 
 /* clean-slate drives body letter-spacing from its tracking scale. */
