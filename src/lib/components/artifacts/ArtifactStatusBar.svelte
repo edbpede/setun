@@ -56,15 +56,19 @@ const runStatus = $derived(
  * actually act on — the message, and the button that hands it back to the model
  * — was missing from the one place it belongs.
  *
- * Only while no run of this artifact is live. `idle` is both "the frame has not
- * been mounted" — which is where a reopened artifact genuinely has nothing but
- * the stored record — and "reset, not yet compiling". Once it is compiling, the
- * last run's error beneath a line that says *Compiling…* is a contradiction, and
- * once it is running or failed this run has its own words to show.
+ * Only while there is no run at all, which is what `running` says and `status`
+ * does not: `show` sets the source going before the frame has reported anything,
+ * and an html or svg artifact never reports `compiling` — the sandbox stages it
+ * directly — so `idle` covers the whole of a static artifact's load. Gating on
+ * the status left the previous failure on screen underneath it.
+ *
+ * A null `running` is the case this fallback exists for: the artifact is open
+ * with no frame mounted, so the stored record is the only account of it there
+ * is. Once something is running, that run's own words are the ones to show.
  */
 const diagnostic = $derived(
   workspace.error ??
-    (workspace.status === "idle" &&
+    (workspace.running === null &&
     workspace.outcome === null &&
     (runStatus === "failed" || runStatus === "threw")
       ? (workspace.open?.latest.buildMessage ?? null)
