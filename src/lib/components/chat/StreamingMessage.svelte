@@ -59,8 +59,16 @@ const noticeText = $derived(turn.notice ? turnNoticeText(turn.notice) : null);
    * The one thing that says an answer is still arriving. A block on the last
    * line rather than a spinner somewhere else: it is where the pupil is already
    * looking.
+   *
+   * The last *paragraph*, not the last child of any kind. A turn can end on an
+   * artifact stub or a generated image, and hanging the caret off those put it
+   * inside the card — or, on a replaced element, nowhere at all, because an
+   * `<img>` has no `::after`. So the second rule catches exactly that case and
+   * stands the caret after the content instead, which is the only place left
+   * for it once there is no line to ride.
    */
-  .streaming-caret :global(> :last-child::after) {
+  .streaming-caret :global(> p:last-child::after),
+  .streaming-caret:not(:has(> :global(p:last-child)))::after {
     content: "";
     display: inline-block;
     vertical-align: text-bottom;
@@ -72,7 +80,8 @@ const noticeText = $derived(turn.notice ? turnNoticeText(turn.notice) : null);
   }
 
   @media (prefers-reduced-motion: no-preference) {
-    .streaming-caret :global(> :last-child::after) {
+    .streaming-caret :global(> p:last-child::after),
+    .streaming-caret:not(:has(> :global(p:last-child)))::after {
       animation: setun-caret 1.1s steps(1, end) infinite;
     }
 
