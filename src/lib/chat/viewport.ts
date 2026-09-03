@@ -35,13 +35,27 @@ export const fitVisualViewport: Attachment<HTMLElement> = (node) => {
   };
 };
 
-/** Where the conversation was scrolled to, per conversation. */
-function scrollKey(conversationId: string): string {
-  return `setun:scroll:${conversationId}`;
+/** Where the conversation was, per conversation. */
+function positionKey(conversationId: string): string {
+  return `setun:transcript:${conversationId}`;
 }
 
 /**
- * Scroll position across a tab discard (PRD §20).
+ * Where the pupil was reading, and how much of the thread was under them.
+ *
+ * The offset alone is not the position: a transcript mounts its newest thirty
+ * messages and widens only when the pupil asks for more, so an offset measured
+ * against a widened column means somewhere else entirely in a fresh one.
+ */
+export interface TranscriptPosition {
+  /** The scroller's `scrollTop`, in pixels. */
+  readonly offset: number;
+  /** How many messages were mounted, so "show earlier" survives the discard. */
+  readonly window: number;
+}
+
+/**
+ * Reading position across a tab discard (PRD §20).
  *
  * "Composer drafts and scroll position survive tab discard, and in-flight turns
  * resume from the server." A Chromebook with 4 GB discards background tabs
@@ -51,13 +65,52 @@ function scrollKey(conversationId: string): string {
  * `sessionStorage`, like the composer draft: the value belongs to this tab and
  * this conversation, and nothing about a scroll offset should outlive the
  * browsing session or reach another device.
+ *
+ * Null means "nothing stored", which a bare number could not say: a pupil who
+ * had read back to the very top stored a zero, and a zero read back as no
+ * position at all left them at the newest end instead.
  */
-export function readScrollPosition(conversationId: string | null): number {
-  if (!conversationId || typeof sessionStorage === "undefined") return 0;
-  return Number(sessionStorage.getItem(scrollKey(conversationId)) ?? 0);
+export function readTranscriptPosition(conversationId: string | null): TranscriptPosition | null {
+  if (!conversationId) return null;
+
+  try {
+    // Inside the `try`, because `typeof` only swallows an *unresolvable* name:
+    // `sessionStorage` is a real property of `window` and reading it is what
+    // throws where site data is blocked.
+    if (typeof sessionStorage === "undefined") return null;
+
+    const stored = sessionStorage.getItem(positionKey(conversationId));
+    if (stored === null) return null;
+
+    const parsed: unknown = JSON.parse(stored);
+    if (typeof parsed !== "object" || parsed === null) return null;
+
+    const { offset, window } = parsed as Partial<TranscriptPosition>;
+    if (!Number.isFinite(offset) || !Number.isFinite(window)) return null;
+
+    return { offset: Number(offset), window: Number(window) };
+  } catch {
+    // A value written by an older shape, or storage blocked outright. Neither is
+    // worth an exception on the way into a lesson.
+    return null;
+  }
 }
 
-export function writeScrollPosition(conversationId: string | null, offset: number): void {
-  if (!conversationId || typeof sessionStorage === "undefined") return;
-  sessionStorage.setItem(scrollKey(conversationId), String(Math.round(offset)));
+export function writeTranscriptPosition(
+  conversationId: string | null,
+  position: TranscriptPosition,
+): void {
+  if (!conversationId) return;
+
+  try {
+    if (typeof sessionStorage === "undefined") return;
+
+    sessionStorage.setItem(
+      positionKey(conversationId),
+      JSON.stringify({ offset: Math.round(position.offset), window: position.window }),
+    );
+  } catch {
+    // Site data is blocked. The transcript still works; it just does not come
+    // back to the same line after a discard.
+  }
 }

@@ -39,10 +39,29 @@ export interface ArtifactView {
   readonly latest: ArtifactVersionView;
 }
 
-/** Tabbed by default; split by choice; fullscreen as the primary preview mode (§20). */
-export type PanelLayout = "overlay" | "split" | "fullscreen";
-export type PanelView = "preview" | "code" | "history";
+/**
+ * Where the workspace is pointed: at the conversation, at both, or at the build.
+ *
+ * Setun is named after the 1958 balanced-ternary machine, and the workspace is
+ * genuinely three-valued rather than a panel that is open or shut. One control
+ * with three positions replaces the three two-way toggles this used to carry —
+ * *Build*, *Split view*, *Fullscreen* — which between them described the same
+ * three states in a way a pupil had to assemble for themselves.
+ *
+ * The stage says nothing about geometry. A wide screen lays the two panes out
+ * side by side and a narrow one stacks them, but *which* surfaces are on screen
+ * is one value in one place (§20).
+ */
+export type WorkspaceStage = "chat" | "both" | "build";
+
+/** What the build pane is showing. `index` is the list of everything built (§13). */
+export type PanelTab = "index" | "preview" | "code" | "history";
+
 export type RunStatus = "idle" | "compiling" | "running" | "failed";
+
+/** The conversation's smallest and largest share of the split (§20). */
+export const MIN_FRACTION = 0.3;
+export const MAX_FRACTION = 0.72;
 
 /**
  * How many printed lines the panel keeps.
@@ -54,24 +73,26 @@ export const CONSOLE_KEPT = 200;
 
 export class ArtifactWorkspace {
   items = $state<ArtifactView[]>([]);
-  /** Whether the panel is on screen. The Build entry point is what opens it (§13). */
-  visible = $state(false);
   openId = $state<string | null>(null);
-  layout = $state<PanelLayout>("overlay");
-  view = $state<PanelView>("preview");
+
+  /** Which surfaces are on screen. The one control that governs the layout. */
+  stage = $state<WorkspaceStage>("chat");
+
+  /** What the build pane is showing while it is on screen. */
+  tab = $state<PanelTab>("preview");
 
   /**
-   * How much of the width the split panel takes (§20).
+   * The conversation's share of the split (§20).
    *
-   * "Split view available by choice… panel handles are draggable by touch." A
-   * fixed half is the wrong half about as often as it is the right one on a
-   * 1366-pixel screen, so the handle moves it and this holds where it was left.
+   * "Panel handles are draggable by touch." One fraction along whichever axis
+   * the shell is using: a fixed half is the wrong half about as often as it is
+   * the right one, so the handle moves it and this holds where it was left.
    */
-  splitFraction = $state(0.5);
+  fraction = $state(0.56);
 
   /** Clamped so the handle can never drag either side out of existence. */
-  setSplitFraction(fraction: number): void {
-    this.splitFraction = Math.min(0.8, Math.max(0.25, fraction));
+  setFraction(fraction: number): void {
+    this.fraction = Math.min(MAX_FRACTION, Math.max(MIN_FRACTION, fraction));
   }
 
   /** What the editor holds. Null while the student has not typed anything. */
@@ -110,12 +131,43 @@ export class ArtifactWorkspace {
   consoleLines = $state<ConsoleLine[]>([]);
 
   /**
+   * Whether anything was actually thrown away to make room.
+   *
+   * Not `consoleLines.length >= CONSOLE_KEPT`: a run that printed exactly the
+   * number kept lost nothing, and telling a pupil their earlier output is gone
+   * when all of it is on screen sends them looking for something to fix.
+   */
+  consoleTruncated = $state(false);
+
+  /**
    * An artifact whose model-written revision the pupil has not looked at.
    *
-   * The Build button wears it as a badge, so a pupil whose panel is closed still
+   * The switcher wears it as a badge, so a pupil reading the conversation still
    * learns that something was built.
    */
   unseen = $state<string | null>(null);
+
+  /** True while the build surface is on screen at all. */
+  get visible(): boolean {
+    return this.stage !== "chat";
+  }
+
+  /** True while the conversation is on screen at all. */
+  get conversationVisible(): boolean {
+    return this.stage !== "build";
+  }
+
+  /**
+   * Whether the build pane stays in the document while the pupil reads.
+   *
+   * A running artifact holds state the pupil built up — a score, a board, a form
+   * half filled in — and tearing the frame down to glance at the conversation
+   * throws all of it away. So the pane is hidden rather than unmounted whenever
+   * something is running, and the frame keeps its document (§13).
+   */
+  get mounted(): boolean {
+    return this.visible || this.running !== null;
+  }
 
   /** The PATCH the panel owes the server, or null when it owes none. */
   get pendingBuildReport(): BuildReport | null {
@@ -164,21 +216,35 @@ export class ArtifactWorkspace {
    * the model answering again must not silently discard what a pupil was typing,
    * and a reload that returns the same revision must not either.
    *
-   * When the model wrote something, the panel opens on it and follows it: the
-   * pupil asked for the thing, and having to go looking for it afterwards was
-   * the gap between "it built something" and "they can see it" (§13, §20).
+   * When the model wrote something, the workspace turns to it and follows it:
+   * the pupil asked for the thing, and having to go looking for it afterwards
+   * was the gap between "it built something" and "they can see it" (§13, §20).
    */
   replace(items: ArtifactView[], conversationId: string | null = null): void {
     const previous = this.open;
     const fresh = !this.hydrated || conversationId !== this.hydratedFor;
+    /**
+     * The pupil left a named thread for another one.
+     *
+     * Narrower than `fresh`, deliberately: a first visit has no conversation
+     * until the first send mints one, and that null-to-named step is `fresh` as
+     * well. It is not a switch — nothing was left behind — and treating it as
+     * one would close the build surface under a pupil who had opened it while
+     * their first answer was still arriving.
+     */
+    const switched = this.hydratedFor !== null && conversationId !== this.hydratedFor;
     const followed = fresh ? null : followModelWrite(this.items, items);
 
     this.hydrated = true;
     this.hydratedFor = conversationId;
     // The badge belongs to the list it was raised over. A page load or a switch
     // replaces that list wholesale, so an artifact the pupil never looked at in
-    // the conversation they have left must not go on badging the Build button.
+    // the conversation they have left must not go on badging the switcher.
     if (fresh) this.unseen = null;
+    // And so does the surface itself: the artifacts it was showing belong to the
+    // thread that is gone, so a split kept across the switch is a blank pane
+    // beside the new conversation.
+    if (switched) this.stage = "chat";
     /**
      * A draft on some *other* artifact is work the pupil is in the middle of,
      * and following the model's write would take the editor out from under them.
@@ -191,47 +257,67 @@ export class ArtifactWorkspace {
 
     if (this.openId && !items.some((item) => item.id === this.openId)) {
       this.openId = items[0]?.id ?? null;
-      this.draft = null;
-      this.draftLanguage = null;
-      this.running = null;
-      this.runningLanguage = null;
-      this.outcome = null;
-      this.consoleLines = [];
+      this.resetRun();
       return;
     }
 
     if (previous && this.open && previous.latest.id !== this.open.latest.id) {
-      this.draft = null;
-      this.draftLanguage = null;
+      // A new revision of the artifact on screen is a new subject: the draft it
+      // supersedes, the status of the run that produced the old one, and what
+      // that run printed all go together.
+      this.resetRun();
       this.running = this.open.latest.source;
       this.runningLanguage = effectiveLanguage(this.open, this.open.latest);
-      this.outcome = null;
-      this.consoleLines = [];
     }
 
     if (!followed) return;
 
-    // The model wrote something. The pupil asked for it, so the panel opens on
-    // it and — while it stays open — follows the newest thing written (§13, §20).
+    // The model wrote something. The pupil asked for it, so the workspace turns
+    // to it and — while it stays open — follows the newest thing written.
     if (busyElsewhere) {
       this.unseen = followed;
       return;
     }
 
-    this.visible = true;
     this.show(followed);
+    this.reveal();
   }
 
   /**
-   * Put an artifact on screen without changing whether the panel is open.
+   * Put an artifact on screen without changing which surfaces are showing.
    *
-   * `select` is the pupil choosing one and always opens the panel; this is the
-   * panel following a write, and is also what the transcript's card calls.
+   * `select` is the pupil choosing one and always turns to the build surface;
+   * this is the workspace following a write, and is also what the transcript's
+   * card calls before deciding what to reveal.
    */
   show(artifactId: string): void {
     if (!this.items.some((item) => item.id === artifactId)) return;
 
+    /**
+     * Choosing the artifact already open is navigation, not a new subject.
+     *
+     * Picking it out of the Builds index used to throw away the unsaved edit in
+     * the editor and restart whatever the frame was running — a pupil looking at
+     * the list of what they had built lost their work by tapping the row they
+     * were already on. A revision arriving is the case that *does* clear the
+     * draft, and `replace` above is where that happens.
+     */
+    if (this.openId === artifactId) {
+      this.tab = "preview";
+      if (this.unseen === artifactId) this.unseen = null;
+      return;
+    }
+
     this.openId = artifactId;
+    this.tab = "preview";
+    this.resetRun();
+    this.running = this.open?.latest.source ?? null;
+    this.runningLanguage = this.language;
+    if (this.unseen === artifactId) this.unseen = null;
+  }
+
+  /** Everything about the current run, cleared. */
+  private resetRun(): void {
     this.draft = null;
     this.draftLanguage = null;
     this.status = "idle";
@@ -239,9 +325,9 @@ export class ArtifactWorkspace {
     this.saveFailed = false;
     this.outcome = null;
     this.consoleLines = [];
-    this.running = this.open?.latest.source ?? null;
-    this.runningLanguage = this.language;
-    if (this.unseen === artifactId) this.unseen = null;
+    this.consoleTruncated = false;
+    this.running = null;
+    this.runningLanguage = null;
   }
 
   /** What the frame reported, against the source and tag it was actually running (§13). */
@@ -256,7 +342,9 @@ export class ArtifactWorkspace {
 
   /** A batch of printed lines from the artifact. Text, never markup (§13, §21). */
   appendConsole(lines: readonly ConsoleLine[]): void {
-    this.consoleLines = [...this.consoleLines, ...lines].slice(-CONSOLE_KEPT);
+    const merged = [...this.consoleLines, ...lines];
+    if (merged.length > CONSOLE_KEPT) this.consoleTruncated = true;
+    this.consoleLines = merged.slice(-CONSOLE_KEPT);
   }
 
   /** Fold a stored build result back in, so the report is not sent twice. */
@@ -272,47 +360,46 @@ export class ArtifactWorkspace {
   }
 
   /**
-   * The Build entry point (§13).
+   * Turn to the build surface (§13).
    *
    * "A prominent Build entry point makes artifact work discoverable rather than
-   * an obscure toggle" — so it opens even with nothing built yet, where the
-   * panel says what to ask for rather than the control being absent.
+   * an obscure toggle" — so this works with nothing built yet, where the pane
+   * says what to ask for rather than the control being absent.
    */
-  toggle(): void {
-    if (this.visible) {
-      this.close();
+  reveal(stage?: Exclude<WorkspaceStage, "chat">): void {
+    // "At least show it": a pupil already reading an artifact fullscreen is not
+    // dropped back into the split because the model wrote a second one.
+    this.stage = stage ?? (this.stage === "chat" ? "both" : this.stage);
+
+    if (this.openId) {
+      if (this.unseen === this.openId) this.unseen = null;
       return;
     }
 
-    this.visible = true;
-    if (!this.openId) this.select(this.items[0]?.id ?? null);
+    // One thing built is the thing they meant; several is a question, and the
+    // index is where it is answered rather than by guessing at the first row.
+    if (this.items.length === 1) this.show(this.items[0].id);
+    else if (this.items.length > 1) this.tab = "index";
   }
 
-  select(artifactId: string | null): void {
-    this.visible = true;
-    this.openId = artifactId;
-    this.draft = null;
-    this.draftLanguage = null;
-    this.status = "idle";
-    this.error = null;
-    this.saveFailed = false;
-    this.outcome = null;
-    this.consoleLines = [];
-    this.running = this.open?.latest.source ?? null;
-    this.runningLanguage = this.language;
-    if (this.unseen === artifactId) this.unseen = null;
+  /** Move the workspace to a stage the pupil picked. */
+  setStage(stage: WorkspaceStage): void {
+    if (stage === "chat") {
+      this.stage = "chat";
+      return;
+    }
+    this.reveal(stage);
   }
 
-  close(): void {
-    this.visible = false;
-    this.draft = null;
-    this.draftLanguage = null;
-    this.running = null;
-    this.runningLanguage = null;
-    this.status = "idle";
-    this.error = null;
-    this.outcome = null;
-    this.consoleLines = [];
+  /** The pupil choosing an artifact from the index or from the transcript. */
+  select(artifactId: string): void {
+    this.show(artifactId);
+    this.reveal();
+  }
+
+  /** Back to the conversation, keeping whatever the frame has built up. */
+  hide(): void {
+    this.stage = "chat";
   }
 
   /** A keystroke. Nothing compiles here — that is the point (§13, §20). */
@@ -346,6 +433,7 @@ export class ArtifactWorkspace {
     this.error = null;
     this.outcome = null;
     this.consoleLines = [];
+    this.consoleTruncated = false;
   }
 
   /** Fold a version the server just stored back into the list. */

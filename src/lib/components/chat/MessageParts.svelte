@@ -39,10 +39,19 @@ interface Props {
   plain?: boolean;
   /** What the server recorded for this message, in the order the blocks came (§13). */
   artifacts?: readonly MessageArtifactRef[];
+  /** Which artifact the build surface is showing, so its card can say so (§13). */
+  activeArtifactId?: string | null;
   onopenartifact?: (artifactId: string) => void;
 }
 
-let { parts, streaming = false, plain = false, artifacts, onopenartifact }: Props = $props();
+let {
+  parts,
+  streaming = false,
+  plain = false,
+  artifacts,
+  activeArtifactId = null,
+  onopenartifact,
+}: Props = $props();
 
 /**
  * Where each text part starts counting artifacts (§13).
@@ -167,7 +176,11 @@ const failed = $derived(
         {#if segment.kind === "text"}
           <MarkdownMessage text={segment.text} />
         {:else if artifacts?.[segment.index]}
-          <ArtifactCard artifact={artifacts[segment.index]} onopen={onopenartifact} />
+          <ArtifactCard
+            artifact={artifacts[segment.index]}
+            active={artifacts[segment.index].artifactId === activeArtifactId}
+            onopen={onopenartifact}
+          />
         {:else}
           <MarkdownMessage text={segment.raw} />
         {/if}

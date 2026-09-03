@@ -28,11 +28,13 @@ const diff: Attachment<HTMLDivElement> = (node) => {
   let view: { destroy: () => void } | null = null;
 
   void (async () => {
-    const [{ EditorView }, { EditorState }, { unifiedMergeView }] = await Promise.all([
-      import("@codemirror/view"),
-      import("@codemirror/state"),
-      import("@codemirror/merge"),
-    ]);
+    const [{ EditorView }, { EditorState }, { unifiedMergeView }, { diffTheme, editorChrome }] =
+      await Promise.all([
+        import("@codemirror/view"),
+        import("@codemirror/state"),
+        import("@codemirror/merge"),
+        import("./editor-theme"),
+      ]);
 
     if (disposed) return;
 
@@ -45,10 +47,8 @@ const diff: Attachment<HTMLDivElement> = (node) => {
           EditorView.editable.of(false),
           EditorView.lineWrapping,
           unifiedMergeView({ original, mergeControls: false }),
-          EditorView.theme({
-            "&": { height: "100%", fontSize: "13px" },
-            ".cm-scroller": { fontFamily: "var(--font-mono)" },
-          }),
+          editorChrome,
+          diffTheme,
         ],
       }),
     });

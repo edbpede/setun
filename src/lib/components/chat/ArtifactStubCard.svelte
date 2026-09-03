@@ -30,7 +30,7 @@ const name = $derived(title ?? m.artifact_untitled({ language }));
 </script>
 
 <div
-  class="my-2 flex items-center gap-3 rounded-lg border border-border bg-card px-3 py-2 motion-safe:animate-in motion-safe:fade-in motion-safe:duration-200"
+  class="my-2 flex items-center gap-3 rounded-xl border border-dashed border-border bg-card px-3 py-2.5 motion-safe:animate-in motion-safe:fade-in motion-safe:duration-200"
 >
   <!-- Nobody has run it: the middle slot, which is what `null` means. -->
   <ArtifactTrit status={null} />

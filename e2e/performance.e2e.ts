@@ -5,6 +5,7 @@ import { expect, type Page, test } from "@playwright/test";
 import * as m from "../src/lib/paraglide/messages";
 import { E2E_DATABASE_PATH, E2E_PEPPER } from "../playwright.config";
 import { ARTIFACT_LONG_MARKER, LONG_MARKER } from "./support/stub-gateway";
+import { startConversation } from "./support/chat";
 import { clearLoginWindow } from "./support/login-window";
 
 /**
@@ -84,10 +85,7 @@ async function measureStreamingFrameGaps(
   await page.getByRole("button", { name: m.login_submit() }).click();
   await expect(page).toHaveURL(/\/chat/);
 
-  await page.getByRole("button", { name: m.chat_new_conversation() }).first().click();
-  // The composer is present from the first visit, so it is no longer what says
-  // the new conversation has landed; the URL is.
-  await expect(page).toHaveURL(/\?c=/);
+  await startConversation(page);
   await expect(page.getByRole("textbox", { name: m.chat_composer_label() })).toBeVisible();
 
   await session.send("Emulation.setCPUThrottlingRate", { rate: CPU_THROTTLE });
@@ -168,10 +166,7 @@ test("the chat route stays inside its JavaScript budget (§20)", async ({ page }
 
   // The composer is the chat route's own interactive surface; once it is there,
   // everything the route needs has loaded.
-  await page.getByRole("button", { name: m.chat_new_conversation() }).first().click();
-  // The composer is present from the first visit, so it is no longer what says
-  // the new conversation has landed; the URL is.
-  await expect(page).toHaveURL(/\?c=/);
+  await startConversation(page);
   await expect(page.getByRole("textbox", { name: m.chat_composer_label() })).toBeVisible();
   await page.waitForLoadState("networkidle");
 
@@ -199,10 +194,7 @@ test("the chat route paints inside two seconds under sixfold CPU throttling (§2
 
   // A conversation to open into: the cold load being measured is the one a pupil
   // performs mid-lesson, on a thread they already have.
-  await page.getByRole("button", { name: m.chat_new_conversation() }).first().click();
-  // The composer is present from the first visit, so it is no longer what says
-  // the new conversation has landed; the URL is.
-  await expect(page).toHaveURL(/\?c=/);
+  await startConversation(page);
   await expect(page.getByRole("textbox", { name: m.chat_composer_label() })).toBeVisible();
 
   // Cold: a new context has an empty HTTP cache, which is the state a pupil

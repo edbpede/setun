@@ -45,11 +45,13 @@ const editor: Attachment<HTMLDivElement> = (node) => {
       { EditorView: View, keymap, lineNumbers, highlightActiveLineGutter },
       state,
       commands,
+      { editorChrome, editorHighlight },
       support,
     ] = await Promise.all([
       import("@codemirror/view"),
       import("@codemirror/state"),
       import("@codemirror/commands"),
+      import("./editor-theme"),
       languageSupport(language),
     ]);
 
@@ -72,10 +74,11 @@ const editor: Attachment<HTMLDivElement> = (node) => {
           View.updateListener.of((update) => {
             if (update.docChanged) onchange(update.state.doc.toString());
           }),
-          View.theme({
-            "&": { height: "100%", fontSize: "13px" },
-            ".cm-scroller": { fontFamily: "var(--font-mono)" },
-          }),
+          // Both follow the interface theme through CSS variables rather than
+          // CodeMirror's own light/dark switch, which is fixed at construction
+          // — see `editor-theme.ts`.
+          editorChrome,
+          editorHighlight,
         ],
       }),
     });

@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import * as m from "../src/lib/paraglide/messages";
 import { E2E_EDUCATOR_PASSWORD, E2E_EDUCATOR_USERNAME } from "../playwright.config";
+import { startConversation } from "./support/chat";
 import { clearLoginWindow } from "./support/login-window";
 import { ARTIFACT_MARKER } from "./support/stub-gateway";
 
@@ -117,8 +118,7 @@ test("the definition of done, start to finish (§25)", async ({ page, browser })
   await expect(pupil.getByLabel(/e-?mail/i)).toHaveCount(0);
 
   // --- …and asks for an interactive page ---
-  await pupil.getByRole("button", { name: m.chat_new_conversation({}, PUPIL_LOCALE) }).first().click();
-  await expect(pupil).toHaveURL(/\?c=/);
+  await startConversation(pupil, PUPIL_LOCALE);
   const conversationId = new URL(pupil.url()).searchParams.get("c") ?? "";
   await pupil
     .getByRole("textbox", { name: m.chat_composer_label({}, PUPIL_LOCALE) })
@@ -126,8 +126,8 @@ test("the definition of done, start to finish (§25)", async ({ page, browser })
   await pupil.getByRole("button", { name: m.chat_send({}, PUPIL_LOCALE) }).click();
 
   // --- …and gets one they can read, change and break ---
-  // The panel opens on the model's write; the pupil does not have to find it.
-  await expect(pupil.getByRole("button", { name: /Build \(1\)|Byg \(1\)/ })).toBeVisible({
+  // The workspace turns to the model's write; the pupil does not have to find it.
+  await expect(pupil.locator("[data-build-count]")).toHaveAttribute("data-build-count", "1", {
     timeout: 30_000,
   });
   await expect(
@@ -145,7 +145,11 @@ test("the definition of done, start to finish (§25)", async ({ page, browser })
     .getAttribute("src");
   expect(frameSource).toContain(new URL(process.env.SETUN_SANDBOX_ORIGIN ?? "http://localhost:4174").host);
 
-  await pupil.getByRole("button", { name: m.artifact_close({}, PUPIL_LOCALE) }).click();
+  // The conversation is still beside it: the composer was never covered, so
+  // asking for the next change costs nothing (§13, §20).
+  await expect(
+    pupil.getByRole("textbox", { name: m.chat_composer_label({}, PUPIL_LOCALE) }),
+  ).toBeVisible();
 
   // --- The educator presses Lock classroom ---
   await page.goto(classroomUrl);

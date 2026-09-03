@@ -23,8 +23,21 @@ export default defineConfig({
    */
   optimizeDeps: {
     include: [
+      "@lucide/svelte/icons/arrow-down",
+      "@lucide/svelte/icons/arrow-up",
+      "@lucide/svelte/icons/chevron-left",
+      "@lucide/svelte/icons/chevron-right",
       "@lucide/svelte/icons/image",
+      "@lucide/svelte/icons/monitor",
+      "@lucide/svelte/icons/moon",
+      "@lucide/svelte/icons/panel-left",
       "@lucide/svelte/icons/paperclip",
+      "@lucide/svelte/icons/pencil",
+      "@lucide/svelte/icons/plus",
+      "@lucide/svelte/icons/rotate-ccw",
+      "@lucide/svelte/icons/square",
+      "@lucide/svelte/icons/sun",
+      "@lucide/svelte/icons/trash-2",
       "@lucide/svelte/icons/x",
       // The client entry too, not only the adapters: the first-run wizard's
       // step components call `superForm`, so a spec that renders one discovers
@@ -45,6 +58,8 @@ export default defineConfig({
       "@codemirror/lang-html",
       "@codemirror/lang-javascript",
       "@codemirror/merge",
+      "@codemirror/language",
+      "@lezer/highlight",
     ],
   },
   test: {

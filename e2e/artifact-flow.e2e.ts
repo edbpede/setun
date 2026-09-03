@@ -8,6 +8,7 @@ import {
   ARTIFACT_REVISION_MARKER,
   ARTIFACT_SECOND_MARKER,
 } from "./support/stub-gateway";
+import { openDrawer, startConversation } from "./support/chat";
 import { clearLoginWindow } from "./support/login-window";
 
 /**
@@ -56,32 +57,33 @@ async function signIn(page: Page, code: string): Promise<void> {
 }
 
 /**
- * Send a message and wait until the Build button reports `count` artifacts.
+ * Send a message and wait until the conversation holds `count` artifacts.
  *
- * The panel is closed first when it is open: it is an overlay over the whole
- * conversation, so it covers the composer — which is the point on a 640-pixel
- * screen, and means a pupil returns to the chat by closing it (§20).
+ * Nothing is closed first: the build surface is a pane beside the conversation
+ * rather than an overlay over it, so the composer is reachable while an artifact
+ * is on screen — which is the whole point of the workspace (§13, §20).
  */
 async function ask(page: Page, text: string, count: number): Promise<void> {
-  const close = page.getByRole("button", { name: m.artifact_close() });
-  if (await close.isVisible()) await close.click();
-
   await page.getByRole("textbox", { name: m.chat_composer_label() }).fill(text);
   await page.getByRole("button", { name: m.chat_send() }).click();
 
-  await expect(
-    page.getByRole("button", { name: new RegExp(`Build \\(${count}\\)|Byg \\(${count}\\)`) }),
-  ).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator("[data-build-count]")).toHaveAttribute(
+    "data-build-count",
+    String(count),
+    { timeout: 20_000 },
+  );
+}
+
+/** Put the workspace back on the conversation alone. */
+async function showChatOnly(page: Page): Promise<void> {
+  await page.getByRole("radio", { name: m.workspace_stage_chat() }).click();
 }
 
 /** Ask the stub for an artifact and wait until the answer has landed. */
 async function askForArtifact(page: Page): Promise<void> {
-  await page.getByRole("button", { name: m.chat_new_conversation() }).first().click();
-  // Wait for the conversation to exist before typing into the composer. The
-  // composer is present from the first visit now — the conversation is minted on
-  // the first send — so its appearance is no longer the implicit wait it used to
-  // be, and a draft typed before this navigation lands is discarded by it.
-  await expect(page).toHaveURL(/\?c=/);
+  // Wait for the conversation to exist before typing into the composer: a draft
+  // typed before that navigation lands is discarded by it.
+  await startConversation(page);
   await ask(page, `${ARTIFACT_MARKER} lav en klikker`, 1);
 }
 
@@ -99,8 +101,8 @@ test("a student builds an artifact, edits it, and the edit travels back", async 
   await signIn(page, code);
   await askForArtifact(page);
 
-  // The panel opens on the model's write rather than waiting to be found: the
-  // Build entry point is still there, but the pupil does not have to look (§13).
+  // The workspace turns to the model's write rather than waiting to be found:
+  // the switcher is still there, but the pupil does not have to look (§13).
   await expect(page.getByRole("tab", { name: m.artifact_tab_preview() })).toBeVisible({
     timeout: 20_000,
   });
@@ -152,7 +154,9 @@ test("a student builds an artifact, edits it, and the edit travels back", async 
   expect(body.versions[0].language).toBe("html");
   expect(body.versions[1].language).toBe("html");
 
-  await page.getByRole("button", { name: m.artifact_close() }).click();
+  // The composer is reachable with the artifact still on screen: no closing, no
+  // putting anything away first (§13, §20).
+  await expect(page.getByRole("tab", { name: m.artifact_tab_history() })).toBeVisible();
 
   // The next message carries the current source, marked as the student's (§13).
   // It asks for an artifact too, so the model writes a revision of its own —
@@ -195,9 +199,7 @@ test("the creations gallery holds what the student made", async ({ page }) => {
   await signIn(page, code);
   await askForArtifact(page);
 
-  // The panel auto-opened over the conversation; the drawer is behind it.
-  await page.getByRole("button", { name: m.artifact_close() }).click();
-  await page.getByRole("button", { name: m.chat_conversations() }).click();
+  await openDrawer(page);
   await page.getByRole("link", { name: m.creations_link() }).click();
   await expect(page).toHaveURL(/\/creations/);
 
@@ -300,8 +302,8 @@ test("the transcript card opens what the model built", async ({ page }) => {
   await signIn(page, code);
   await askForArtifact(page);
 
-  // The panel auto-opened on the write; close it, so the card is what reopens it.
-  await page.getByRole("button", { name: m.artifact_close() }).click();
+  // Back to the conversation alone, so the card is what brings it forward again.
+  await showChatOnly(page);
 
   // The transcript shows what was built, not the markup it was written as (§13).
   await expect(page.getByText("<!doctype html>")).toHaveCount(0);
@@ -333,8 +335,9 @@ test("a run's outcome is recorded against the version it ran", async ({ page }) 
   // any other, and racing it is how this test read back somebody else's answer.
   await expect.poll(async () => (await read()).buildStatus, { timeout: 30_000 }).toBe("ok");
 
-  // Closed, so nothing further reports while the failure below is written.
-  await page.getByRole("button", { name: m.artifact_close() }).click();
+  // Back to the conversation, so nothing further reports while the failure
+  // below is written.
+  await showChatOnly(page);
 
   const versionId = (await read()).id;
   const patched = await page.request.patch(

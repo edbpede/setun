@@ -38,12 +38,61 @@ button:not(:disabled),
 }
 
 /*
- * Light is the default and the only mode the pilot ships. The preset still emits
- * the `.dark` block; it stays dormant until a `.dark` class is applied.
+ * The code palette, for CodeMirror (PRD §13, §20).
+ *
+ * `$lib/components/artifacts/editor-theme.ts` has the account: CodeMirror picks
+ * between its own two palettes when a view is constructed, and the interface
+ * theme can change while an editor is open — so every colour it uses resolves
+ * through one of these instead, and the browser re-evaluates them at paint.
+ *
+ * Complete colours, unlike the `--primary`-style tokens above, which are bare
+ * oklch components because `unocss-preset-shadcn`'s utilities supply the
+ * wrapper. Nothing wraps a value in a CodeMirror theme spec.
+ */
+:root {
+  --code-keyword: oklch(0.5 0.19 285);
+  --code-string: oklch(0.47 0.13 150);
+  --code-comment: oklch(0.57 0.02 260);
+  --code-number: oklch(0.52 0.15 55);
+  --code-type: oklch(0.47 0.12 220);
+  --code-property: oklch(0.45 0.14 262);
+  --code-function: oklch(0.47 0.16 305);
+  --code-operator: oklch(0.55 0.02 260);
+  --code-invalid: oklch(0.58 0.21 25);
+  --code-added: oklch(0.55 0.14 152);
+  --code-added-surface: oklch(0.94 0.045 152);
+  --code-removed: oklch(0.62 0.16 25);
+  --code-removed-surface: oklch(0.95 0.035 25);
+}
+
+:root.dark {
+  --code-keyword: oklch(0.8 0.12 290);
+  --code-string: oklch(0.82 0.13 152);
+  --code-comment: oklch(0.64 0.02 260);
+  --code-number: oklch(0.83 0.11 68);
+  --code-type: oklch(0.82 0.1 215);
+  --code-property: oklch(0.8 0.09 255);
+  --code-function: oklch(0.83 0.11 305);
+  --code-operator: oklch(0.7 0.02 260);
+  --code-invalid: oklch(0.72 0.19 25);
+  --code-added: oklch(0.72 0.15 152);
+  --code-added-surface: oklch(0.31 0.055 152);
+  --code-removed: oklch(0.68 0.16 25);
+  --code-removed-surface: oklch(0.31 0.06 25);
+}
+
+/*
+ * Light is the default; `.dark` is applied to `<html>` by the inline script in
+ * `src/app.html` and kept in step by `$lib/state/theme.svelte.ts`, which is what
+ * switches the preset's own `.dark` block on.
  */
 :root {
   color-scheme: light;
   --tracking-normal: 0em;
+}
+
+:root.dark {
+  color-scheme: dark;
 }
 
 /* clean-slate drives body letter-spacing from its tracking scale. */

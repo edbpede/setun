@@ -115,4 +115,45 @@ describe("Composer", () => {
     await expect.element(page.getByText(m.chat_editing_notice())).not.toBeInTheDocument();
     expect(composer.isEditing).toBe(false);
   });
+
+  it("renames the send control when the pupil switches to drawing (§15)", async () => {
+    const composer = new ComposerState();
+    composer.attach(null);
+    render(Composer, {
+      composer,
+      streaming: false,
+      imageModeAvailable: true,
+      onsend: vi.fn(),
+      onabort: vi.fn(),
+    });
+
+    await page.getByRole("button", { name: m.chat_image_mode() }).click();
+
+    // A mode the pupil cannot see they are in is a mode they will be surprised
+    // by, so the placeholder and the button's own name both move.
+    expect(composer.mode).toBe("image");
+    await expect
+      .element(page.getByRole("textbox"))
+      .toHaveAttribute("placeholder", m.chat_image_placeholder());
+    await expect.element(page.getByRole("button", { name: m.chat_send() })).not.toBeInTheDocument();
+  });
+
+  it("names the model answering, without offering to change it (§9)", async () => {
+    const composer = new ComposerState();
+    composer.attach(null);
+    render(Composer, {
+      composer,
+      streaming: false,
+      modelName: "Klassemodellen",
+      onsend: vi.fn(),
+      onabort: vi.fn(),
+    });
+
+    // An alias is bound when the conversation is created, so this reports and
+    // never chooses; choosing lives beside *New conversation*.
+    await expect
+      .element(page.getByText(m.chat_model_in_use({ model: "Klassemodellen" })))
+      .toBeInTheDocument();
+    await expect.element(page.getByRole("combobox")).not.toBeInTheDocument();
+  });
 });

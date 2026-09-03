@@ -48,7 +48,9 @@ const cost = $derived(
     {#if !compact}
       <span class="text-sm font-medium text-foreground">{m.allowance_title()}</span>
     {/if}
-    <span class="text-xs text-muted-foreground">
+    <!-- `min-w-0` first: a flex item defaults to `min-width: auto` and refuses
+         to shrink below its own nowrap width, so `truncate` never clips. -->
+    <span class="min-w-0 truncate whitespace-nowrap text-xs text-muted-foreground">
       {m.allowance_used({
         used: numbers.format(allowance.usedTokens),
         limit: numbers.format(allowance.limitTokens),

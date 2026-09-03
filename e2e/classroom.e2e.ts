@@ -310,7 +310,7 @@ test("a connected tab sees a lock arrive over the push channel (§6, §8, §22)"
   const studentPage = await studentContext.newPage();
   await signIn(studentPage, code);
   await expect(
-    studentPage.getByRole("button", { name: m.chat_new_conversation() }).first(),
+    studentPage.getByRole("textbox", { name: m.chat_composer_label() }),
   ).toBeVisible();
 
   // The educator locks from the panel, in another browser entirely. The pupil's

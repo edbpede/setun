@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import { expect, test } from "@playwright/test";
 import * as m from "../src/lib/paraglide/messages";
 import { E2E_DATABASE_PATH, E2E_PEPPER } from "../playwright.config";
+import { openDrawer } from "./support/chat";
 import { clearLoginWindow } from "./support/login-window";
 
 /**
@@ -77,7 +78,7 @@ test("a student logs in, chats with a streaming answer, and logs out", async ({ 
 
   // Sign out lives in the drawer with the rest of the navigation: the header is
   // one compact strip on a 640-pixel screen and holds only the primary controls.
-  await page.getByRole("button", { name: m.chat_conversations() }).click();
+  await openDrawer(page);
   await page.getByRole("button", { name: m.chat_sign_out() }).click();
   await expect(page).toHaveURL(/\/login/);
 
@@ -95,7 +96,7 @@ test("the chat header fits a narrow phone viewport", async ({ page }) => {
   await page.getByRole("button", { name: m.login_submit() }).click();
   await expect(page).toHaveURL(/\/chat/);
 
-  await page.getByRole("button", { name: m.chat_conversations() }).click();
+  await openDrawer(page);
   await expect(page.getByRole("button", { name: m.chat_sign_out() })).toBeVisible();
   await page.keyboard.press("Escape");
 
@@ -141,7 +142,7 @@ test("a pupil can ask again, and delete a conversation for good", async ({ page 
   });
 
   // --- Delete: the conversation and everything it carried go (§16) ---
-  await page.getByRole("button", { name: m.chat_conversations() }).click();
+  await openDrawer(page);
 
   const row = page.locator("nav a[href^='/chat?c=']").first();
   await expect(row).toBeVisible();
