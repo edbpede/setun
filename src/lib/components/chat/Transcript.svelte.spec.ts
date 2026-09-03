@@ -1,5 +1,5 @@
 import { createRawSnippet } from "svelte";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-svelte";
 import * as m from "$lib/paraglide/messages";
@@ -47,6 +47,11 @@ const empty = createRawSnippet(() => ({
 }));
 
 describe("Transcript", () => {
+  // The reading position is real per-tab state now that a stored zero is told
+  // apart from no stored value at all, so one case's scroll must not become the
+  // next one's restore.
+  beforeEach(() => sessionStorage.clear());
+
   it("shows the opening surface only while the thread is empty", async () => {
     const conversation = new ConversationState();
     render(Transcript, { conversation, conversationId: null, empty });
@@ -99,6 +104,33 @@ describe("Transcript", () => {
       expect(element.scrollHeight - element.scrollTop - element.clientHeight).toBeLessThan(2),
     );
     await expect.element(jump).not.toBeInTheDocument();
+  });
+
+  it("does not slide the mounted window under a pupil reading back (§20)", async () => {
+    const conversation = new ConversationState();
+    const thread = longThread(45);
+    conversation.replaceMessages(thread);
+
+    render(Transcript, { conversation, conversationId: "c1" });
+
+    const element = scroller();
+    await vi.waitFor(() => expect(element.scrollHeight).toBeGreaterThan(element.clientHeight));
+
+    // Reading back: the window holds the newest thirty, so fifteen are behind
+    // "show earlier" and `m15` is the oldest thing mounted.
+    element.scrollTo({ top: 0 });
+    element.dispatchEvent(new Event("scroll"));
+    await expect
+      .element(page.getByRole("button", { name: m.chat_show_earlier({ count: 15 }) }))
+      .toBeVisible();
+
+    conversation.replaceMessages([...thread, message("m45", "assistant", "Et loop gentager…")]);
+
+    // The tail slice would have dropped `m15` to make room, and content leaving
+    // above the viewport pulls everything the pupil is reading up with it.
+    await expect
+      .element(page.getByRole("button", { name: m.chat_show_earlier({ count: 15 }) }))
+      .toBeVisible();
   });
 
   it("follows the stream for a pupil already at the newest end", async () => {

@@ -1,8 +1,8 @@
 <script lang="ts">
 import ArrowDown from "@lucide/svelte/icons/arrow-down";
 import type { Snippet } from "svelte";
-import { untrack } from "svelte";
-import { readScrollPosition, writeScrollPosition } from "$lib/chat/viewport";
+import { tick, untrack } from "svelte";
+import { readTranscriptPosition, writeTranscriptPosition } from "$lib/chat/viewport";
 import * as m from "$lib/paraglide/messages";
 import type {
   ChatMessage as ChatMessageData,
@@ -63,12 +63,36 @@ let content = $state<HTMLDivElement | null>(null);
 let windowSize = $state(MESSAGE_WINDOW);
 let pinned = $state(true);
 
+/** How long the thread was when we last looked, so an arrival can be spotted. */
+let counted = 0;
+
 // A different conversation starts at the newest end again (§20).
 $effect(() => {
   conversationId;
   untrack(() => {
     windowSize = MESSAGE_WINDOW;
     pinned = true;
+    counted = conversation.messages.length;
+  });
+});
+
+/**
+ * A pupil reading back keeps what they are reading (§20).
+ *
+ * The window is the newest `windowSize` messages, so an answer landing while
+ * the pupil is somewhere above pushes the oldest mounted message out of the
+ * column — and content disappearing above the viewport slides everything they
+ * were reading up under their eyes. Widening the window by however many arrived
+ * holds the start of the slice still, and costs nothing while they are at the
+ * newest end, which is where the window is doing its job.
+ */
+$effect(() => {
+  const total = conversation.messages.length;
+
+  untrack(() => {
+    const added = total - counted;
+    counted = total;
+    if (added > 0 && !pinned) windowSize += added;
   });
 });
 
@@ -132,8 +156,16 @@ $effect(() => {
   return () => observer.disconnect();
 });
 
+/** The reading position as it stands: where, and over how much of the thread. */
+function remember(): void {
+  const element = scroller;
+  if (!element) return;
+
+  writeTranscriptPosition(conversationId, { offset: element.scrollTop, window: windowSize });
+}
+
 /**
- * Scroll position across a tab discard (§20).
+ * Reading position across a tab discard (§20).
  *
  * A 4 GB Chromebook discards background tabs routinely. The composer draft
  * already survives one and the in-flight turn resumes from the server; this is
@@ -147,18 +179,29 @@ $effect(() => {
   const element = scroller;
   if (!element || !conversationId) return;
 
-  const stored = untrack(() => readScrollPosition(conversationId));
-  if (stored > 0) {
-    element.scrollTo({ top: stored });
-    untrack(() => measure());
+  const stored = untrack(() => readTranscriptPosition(conversationId));
+  if (stored) {
+    untrack(() => {
+      // The window before the offset: a position measured over sixty mounted
+      // messages lands somewhere else in a column of thirty.
+      if (stored.window > windowSize) windowSize = stored.window;
+      // And nothing may pull the view to the newest end while the offset is
+      // still one DOM update away.
+      pinned = false;
+    });
+
+    void tick().then(() => {
+      element.scrollTo({ top: stored.offset });
+      measure();
+    });
   }
 
-  const remember = () => {
-    writeScrollPosition(conversationId, element.scrollTop);
+  const onscroll = () => {
+    remember();
     measure();
   };
-  element.addEventListener("scroll", remember, { passive: true });
-  return () => element.removeEventListener("scroll", remember);
+  element.addEventListener("scroll", onscroll, { passive: true });
+  return () => element.removeEventListener("scroll", onscroll);
 });
 </script>
 
@@ -172,7 +215,12 @@ $effect(() => {
       {#if hidden > 0}
         <button
           type="button"
-          onclick={() => (windowSize += MESSAGE_WINDOW)}
+          onclick={() => {
+            windowSize += MESSAGE_WINDOW;
+            // Part of the position, not a separate preference: coming back to
+            // the same line means coming back to the same mounted thread.
+            remember();
+          }}
           class="mx-auto min-h-9 rounded-full border border-border px-3 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           {m.chat_show_earlier({ count: hidden })}
