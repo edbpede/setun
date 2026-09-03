@@ -27,6 +27,36 @@ export function isThemePreference(value: unknown): value is ThemePreference {
 
 const DARK_QUERY = "(prefers-color-scheme: dark)";
 
+/**
+ * Storage, where the browser allows it.
+ *
+ * `localStorage` does not merely return null where site data is blocked — the
+ * property access itself throws, and a managed Chromebook profile can be
+ * configured that way. The boot script in `src/app.html` already guards for it;
+ * these two do the same, so a blocked browser gets a preference that works for
+ * as long as the document lives rather than a layout effect that dies on the
+ * first line.
+ */
+function readStoredPreference(): string | null {
+  try {
+    return localStorage.getItem(THEME_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredPreference(preference: ThemePreference): void {
+  try {
+    // `auto` is the default, so it is stored as the absence of a choice rather
+    // than as a third value nobody has to read back.
+    if (preference === "auto") localStorage.removeItem(THEME_STORAGE_KEY);
+    else localStorage.setItem(THEME_STORAGE_KEY, preference);
+  } catch {
+    // Nothing persists. The choice still paints this document, which is the
+    // part the pupil asked for.
+  }
+}
+
 export class ThemeState {
   preference = $state<ThemePreference>("auto");
   #systemDark = $state(false);
@@ -47,7 +77,7 @@ export class ThemeState {
   start(): (() => void) | undefined {
     if (typeof window === "undefined") return;
 
-    const stored = localStorage.getItem(THEME_STORAGE_KEY);
+    const stored = readStoredPreference();
     if (isThemePreference(stored)) this.preference = stored;
 
     const query = window.matchMedia(DARK_QUERY);
@@ -62,12 +92,7 @@ export class ThemeState {
 
   set(preference: ThemePreference): void {
     this.preference = preference;
-    if (typeof localStorage === "undefined") return;
-
-    // `auto` is the default, so it is stored as the absence of a choice rather
-    // than as a third value nobody has to read back.
-    if (preference === "auto") localStorage.removeItem(THEME_STORAGE_KEY);
-    else localStorage.setItem(THEME_STORAGE_KEY, preference);
+    writeStoredPreference(preference);
   }
 
   /** Reflect the resolved theme onto the document. Read reactively by an effect. */

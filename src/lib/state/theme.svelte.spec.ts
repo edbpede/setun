@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { isThemePreference, THEME_STORAGE_KEY, ThemeState } from "./theme.svelte";
 
 /**
@@ -64,6 +64,29 @@ describe("ThemeState", () => {
     theme.apply();
     expect(document.documentElement.classList.contains("dark")).toBe(false);
     expect(document.documentElement.style.colorScheme).toBe("light");
+  });
+
+  it("still works where the browser refuses site data altogether", () => {
+    // Chrome does not return null when storage is blocked — the access throws,
+    // and a managed profile can be configured that way. The boot script in
+    // `src/app.html` already guards for it; so must this.
+    const blocked = new Error("SecurityError");
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw blocked;
+    });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw blocked;
+    });
+
+    const theme = new ThemeState();
+    expect(() => theme.start()).not.toThrow();
+    expect(() => theme.set("dark")).not.toThrow();
+
+    // Nothing persists, but the choice still paints this document.
+    expect(theme.preference).toBe("dark");
+    expect(theme.resolved).toBe("dark");
+
+    vi.restoreAllMocks();
   });
 
   it("ignores a stored value it does not recognise", () => {
