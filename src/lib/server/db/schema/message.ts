@@ -55,6 +55,19 @@ export interface ArtifactEditPart {
   readonly key?: string | null;
 }
 
+/**
+ * The model's own reasoning, as the provider summarises it (§20).
+ *
+ * A part of its own so a pupil who reloads still finds the block they had open.
+ * It is never replayed to the model — `textOf` in the agent loop does not read
+ * it — and never scanned for artifact fences: a fenced block inside a summary is
+ * the model thinking about writing a file, not a file.
+ */
+export interface ThinkingPart {
+  readonly type: "thinking";
+  readonly text: string;
+}
+
 /** An image produced by the generation path, served only by Setun (§15). */
 export interface GeneratedImagePart {
   readonly type: "generated-image";
@@ -124,6 +137,7 @@ export interface TurnNoticePart {
  */
 export type MessagePart =
   | TextPart
+  | ThinkingPart
   | AttachmentPart
   | ArtifactEditPart
   | GeneratedImagePart

@@ -1,3 +1,4 @@
+import { log } from "../../logging";
 import { parseSseStream } from "../../sse";
 import { GatewayClient } from "../client";
 import type {
@@ -16,8 +17,16 @@ import { promptTextOf } from "../messages";
 import { resolveUsage } from "../usage";
 
 /**
- * The OpenAI-compatible dialect: `/v1/chat/completions`, `/v1/models`,
- * `/v1/images` (PRD §9). This is the default dialect.
+ * The OpenAI-compatible dialect (PRD §9). This is the default dialect.
+ *
+ * Two transports, one normalised event stream. `/v1/responses` is preferred
+ * because it is the only one that carries the model's reasoning: probed against
+ * the live gateway, `/v1/chat/completions` never returns reasoning text for the
+ * `gpt-5.6-*` family — only a `reasoning_tokens` figure in usage — while
+ * `/v1/responses` with `reasoning: { summary: "auto" }` streams the summary
+ * headlines a pupil can actually read (§20). A provider that does not implement
+ * it answers 404 or 405, is remembered per model, and is served from
+ * `/v1/chat/completions` from then on.
  *
  * Nothing here escapes the module: the caller receives only normalised events.
  */
@@ -36,17 +45,293 @@ interface ChatCompletionChunk {
   usage?: { prompt_tokens?: number; completion_tokens?: number } | null;
 }
 
+/** The subset of the Responses stream this dialect reads. */
+interface ResponseStreamEvent {
+  type?: string;
+  delta?: string;
+  output_index?: number;
+  summary_index?: number;
+  item?: {
+    type?: string;
+    id?: string;
+    call_id?: string;
+    name?: string;
+    arguments?: string;
+  };
+  response?: {
+    status?: string;
+    incomplete_details?: { reason?: string } | null;
+    usage?: { input_tokens?: number; output_tokens?: number } | null;
+    error?: { message?: string } | null;
+  };
+  error?: { message?: string };
+}
+
 const DONE_SENTINEL = "[DONE]";
+
+/**
+ * The prefix every function name wears on the wire, in both transports.
+ *
+ * A tool literally named `generate_image` made the upstream run its own built-in
+ * image generation instead of calling ours: the request came back with
+ * `response.image_generation_call.*` items and our tool was never invoked. The
+ * prefix makes a collision with a provider's built-in name impossible, and it is
+ * stripped again the moment the call is normalised — the internal names, the
+ * `ToolKind` and the transcript labels never see it.
+ */
+const TOOL_NAME_PREFIX = "setun_";
+
+function wireToolName(name: string): string {
+  return `${TOOL_NAME_PREFIX}${name}`;
+}
+
+function internalToolName(name: string): string {
+  return name.startsWith(TOOL_NAME_PREFIX) ? name.slice(TOOL_NAME_PREFIX.length) : name;
+}
+
+/**
+ * The key the transport memo is held under.
+ *
+ * CPA exposes a reasoning-effort suffix — `gpt-5.6 (high)` — as part of the
+ * model identifier, and every effort level of one model shares a transport. The
+ * suffix is dropped so a fallback learned on one is not re-learned on the next.
+ */
+function baseModelId(model: string): string {
+  return model.replace(/\s*\([^)]*\)\s*$/, "").trim() || model;
+}
+
+/**
+ * Whether a failure means "this endpoint is not implemented here".
+ *
+ * 404 and 405 are the honest answers. Some gateways answer 400 with a message
+ * naming the path instead, which is why the text is consulted — narrowly, and
+ * only for a 400: a 400 that means "your request was wrong" must keep meaning
+ * that, or a genuine request error would be silently retried on a transport
+ * that would reject it too.
+ */
+const UNKNOWN_ENDPOINT = /unknown[\s_-]?(url|path|endpoint|route)|no such (endpoint|route|path)/i;
+
+function isUnsupportedEndpoint(cause: unknown): boolean {
+  if (!(cause instanceof GatewayError)) return false;
+  if (cause.status === 404 || cause.status === 405) return true;
+  return cause.status === 400 && UNKNOWN_ENDPOINT.test(cause.detail);
+}
 
 export class OpenAiDialect implements GatewayDialectAdapter {
   readonly name = "openai" as const;
   readonly #client: GatewayClient;
+  /**
+   * Models known not to implement `/v1/responses`.
+   *
+   * Per instance rather than per module, and consulted only at the `post()`
+   * boundary — before a single event has been yielded — so a fallback can never
+   * produce two usage events for one turn.
+   */
+  readonly #chatOnly = new Set<string>();
 
   constructor(client: GatewayClient) {
     this.#client = client;
   }
 
   async *streamChat(request: ChatRequest): AsyncGenerator<GatewayEvent> {
+    const memo = baseModelId(request.model);
+    let response: Response | null = null;
+
+    if (!this.#chatOnly.has(memo)) {
+      try {
+        response = await this.#postResponses(request);
+      } catch (cause) {
+        if (!isUnsupportedEndpoint(cause)) throw cause;
+
+        this.#chatOnly.add(memo);
+        // The model, which §16 permits in a log line; never the prompt.
+        log.warn("gateway has no responses endpoint for this model", { model: memo });
+      }
+    }
+
+    if (response) {
+      yield* this.#streamResponses(request, response);
+      return;
+    }
+
+    yield* this.#streamChatCompletions(request);
+  }
+
+  /**
+   * Open the Responses stream.
+   *
+   * Separate from the reading below so the fallback can wrap exactly this and
+   * nothing else: a failure once events have begun is a failure of the turn, not
+   * a reason to send the same prompt again.
+   */
+  #postResponses(request: ChatRequest): Promise<Response> {
+    const instructions = request.messages
+      .filter((message) => message.role === "system")
+      .map((message) => (typeof message.content === "string" ? message.content : ""))
+      .join("\n\n");
+
+    return this.#client.post(
+      "/v1/responses",
+      {
+        model: request.model,
+        input: request.messages.filter((message) => message.role !== "system").flatMap(inputItems),
+        stream: true,
+        // The whole point of this transport: without it the stream carries a
+        // reasoning token count and no reasoning text (§20).
+        reasoning: { summary: "auto" },
+        // Nothing is kept upstream. Conversation state lives in Setun's own
+        // database and travels with each request (§16, §21).
+        store: false,
+        ...(instructions ? { instructions } : {}),
+        ...(request.tools?.length ? { tools: request.tools.map(encodeResponsesTool) } : {}),
+        ...(request.maxOutputTokens ? { max_output_tokens: request.maxOutputTokens } : {}),
+      },
+      { signal: request.signal, accept: "text/event-stream" },
+    );
+  }
+
+  async *#streamResponses(request: ChatRequest, response: Response): AsyncGenerator<GatewayEvent> {
+    let completion = "";
+    let reported: { inputTokens?: number; outputTokens?: number } | undefined;
+    let finishReason: FinishReason | undefined;
+    /** How many summary parts have opened, so the second onwards gets a break. */
+    let summaryParts = 0;
+    /** Function calls assemble across items, keyed by their output index. */
+    const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
+
+    /** See `#streamChatCompletions`: priced from the moment upstream accepted. */
+    try {
+      for await (const event of parseSseStream(GatewayClient.requireBody(response))) {
+        if (event.data === DONE_SENTINEL) break;
+
+        let payload: ResponseStreamEvent;
+        try {
+          payload = JSON.parse(event.data) as ResponseStreamEvent;
+        } catch {
+          throw new GatewayError("unavailable", "malformed chunk in upstream stream");
+        }
+
+        const type = payload.type ?? event.event;
+
+        switch (type) {
+          case "response.reasoning_summary_part.added": {
+            // One headline per part. The first needs no separator; every one
+            // after it is a new paragraph rather than a run-on sentence.
+            if (summaryParts++ > 0) yield { type: "thinking-delta", text: "\n\n" };
+            break;
+          }
+          case "response.reasoning_summary_text.delta":
+          case "response.reasoning_text.delta": {
+            if (payload.delta) yield { type: "thinking-delta", text: payload.delta };
+            break;
+          }
+          case "response.output_text.delta": {
+            if (payload.delta) {
+              completion += payload.delta;
+              yield { type: "text-delta", text: payload.delta };
+            }
+            break;
+          }
+          case "response.output_item.added": {
+            const index = payload.output_index ?? 0;
+            if (payload.item?.type === "function_call") {
+              toolCalls.set(index, {
+                id: payload.item.call_id ?? crypto.randomUUID(),
+                name: payload.item.name ?? "",
+                arguments: payload.item.arguments ?? "",
+              });
+            } else if (payload.item?.type && isBuiltInTool(payload.item.type)) {
+              // The provider ran a tool of its own rather than one this
+              // classroom allowlisted. Nothing to execute and nothing to show;
+              // the operator log is where it belongs (§11, §16).
+              log.warn("gateway ran a built-in tool of its own", { item: payload.item.type });
+            }
+            break;
+          }
+          case "response.function_call_arguments.delta": {
+            const index = payload.output_index ?? 0;
+            const existing = toolCalls.get(index);
+            if (existing && payload.delta) {
+              toolCalls.set(index, {
+                ...existing,
+                arguments: existing.arguments + payload.delta,
+              });
+            }
+            break;
+          }
+          case "response.output_item.done": {
+            const index = payload.output_index ?? 0;
+            if (payload.item?.type !== "function_call") break;
+
+            toolCalls.set(index, {
+              id: payload.item.call_id ?? toolCalls.get(index)?.id ?? crypto.randomUUID(),
+              name: payload.item.name ?? toolCalls.get(index)?.name ?? "",
+              // The completed item carries the whole argument string; prefer it
+              // over the fragments, which may have been cut short.
+              arguments: payload.item.arguments ?? toolCalls.get(index)?.arguments ?? "",
+            });
+            break;
+          }
+          case "response.completed":
+          case "response.incomplete": {
+            const usage = payload.response?.usage;
+            // `output_tokens` already includes the reasoning tokens, so thinking
+            // is paid for exactly once (§10).
+            if (usage) {
+              reported = {
+                inputTokens: usage.input_tokens,
+                outputTokens: usage.output_tokens,
+              };
+            }
+
+            finishReason =
+              payload.response?.status === "incomplete" &&
+              payload.response.incomplete_details?.reason === "max_output_tokens"
+                ? "length"
+                : toolCalls.size > 0
+                  ? "tool-calls"
+                  : "stop";
+            break;
+          }
+          case "response.failed":
+          case "error": {
+            throw new GatewayError(
+              "unavailable",
+              payload.response?.error?.message ?? payload.error?.message ?? "upstream stream error",
+            );
+          }
+          default:
+            break;
+        }
+      }
+    } catch (cause) {
+      yield resolveUsage({
+        reported,
+        promptText: promptTextOf(request.messages),
+        completionText: completion,
+      });
+      throw cause;
+    }
+
+    for (const call of toolCalls.values()) {
+      if (!call.name) continue;
+      yield {
+        type: "tool-call-started",
+        toolCallId: call.id,
+        toolName: internalToolName(call.name),
+        arguments: call.arguments || "{}",
+      };
+    }
+
+    yield resolveUsage({
+      reported,
+      promptText: promptTextOf(request.messages),
+      completionText: completion,
+      finishReason,
+    });
+  }
+
+  async *#streamChatCompletions(request: ChatRequest): AsyncGenerator<GatewayEvent> {
     const response = await this.#client.post(
       "/v1/chat/completions",
       {
@@ -141,7 +426,7 @@ export class OpenAiDialect implements GatewayDialectAdapter {
       yield {
         type: "tool-call-started",
         toolCallId: call.id || crypto.randomUUID(),
-        toolName: call.name,
+        toolName: internalToolName(call.name),
         arguments: call.arguments,
       };
     }
@@ -199,6 +484,11 @@ export class OpenAiDialect implements GatewayDialectAdapter {
   }
 }
 
+/** Items a provider runs on its own account, which this dialect never asked for. */
+function isBuiltInTool(itemType: string): boolean {
+  return itemType.endsWith("_call") && itemType !== "function_call";
+}
+
 /**
  * Normalise `finish_reason` (§10).
  *
@@ -213,11 +503,80 @@ function mapFinishReason(raw: string): FinishReason {
   return "stop";
 }
 
+/**
+ * One stored message as Responses input items.
+ *
+ * The shape is flat where chat completions nests: a function call is an item of
+ * its own rather than a field on an assistant message, and its answer is another
+ * item rather than a role. `call_id` is the only identifier that travels — the
+ * item `id` belongs to the response that produced it, and sending one back is
+ * rejected.
+ */
+function inputItems(message: GatewayMessage): unknown[] {
+  if (message.role === "tool") {
+    return [
+      {
+        type: "function_call_output",
+        call_id: message.toolCallId,
+        output: typeof message.content === "string" ? message.content : "",
+      },
+    ];
+  }
+
+  const text = typeof message.content === "string" ? message.content : null;
+
+  if (message.role === "assistant") {
+    const prose = text ?? textOfParts(message.content);
+    return [
+      ...(prose
+        ? [{ type: "message", role: "assistant", content: [{ type: "output_text", text: prose }] }]
+        : []),
+      ...(message.toolCalls ?? []).map((call) => ({
+        type: "function_call",
+        call_id: call.id,
+        name: wireToolName(call.name),
+        arguments: call.arguments,
+      })),
+    ];
+  }
+
+  return [{ type: "message", role: "user", content: userContent(message.content) }];
+}
+
+function textOfParts(content: string | readonly GatewayContentPart[]): string {
+  if (typeof content === "string") return content;
+  return content
+    .filter((part) => part.type === "text")
+    .map((part) => (part.type === "text" ? part.text : ""))
+    .join("");
+}
+
+function userContent(content: string | readonly GatewayContentPart[]) {
+  if (typeof content === "string") return [{ type: "input_text", text: content }];
+
+  return content.map((part) =>
+    part.type === "text"
+      ? { type: "input_text", text: part.text }
+      : // Inline data, never a URL the provider would fetch on our behalf (§21).
+        { type: "input_image", image_url: `data:${part.mediaType};base64,${part.data}` },
+  );
+}
+
+/** Responses declares a function flat; chat completions wraps it in `function`. */
+function encodeResponsesTool(tool: GatewayToolDefinition) {
+  return {
+    type: "function",
+    name: wireToolName(tool.name),
+    description: tool.description,
+    parameters: tool.inputSchema,
+  };
+}
+
 function encodeTool(tool: GatewayToolDefinition) {
   return {
     type: "function",
     function: {
-      name: tool.name,
+      name: wireToolName(tool.name),
       description: tool.description,
       parameters: tool.inputSchema,
     },
@@ -240,7 +599,7 @@ function encodeMessage(message: GatewayMessage) {
       tool_calls: message.toolCalls.map((call) => ({
         id: call.id,
         type: "function",
-        function: { name: call.name, arguments: call.arguments },
+        function: { name: wireToolName(call.name), arguments: call.arguments },
       })),
     };
   }

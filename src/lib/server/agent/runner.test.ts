@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import type { AppDatabase } from "../db/client";
+import { listStudentArtifacts } from "../db/queries/artifacts";
 import { createConversation, getOwnedConversation } from "../db/queries/conversations";
 import { appendMessage, listConversationMessages } from "../db/queries/messages";
 import { createTurn, getTurn } from "../db/queries/turns";
@@ -407,5 +408,109 @@ describe("one turn in flight per student", () => {
 
     expect(getActiveTurn(db, fixtures.student.id)).toBeUndefined();
     expect(() => assertNoTurnInFlight(db, fixtures.student.id)).not.toThrow();
+  });
+});
+
+/**
+ * The model's reasoning on the way to the transcript (PRD §20, §21).
+ *
+ * A classroom set to "never shown" is enforced here rather than in the
+ * interface: the events are dropped before the turn is buffered, so there is
+ * nothing to persist, nothing to publish to a tailing tab, and nothing a resume
+ * or a devtools panel could find.
+ */
+describe("thinking visibility", () => {
+  const THINKING_STREAM = [
+    {
+      event: "response.reasoning_summary_text.delta",
+      data: JSON.stringify({
+        type: "response.reasoning_summary_text.delta",
+        delta: "Overvejer ",
+      }),
+    },
+    {
+      event: "response.reasoning_summary_text.delta",
+      data: JSON.stringify({ type: "response.reasoning_summary_text.delta", delta: "opgaven" }),
+    },
+    {
+      event: "response.output_text.delta",
+      data: JSON.stringify({ type: "response.output_text.delta", delta: "Et loop" }),
+    },
+    {
+      event: "response.completed",
+      data: JSON.stringify({
+        type: "response.completed",
+        response: { status: "completed", usage: { input_tokens: 11, output_tokens: 3 } },
+      }),
+    },
+  ];
+
+  function thinkingAdapter(records = THINKING_STREAM) {
+    return new GatewayAdapter({
+      baseUrl: "http://cpa:8317",
+      listenerKey: "k",
+      fetch: stubFetch(() => streamingResponse(records), { responses: true }).fetch,
+    });
+  }
+
+  it("persists the summary as one part, so a reload still has it", async () => {
+    const scaffold = startedTurn();
+    await executeTurn({ ...runInput(scaffold, thinkingAdapter()), thinkingVisibility: "shown" });
+
+    const assistant = listConversationMessages(db, scaffold.conversation.id).find(
+      (message) => message.role === "assistant",
+    );
+
+    expect(assistant?.parts[0]).toEqual({ type: "thinking", text: "Overvejer opgaven" });
+    expect(assistant?.parts[1]).toEqual({ type: "text", text: "Et loop" });
+  });
+
+  it("buffers nothing at all when the classroom says never", async () => {
+    const scaffold = startedTurn();
+    await executeTurn({ ...runInput(scaffold, thinkingAdapter()), thinkingVisibility: "hidden" });
+
+    const buffered = readBufferedEvents(db, { turnId: scaffold.turn.id });
+    expect(buffered.map((b) => b.event.type)).not.toContain("thinking-delta");
+    expect(JSON.stringify(buffered)).not.toContain("Overvejer");
+
+    const assistant = listConversationMessages(db, scaffold.conversation.id).find(
+      (message) => message.role === "assistant",
+    );
+    expect(assistant?.parts.some((part) => part.type === "thinking")).toBe(false);
+  });
+
+  /**
+   * A fence inside a summary is the model thinking about writing a file, not a
+   * file. Recording one would put a half-formed idea in a pupil's portfolio.
+   */
+  it("records no artifact from a fence inside the reasoning", async () => {
+    const fenced = [
+      {
+        event: "response.reasoning_summary_text.delta",
+        data: JSON.stringify({
+          type: "response.reasoning_summary_text.delta",
+          delta: "Måske\n```html id=side\n<p>udkast</p>\n```\n",
+        }),
+      },
+      {
+        event: "response.output_text.delta",
+        data: JSON.stringify({ type: "response.output_text.delta", delta: "Her er den ikke" }),
+      },
+      {
+        event: "response.completed",
+        data: JSON.stringify({
+          type: "response.completed",
+          response: { status: "completed", usage: { input_tokens: 11, output_tokens: 3 } },
+        }),
+      },
+    ];
+
+    const scaffold = startedTurn();
+    await executeTurn({
+      ...runInput(scaffold, thinkingAdapter(fenced)),
+      thinkingVisibility: "shown",
+    });
+
+    expect(listStudentArtifacts(db, fixtures.student.id)).toEqual([]);
   });
 });

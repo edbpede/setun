@@ -459,3 +459,98 @@ describe("replaying a turn that used tools (§10, §11)", () => {
     expect(assembleContext(path)[1].content).toBe("Hvad returnerer funktionen?");
   });
 });
+
+/**
+ * The model's reasoning, on its way to the pupil (PRD §20, §10).
+ *
+ * It travels through the loop untouched and stops there: it is not the answer,
+ * so it is neither replayed to the model on the next turn nor priced as output
+ * text on this one.
+ */
+describe("thinking passes through the loop", () => {
+  const THINKING_STREAM = [
+    {
+      event: "response.reasoning_summary_text.delta",
+      data: JSON.stringify({ type: "response.reasoning_summary_text.delta", delta: "Overvejer" }),
+    },
+    {
+      event: "response.output_text.delta",
+      data: JSON.stringify({ type: "response.output_text.delta", delta: "Svar" }),
+    },
+    {
+      event: "response.completed",
+      data: JSON.stringify({
+        type: "response.completed",
+        response: { status: "completed", usage: { input_tokens: 5, output_tokens: 1 } },
+      }),
+    },
+  ];
+
+  function responsesAdapter() {
+    const stub = stubFetch(() => streamingResponse(THINKING_STREAM), { responses: true });
+    return {
+      adapter: new GatewayAdapter({
+        baseUrl: "http://cpa:8317",
+        listenerKey: "k",
+        fetch: stub.fetch,
+      }),
+      stub,
+    };
+  }
+
+  it("yields the reasoning ahead of the answer", async () => {
+    const { adapter } = responsesAdapter();
+    const events = await collect(runTurn({ adapter, dialect: "openai", model: "m", path }));
+
+    expect(events[0]).toEqual({ type: "thinking-delta", text: "Overvejer" });
+    expect(events[1]).toEqual({ type: "text-delta", text: "Svar" });
+  });
+
+  /**
+   * A summary is a window onto how the answer was reached, not part of it. Sent
+   * back it would be both wasted context and a confusing thing for a model to
+   * read as its own previous words.
+   */
+  it("never replays a stored thinking part to the model", () => {
+    const messages = assembleContext([
+      { role: "user", parts: [{ type: "text", text: "Hej" }] },
+      {
+        role: "assistant",
+        parts: [
+          { type: "thinking", text: "Overvejer om det er et loop" },
+          { type: "text", text: "Et loop gentager noget" },
+        ],
+      },
+    ]);
+
+    const assistant = messages.find((message) => message.role === "assistant");
+    expect(assistant?.content).toBe("Et loop gentager noget");
+    expect(JSON.stringify(messages)).not.toContain("Overvejer");
+  });
+
+  /**
+   * `output_tokens` already includes the reasoning tokens, so estimating the
+   * summary text on top of them would charge the pupil for it twice (§10).
+   */
+  it("does not add the reasoning to the provisional token estimate", async () => {
+    const { adapter } = responsesAdapter();
+    const events = await collect(
+      runTurn({
+        adapter,
+        dialect: "openai",
+        model: "m",
+        path,
+        budgets: {
+          perTurnStepCap: 20,
+          perTurnWallClockSeconds: 300,
+          perTurnTokenCap: 100_000,
+          // Small enough that a summary counted as output would empty it.
+          perStudentDailyTokens: 20,
+          perClassroomDailyTokens: 2_500_000,
+        },
+      }),
+    );
+
+    expect(events.at(-1)).toEqual({ type: "done", reason: "stop" });
+  });
+});

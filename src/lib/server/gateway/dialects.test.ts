@@ -12,8 +12,11 @@ import { sseBody, streamingResponse, stubFetch } from "./testing";
 const BASE_URL = "http://cpa:8317";
 const LISTENER_KEY = "test-listener-key";
 
-function adapterOver(responder: Parameters<typeof stubFetch>[0]) {
-  const stub = stubFetch(responder);
+function adapterOver(
+  responder: Parameters<typeof stubFetch>[0],
+  options: Parameters<typeof stubFetch>[1] = {},
+) {
+  const stub = stubFetch(responder, options);
   const adapter = new GatewayAdapter({
     baseUrl: BASE_URL,
     listenerKey: LISTENER_KEY,
@@ -313,6 +316,46 @@ describe("anthropic dialect", () => {
     }
   });
 
+  /**
+   * Nothing here asks for thinking — the request-side parameter is a follow-up —
+   * but a provider that sends blocks anyway is understood rather than dropped.
+   */
+  it("parses thinking blocks into the same event the other dialect emits", async () => {
+    const { adapter } = adapterOver(() =>
+      streamingResponse([
+        ANTHROPIC_MESSAGE_START,
+        {
+          event: "content_block_start",
+          data: JSON.stringify({
+            type: "content_block_start",
+            content_block: { type: "thinking", thinking: "Overvejer" },
+          }),
+        },
+        {
+          event: "content_block_delta",
+          data: JSON.stringify({ type: "content_block_delta", delta: { thinking: " opgaven" } }),
+        },
+        {
+          event: "content_block_delta",
+          data: JSON.stringify({ type: "content_block_delta", delta: { text: "Hej" } }),
+        },
+        {
+          event: "message_delta",
+          data: JSON.stringify({ type: "message_delta", usage: { output_tokens: 9 } }),
+        },
+      ]),
+    );
+    const events = await collect(adapter.streamChat("anthropic", request));
+
+    expect(events.slice(0, 3)).toEqual([
+      { type: "thinking-delta", text: "Overvejer" },
+      { type: "thinking-delta", text: " opgaven" },
+      { type: "text-delta", text: "Hej" },
+    ]);
+    // Reasoning is not the answer: it is never counted as completion text.
+    expect(events.at(-1)).toMatchObject({ type: "usage", outputTokens: 9 });
+  });
+
   it("maps an upstream error event to a gateway failure", async () => {
     const { adapter } = adapterOver(() =>
       streamingResponse([
@@ -324,6 +367,327 @@ describe("anthropic dialect", () => {
     );
 
     expect(collect(adapter.streamChat("anthropic", request))).rejects.toThrow(GatewayError);
+  });
+});
+
+/**
+ * The Responses transport (PRD §9, §20, §22).
+ *
+ * The only transport that carries the model's reasoning: probed against the live
+ * gateway, `/v1/chat/completions` returns a reasoning *token count* and no
+ * reasoning text at all.
+ */
+
+/** One Responses SSE record, framed as the upstream frames it. */
+function responseEvent(type: string, payload: Record<string, unknown> = {}) {
+  return { event: type, data: JSON.stringify({ type, ...payload }) };
+}
+
+const RESPONSES_STREAM = [
+  responseEvent("response.created"),
+  responseEvent("response.reasoning_summary_part.added", { summary_index: 0 }),
+  responseEvent("response.reasoning_summary_text.delta", { delta: "Overvejer opgaven" }),
+  responseEvent("response.reasoning_summary_part.added", { summary_index: 1 }),
+  responseEvent("response.reasoning_summary_text.delta", { delta: "Skriver svaret" }),
+  responseEvent("response.output_text.delta", { delta: "Hej" }),
+  responseEvent("response.output_text.delta", { delta: " med dig" }),
+  responseEvent("response.completed", {
+    response: { status: "completed", usage: { input_tokens: 25, output_tokens: 7 } },
+  }),
+];
+
+/** A gateway that speaks the Responses transport and nothing else. */
+function responsesAdapter(records: Parameters<typeof streamingResponse>[0] = RESPONSES_STREAM) {
+  return adapterOver(() => streamingResponse(records), { responses: true });
+}
+
+describe("openai dialect — the responses transport", () => {
+  it("asks for reasoning summaries, streamed, and stores nothing upstream", async () => {
+    const { adapter, stub } = responsesAdapter();
+    await collect(adapter.streamChat("openai", request));
+
+    expect(stub.calls[0].url).toBe(`${BASE_URL}/v1/responses`);
+    expect(stub.calls[0].body).toMatchObject({
+      model: "gpt-test",
+      stream: true,
+      reasoning: { summary: "auto" },
+      store: false,
+    });
+  });
+
+  it("hoists system messages into instructions rather than sending a role", async () => {
+    const { adapter, stub } = responsesAdapter();
+    await collect(adapter.streamChat("openai", request));
+
+    const body = stub.calls[0].body as { instructions?: string; input: unknown[] };
+    expect(body.instructions).toBe("You are helpful.");
+    expect(body.input).toEqual([
+      { type: "message", role: "user", content: [{ type: "input_text", text: "Hej" }] },
+    ]);
+  });
+
+  it("sends an image inline, never as a URL the provider would fetch (§21)", async () => {
+    const { adapter, stub } = responsesAdapter();
+    await collect(
+      adapter.streamChat("openai", {
+        model: "gpt-test",
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "Hvad er det?" },
+              { type: "image", mediaType: "image/png", data: "QUJD" },
+            ],
+          },
+        ],
+      }),
+    );
+
+    const body = stub.calls[0].body as { input: { content: unknown[] }[] };
+    expect(body.input[0].content).toEqual([
+      { type: "input_text", text: "Hvad er det?" },
+      { type: "input_image", image_url: "data:image/png;base64,QUJD" },
+    ]);
+  });
+
+  /**
+   * A function tool literally named `generate_image` made the upstream run its
+   * own built-in image generation instead of ours, so every name is prefixed on
+   * the wire and stripped again on the way back (§11).
+   */
+  it("declares tools flat, under a prefixed name", async () => {
+    const { adapter, stub } = responsesAdapter();
+    await collect(
+      adapter.streamChat("openai", {
+        ...request,
+        tools: [
+          {
+            name: "generate_image",
+            description: "Draw",
+            inputSchema: { type: "object", properties: {} },
+          },
+        ],
+      }),
+    );
+
+    expect((stub.calls[0].body as { tools: unknown[] }).tools).toEqual([
+      {
+        type: "function",
+        name: "setun_generate_image",
+        description: "Draw",
+        parameters: { type: "object", properties: {} },
+      },
+    ]);
+  });
+
+  /**
+   * `call_id` is the only identifier that travels back: the item `id` belongs to
+   * the response that produced it, and sending one is rejected.
+   */
+  it("replays a call and its answer as flat items, carrying only call_id", async () => {
+    const { adapter, stub } = responsesAdapter();
+    await collect(
+      adapter.streamChat("openai", {
+        model: "gpt-test",
+        messages: [
+          { role: "user", content: "Slå det op" },
+          {
+            role: "assistant",
+            content: "Et øjeblik",
+            toolCalls: [{ id: "call-1", name: "docs__search", arguments: '{"q":"loops"}' }],
+          },
+          { role: "tool", toolCallId: "call-1", content: "42 treffer" },
+        ],
+      }),
+    );
+
+    const body = stub.calls[0].body as { input: Record<string, unknown>[] };
+    expect(body.input[1]).toEqual({
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "Et øjeblik" }],
+    });
+    expect(body.input[2]).toEqual({
+      type: "function_call",
+      call_id: "call-1",
+      name: "setun_docs__search",
+      arguments: '{"q":"loops"}',
+    });
+    expect(body.input[2]).not.toHaveProperty("id");
+    expect(body.input[3]).toEqual({
+      type: "function_call_output",
+      call_id: "call-1",
+      output: "42 treffer",
+    });
+  });
+
+  it("streams reasoning, then text, then usage", async () => {
+    const { adapter } = responsesAdapter();
+    const events = await collect(adapter.streamChat("openai", request));
+
+    expect(events).toEqual([
+      { type: "thinking-delta", text: "Overvejer opgaven" },
+      // A second summary part is a new paragraph, not a run-on sentence.
+      { type: "thinking-delta", text: "\n\n" },
+      { type: "thinking-delta", text: "Skriver svaret" },
+      { type: "text-delta", text: "Hej" },
+      { type: "text-delta", text: " med dig" },
+      { type: "usage", inputTokens: 25, outputTokens: 7, estimated: false, finishReason: "stop" },
+    ]);
+  });
+
+  it("assembles a function call across its items and strips the wire prefix", async () => {
+    const { adapter } = responsesAdapter([
+      responseEvent("response.output_item.added", {
+        output_index: 0,
+        item: { type: "function_call", call_id: "call-1", name: "setun_docs__search" },
+      }),
+      responseEvent("response.function_call_arguments.delta", {
+        output_index: 0,
+        delta: '{"q":',
+      }),
+      responseEvent("response.function_call_arguments.delta", {
+        output_index: 0,
+        delta: '"loops"}',
+      }),
+      responseEvent("response.output_item.done", {
+        output_index: 0,
+        item: {
+          type: "function_call",
+          call_id: "call-1",
+          name: "setun_docs__search",
+          arguments: '{"q":"loops"}',
+        },
+      }),
+      responseEvent("response.completed", {
+        response: { status: "completed", usage: { input_tokens: 9, output_tokens: 2 } },
+      }),
+    ]);
+    const events = await collect(adapter.streamChat("openai", request));
+
+    expect(events[0]).toEqual({
+      type: "tool-call-started",
+      toolCallId: "call-1",
+      toolName: "docs__search",
+      arguments: '{"q":"loops"}',
+    });
+    expect(events.at(-1)).toMatchObject({ type: "usage", finishReason: "tool-calls" });
+  });
+
+  it("reports an answer cut at the provider's output ceiling", async () => {
+    const { adapter } = responsesAdapter([
+      responseEvent("response.output_text.delta", { delta: "Halvvejs" }),
+      responseEvent("response.incomplete", {
+        response: {
+          status: "incomplete",
+          incomplete_details: { reason: "max_output_tokens" },
+          usage: { input_tokens: 9, output_tokens: 2 },
+        },
+      }),
+    ]);
+    const events = await collect(adapter.streamChat("openai", request));
+
+    expect(events.at(-1)).toMatchObject({ type: "usage", finishReason: "length" });
+  });
+
+  it("maps a failed response to a gateway failure", async () => {
+    const { adapter } = responsesAdapter([
+      responseEvent("response.failed", { response: { error: { message: "overloaded" } } }),
+    ]);
+
+    expect(collect(adapter.streamChat("openai", request))).rejects.toThrow(GatewayError);
+  });
+
+  /**
+   * The pupil pressed Stop while the model was still reasoning: upstream had
+   * taken the request and billed the prompt, and nothing had been produced yet
+   * (§10).
+   */
+  it("prices a turn cancelled before a single event arrived", async () => {
+    const { adapter } = adapterOver(() => acceptedThenCancelled([]), { responses: true });
+
+    const { events, error } = await collectUntilThrow(adapter.streamChat("openai", request));
+
+    expect((error as Error).name).toBe("AbortError");
+    const usage = events.filter((event) => event.type === "usage");
+    expect(usage).toHaveLength(1);
+    expect(usage[0]).toMatchObject({ estimated: true, outputTokens: 0 });
+  });
+});
+
+describe("openai dialect — falling back to chat completions", () => {
+  /** A gateway that answers `status` on `/v1/responses` and streams otherwise. */
+  function gatewayWithout(status: number, detail = "unknown url: /v1/responses") {
+    return adapterOver(
+      (call) =>
+        call.url.endsWith("/v1/responses")
+          ? new Response(detail, { status })
+          : streamingResponse(OPENAI_STREAM),
+      { responses: true },
+    );
+  }
+
+  for (const status of [404, 405]) {
+    it(`falls back when the gateway answers ${status}`, async () => {
+      const { adapter, stub } = gatewayWithout(status);
+      const events = await collect(adapter.streamChat("openai", request));
+
+      expect(stub.calls.map((call) => call.url)).toEqual([
+        `${BASE_URL}/v1/responses`,
+        `${BASE_URL}/v1/chat/completions`,
+      ]);
+      expect(events.at(-1)).toMatchObject({ type: "usage", inputTokens: 25 });
+      expect(events.some((event) => event.type === "thinking-delta")).toBe(false);
+    });
+  }
+
+  it("falls back on a 400 that names the path as unknown", async () => {
+    const { adapter, stub } = gatewayWithout(
+      400,
+      '{"error":{"message":"unknown url /v1/responses"}}',
+    );
+    await collect(adapter.streamChat("openai", request));
+
+    expect(stub.calls).toHaveLength(2);
+  });
+
+  /**
+   * A 400 that means "your request was wrong" must keep meaning that: retrying
+   * it on the other transport would fail identically and cost a second prompt.
+   */
+  it("does not fall back on a 400 about the request itself", async () => {
+    const { adapter, stub } = gatewayWithout(
+      400,
+      '{"error":{"message":"context length exceeded"}}',
+    );
+
+    expect(collect(adapter.streamChat("openai", request))).rejects.toThrow(GatewayError);
+    expect(stub.calls.every((call) => !call.url.endsWith("/v1/chat/completions"))).toBe(true);
+  });
+
+  it("does not fall back on an upstream failure", async () => {
+    const { adapter } = gatewayWithout(503, "upstream busy");
+
+    expect(collect(adapter.streamChat("openai", request))).rejects.toThrow(GatewayError);
+  });
+
+  it("remembers, so the second turn does not probe again", async () => {
+    const { adapter, stub } = gatewayWithout(404);
+    await collect(adapter.streamChat("openai", request));
+    await collect(adapter.streamChat("openai", request));
+
+    expect(stub.calls.filter((call) => call.url.endsWith("/v1/responses"))).toHaveLength(1);
+    expect(stub.calls.filter((call) => call.url.endsWith("/v1/chat/completions"))).toHaveLength(2);
+  });
+
+  /** The reasoning-effort suffix is part of the model id CPA exposes. */
+  it("shares the memo across one model's effort levels, not across models", async () => {
+    const { adapter, stub } = gatewayWithout(404);
+    await collect(adapter.streamChat("openai", { ...request, model: "gpt-test (high)" }));
+    await collect(adapter.streamChat("openai", { ...request, model: "gpt-test (low)" }));
+    await collect(adapter.streamChat("openai", { ...request, model: "other-model" }));
+
+    expect(stub.calls.filter((call) => call.url.endsWith("/v1/responses"))).toHaveLength(2);
   });
 });
 

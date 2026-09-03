@@ -35,6 +35,18 @@ export interface TextDeltaEvent {
   readonly text: string;
 }
 
+/**
+ * A fragment of the model's own reasoning, as the provider summarises it (§20).
+ *
+ * Never replayed back to the model and never fence-scanned: it is a window onto
+ * how the answer was reached, not part of the answer. A classroom may hide it
+ * outright, in which case it is dropped server-side and never reaches a browser.
+ */
+export interface ThinkingDeltaEvent {
+  readonly type: "thinking-delta";
+  readonly text: string;
+}
+
 export interface ToolCallStartedEvent {
   readonly type: "tool-call-started";
   readonly toolCallId: string;
@@ -193,6 +205,7 @@ export interface DoneEvent {
 
 export type GatewayEvent =
   | TextDeltaEvent
+  | ThinkingDeltaEvent
   | ToolCallStartedEvent
   | PermissionRequestEvent
   | ElicitationRequestEvent

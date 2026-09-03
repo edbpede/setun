@@ -182,9 +182,13 @@ const EMPTY_SCHEMA = { type: "object", properties: {} } as const;
  * Letters, digits, underscores and hyphens only, and short enough for the
  * stricter of the two. Collisions after truncation are broken by a counter
  * rather than left to silently shadow one another.
+ *
+ * 54 rather than 60, because the OpenAI dialect prefixes every name with
+ * `setun_` on the wire and the limit that matters is the one the provider
+ * enforces on what it actually receives.
  */
 function uniqueName(raw: string, taken: Set<string>): string {
-  const base = raw.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 60) || "tool";
+  const base = raw.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 54) || "tool";
 
   let candidate = base;
   let counter = 2;

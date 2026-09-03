@@ -179,6 +179,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     tools: prepared.tools,
     toolContext: prepared.toolContext,
     permissionMode: access.classroom.permissionMode,
+    thinkingVisibility: access.classroom.thinkingVisibility,
   });
 
   // Titles are generated after the first exchange, asynchronously, and never

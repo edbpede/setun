@@ -28,13 +28,36 @@ export interface StubFetch {
   readonly calls: StubFetchCall[];
 }
 
+export interface StubFetchOptions {
+  /**
+   * Whether this stubbed gateway implements `/v1/responses`.
+   *
+   * Off by default. The OpenAI dialect prefers the Responses transport and falls
+   * back to chat completions on a 404, and most tests here are about something
+   * else entirely — a skill loading, a title being generated, a budget binding —
+   * handing back a recorded chat-completions stream whatever is asked of them.
+   * So the transport probe is answered 404 on their behalf, and deliberately not
+   * recorded: it is infrastructure rather than the request under test, and
+   * `calls[0]` should be the call the test made.
+   *
+   * Tests that are about the Responses transport set this and route on the URL
+   * themselves.
+   */
+  readonly responses?: boolean;
+}
+
 /** A `fetch` that answers every request with one prepared response. */
 export function stubFetch(
   responder: (call: StubFetchCall) => Response | Promise<Response>,
+  options: StubFetchOptions = {},
 ): StubFetch {
   const calls: StubFetchCall[] = [];
 
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (!options.responses && String(input).endsWith("/v1/responses")) {
+      return new Response("unknown url: /v1/responses", { status: 404 });
+    }
+
     const headers = new Headers(init?.headers);
     const rawBody = init?.body;
     const call: StubFetchCall = {

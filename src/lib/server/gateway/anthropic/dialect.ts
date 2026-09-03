@@ -24,13 +24,22 @@ import { resolveUsage } from "../usage";
  * (output) rather than in one trailing chunk; tool calls stream as a content
  * block whose input arrives as JSON fragments; and a tool's answer travels back
  * as a user message rather than as a role of its own.
+ *
+ * Thinking blocks are parsed if a provider sends them, but nothing here asks for
+ * them: the request-side thinking parameter is a follow-up (§20).
  */
 
 interface MessageStreamEvent {
   type?: string;
   index?: number;
-  delta?: { type?: string; text?: string; partial_json?: string; stop_reason?: string | null };
-  content_block?: { type?: string; text?: string; id?: string; name?: string };
+  delta?: {
+    type?: string;
+    text?: string;
+    thinking?: string;
+    partial_json?: string;
+    stop_reason?: string | null;
+  };
+  content_block?: { type?: string; text?: string; thinking?: string; id?: string; name?: string };
   message?: { usage?: { input_tokens?: number; output_tokens?: number } };
   usage?: { input_tokens?: number; output_tokens?: number };
   error?: { message?: string };
@@ -127,6 +136,15 @@ export class AnthropicDialect implements GatewayDialectAdapter {
               break;
             }
 
+            // A thinking block, where a provider sends one. Not added to the
+            // completion: it is never replayed to the model and never priced as
+            // output text (§20, §10).
+            const thinking = payload.delta?.thinking;
+            if (thinking) {
+              yield { type: "thinking-delta", text: thinking };
+              break;
+            }
+
             const text = payload.delta?.text;
             if (text) {
               completion += text;
@@ -141,6 +159,12 @@ export class AnthropicDialect implements GatewayDialectAdapter {
                 name: payload.content_block.name ?? "",
                 arguments: "",
               });
+              break;
+            }
+
+            if (payload.content_block?.type === "thinking") {
+              const opening = payload.content_block.thinking;
+              if (opening) yield { type: "thinking-delta", text: opening };
               break;
             }
 

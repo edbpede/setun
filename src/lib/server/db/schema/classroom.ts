@@ -23,6 +23,17 @@ export type SessionPolicy = (typeof SESSION_POLICIES)[number];
 export const PERMISSION_MODES = ["strict", "standard", "open"] as const;
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
+/**
+ * Whether a pupil may see the model's reasoning (§20).
+ *
+ * Three values because the educator's question is genuinely three-way: leave it
+ * to the pupil, always show it, or never send it at all. `hidden` is enforced
+ * server-side — the events are dropped before the turn is buffered, so nothing
+ * reaches the browser for a devtools panel to find (§21).
+ */
+export const THINKING_VISIBILITIES = ["student", "shown", "hidden"] as const;
+export type ThinkingVisibility = (typeof THINKING_VISIBILITIES)[number];
+
 /** Student skill-authoring policy (§12). Enforced in Phase 3.9. */
 export const SKILL_AUTHORING_POLICIES = ["immediate", "pre-approval", "disabled"] as const;
 export type SkillAuthoringPolicy = (typeof SKILL_AUTHORING_POLICIES)[number];
@@ -122,6 +133,13 @@ export const classroom = sqliteTable("classroom", {
   perClassroomDailyTokens: integer().notNull().default(2_500_000),
 
   permissionMode: text({ enum: PERMISSION_MODES }).notNull().default("standard"),
+  /**
+   * Whether the model's reasoning reaches the pupil (§20).
+   *
+   * Defaults to `student`: the pupil's own device setting decides, which is
+   * where a preference about how somebody likes to read belongs (§16).
+   */
+  thinkingVisibility: text({ enum: THINKING_VISIBILITIES }).notNull().default("student"),
   skillAuthoringPolicy: text({ enum: SKILL_AUTHORING_POLICIES }).notNull().default("immediate"),
 
   /** Classroom-wide attachment toggle; per-student overrides sit on `student` (§10). */

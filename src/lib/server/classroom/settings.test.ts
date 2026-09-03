@@ -35,6 +35,19 @@ describe("resolveStudentSettings", () => {
     expect(resolved.studentInstructions).toBeNull();
   });
 
+  /**
+   * Classroom-level only: the pupil's own half of this decision is a device
+   * setting, so there is nothing to override here (§16, §20).
+   */
+  it("carries the classroom's thinking policy through unchanged", () => {
+    const resolved = resolveStudentSettings(
+      { ...classroom, thinkingVisibility: "hidden" },
+      student,
+    );
+
+    expect(resolved.thinkingVisibility).toBe("hidden");
+  });
+
   it("prefers a pupil's own interface language over the classroom's (§8, §18)", () => {
     const resolved = resolveStudentSettings(classroom, { ...student, interfaceLanguage: "en" });
 
