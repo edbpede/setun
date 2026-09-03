@@ -64,7 +64,6 @@
   "chat_branch_next": "Next version",
   "chat_branch_previous": "Previous version",
   "chat_cancel_edit": "Cancel",
-  "chat_composer_hint": "Enter sends · Shift+Enter starts a new line",
   "chat_composer_label": "Your message",
   "chat_composer_placeholder": "Write a message…",
   "chat_conversations": "Conversations",

@@ -232,9 +232,5 @@ const iconButton =
         {/if}
       </div>
     </div>
-
-    <p class="hidden text-center text-[0.6875rem] text-muted-foreground sm:block">
-      {m.chat_composer_hint()}
-    </p>
   </div>
 </form>
