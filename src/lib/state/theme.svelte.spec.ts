@@ -10,6 +10,10 @@ import { isThemePreference, THEME_STORAGE_KEY, ThemeState } from "./theme.svelte
  */
 
 afterEach(() => {
+  // Before anything that touches storage: a test that stubs `getItem` to throw
+  // and then fails would otherwise leave the spy in place, and every later case
+  // in this file would fail for a reason that is not its own.
+  vi.restoreAllMocks();
   localStorage.removeItem(THEME_STORAGE_KEY);
   document.documentElement.classList.remove("dark");
   document.documentElement.style.removeProperty("color-scheme");
@@ -85,8 +89,6 @@ describe("ThemeState", () => {
     // Nothing persists, but the choice still paints this document.
     expect(theme.preference).toBe("dark");
     expect(theme.resolved).toBe("dark");
-
-    vi.restoreAllMocks();
   });
 
   it("ignores a stored value it does not recognise", () => {

@@ -71,9 +71,14 @@ export interface TranscriptPosition {
  * position at all left them at the newest end instead.
  */
 export function readTranscriptPosition(conversationId: string | null): TranscriptPosition | null {
-  if (!conversationId || typeof sessionStorage === "undefined") return null;
+  if (!conversationId) return null;
 
   try {
+    // Inside the `try`, because `typeof` only swallows an *unresolvable* name:
+    // `sessionStorage` is a real property of `window` and reading it is what
+    // throws where site data is blocked.
+    if (typeof sessionStorage === "undefined") return null;
+
     const stored = sessionStorage.getItem(positionKey(conversationId));
     if (stored === null) return null;
 
@@ -95,9 +100,11 @@ export function writeTranscriptPosition(
   conversationId: string | null,
   position: TranscriptPosition,
 ): void {
-  if (!conversationId || typeof sessionStorage === "undefined") return;
+  if (!conversationId) return;
 
   try {
+    if (typeof sessionStorage === "undefined") return;
+
     sessionStorage.setItem(
       positionKey(conversationId),
       JSON.stringify({ offset: Math.round(position.offset), window: position.window }),
