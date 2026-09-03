@@ -38,10 +38,15 @@ export function tierOf(language: ArtifactLanguage): ArtifactTier {
 /**
  * What happened the last time a version was run in the sandbox (§13).
  *
- * Two states, not three. "Ran" and "did not run" is what a pupil needs to see
- * and what the model needs to be told; a run that mounted and then threw later
- * is a distinction neither of them can act on yet. Absent means "not run",
- * which is the third value and is spelled `null` rather than enumerated.
+ * The first terminal word per run wins: an error before the artifact acks its
+ * mount is `failed`, one after it is `threw`. The distinction is not academic —
+ * a page that mounted and then threw is on the pupil's screen, and calling that
+ * "did not run" tells the model to rewrite a file that very nearly works, while
+ * calling it "ok" tells the model everything is fine while the pupil is looking
+ * at an error strip. "Ran, then threw: …" is what gets fixed in one revision.
+ *
+ * Absent means "not run", which is the fourth value and is spelled `null` rather
+ * than enumerated. Stored as bare `text`, so the enum is type-only.
  */
-export const BUILD_STATUSES = ["ok", "failed"] as const;
+export const BUILD_STATUSES = ["ok", "failed", "threw"] as const;
 export type BuildStatus = (typeof BUILD_STATUSES)[number];

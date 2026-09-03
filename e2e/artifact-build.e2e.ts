@@ -136,6 +136,84 @@ test("a build failure is reported as text, not as a broken frame", async ({ page
   expect(failures[0].length).toBeGreaterThan(0);
 });
 
+test("a page that mounted and then threw is not reported as one that failed", async ({
+  page,
+}) => {
+  await page.goto("/login");
+
+  await mountArtifact(page, {
+    language: "html",
+    source: [
+      '<!doctype html><html><body><p id="out">Siden kører</p><script>',
+      'setTimeout(function () { throw new Error("boom") }, 0);',
+      "</script></body></html>",
+    ].join("\n"),
+  });
+
+  // The page is on the pupil's screen. Calling this "did not run" told the model
+  // to rewrite a file that works, and lost the error worth fixing (§13).
+  await expect.poll(() => sandboxMessageTypes(page), { timeout: 20_000 }).toContain("threw");
+
+  const types = await sandboxMessageTypes(page);
+  expect(types).not.toContain("failed");
+  expect(types.indexOf("rendered")).toBeGreaterThan(-1);
+  expect(types.indexOf("rendered")).toBeLessThan(types.indexOf("threw"));
+});
+
+test("a page that throws before it mounts is still a failure", async ({ page }) => {
+  await page.goto("/login");
+
+  await mountArtifact(page, {
+    language: "html",
+    source: [
+      '<!doctype html><html><body><p id="out">…</p>',
+      '<script>throw new Error("early")</script>',
+      "</body></html>",
+    ].join("\n"),
+  });
+
+  await expect.poll(() => sandboxMessageTypes(page), { timeout: 20_000 }).toContain("failed");
+
+  // The ack script sits after the body, so the mount that follows the throw does
+  // not take the failure back: the first terminal word per run wins.
+  expect(await sandboxMessageTypes(page)).not.toContain("rendered");
+});
+
+test("a component that throws while rendering is a failure, not a late throw", async ({ page }) => {
+  test.setTimeout(90_000);
+  await page.goto("/login");
+
+  await mountArtifact(page, {
+    language: "tsx",
+    source: [
+      "export default function App() {",
+      '  throw new Error("i render");',
+      "}",
+    ].join("\n"),
+  });
+
+  // React's `render()` schedules, so without a synchronous mount this threw
+  // *after* the harness had acked and was reported as a page that ran (§13).
+  await expect.poll(() => sandboxMessageTypes(page), { timeout: 60_000 }).toContain("failed");
+  expect(await sandboxMessageTypes(page)).not.toContain("rendered");
+});
+
+test("a component that throws a falsy value is a failure too", async ({ page }) => {
+  test.setTimeout(90_000);
+  await page.goto("/login");
+
+  await mountArtifact(page, {
+    language: "tsx",
+    source: ["export default function App() {", "  throw null;", "}"].join("\n"),
+  });
+
+  // `throw null` is legal. A harness that decided on the caught value rather
+  // than on whether the crash handler fired read it as no crash at all, acked
+  // the mount, and told the pupil a component that rendered nothing had run.
+  await expect.poll(() => sandboxMessageTypes(page), { timeout: 60_000 }).toContain("failed");
+  expect(await sandboxMessageTypes(page)).not.toContain("rendered");
+});
+
 /** A page that keeps a running total in `localStorage`, which is what a game does. */
 const SCORE_KEEPER = [
   "<!doctype html><html><body><p id=\"out\">…</p><script>",

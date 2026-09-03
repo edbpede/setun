@@ -51,12 +51,82 @@ function attributesOf(info: string): Record<string, string> {
   return attributes;
 }
 
-/** Every closed fenced block, in the order it appears. An unclosed fence is skipped. */
-export function fencedBlocks(markdown: string): FencedBlock[] {
+/**
+ * The fence a message ends inside, when it ends inside one.
+ *
+ * A block still arriving is not an artifact and never becomes one here — it has
+ * no source to render and no closing line to bound it. But a streaming
+ * transcript has to know that a fence is *open*, or the pupil watches
+ * `<!doctype html>` scroll past as prose (§20).
+ */
+export interface OpenFence {
+  readonly language: string | null;
+  readonly attributes: Readonly<Record<string, string>>;
+  /**
+   * Index of the opening fence line; everything from here on is inside it.
+   *
+   * `CARRIED` when the fence opened in an earlier chunk, which is the whole of
+   * this chunk being inside it.
+   */
+  readonly line: number;
+  /** The marker that opened it, so a later chunk can recognise its closing line. */
+  readonly fence: string;
+}
+
+/**
+ * A line of this block that belongs to another chunk of the same message (§20).
+ *
+ * A streaming message's prose arrives in parts, split wherever a tool call or a
+ * generated image landed between two deltas — and a fence can span one of those.
+ * A block whose opening line is in an earlier part carries this as its `line`,
+ * and one whose closing line is in a later part carries it as its `endLine`.
+ */
+export const CARRIED = -1;
+
+export interface ScannedFences {
+  readonly blocks: FencedBlock[];
+  readonly open: OpenFence | null;
+  /**
+   * The lines the scan read, so a caller that works by line does not split
+   * again. A streaming transcript rescans the whole accumulated message on every
+   * delta, and one split per delta is the budget §20 sets for it.
+   */
+  readonly lines: readonly string[];
+}
+
+/**
+ * One pass over the markdown: every closed block, and the trailing open fence.
+ *
+ * `fencedBlocks` is this scan with the open fence discarded, which is what every
+ * caller that works on settled text wants.
+ *
+ * `carried` continues a scan across a chunk boundary: pass the `open` a previous
+ * chunk ended on and this one begins inside it, with the block that closes here
+ * reported at `CARRIED` rather than at a line it does not have.
+ */
+export function scanFences(markdown: string, carried: OpenFence | null = null): ScannedFences {
   const lines = markdown.split("\n");
   const blocks: FencedBlock[] = [];
+  let from = 0;
 
-  for (let index = 0; index < lines.length; index++) {
+  // A fence left open by an earlier chunk. Nothing here can open another until
+  // it closes, so the only thing to look for first is the line that closes it.
+  if (carried) {
+    const closing = findClosing(lines, 0, carried.fence);
+    if (closing === -1) return { blocks, lines, open: { ...carried, line: CARRIED } };
+
+    blocks.push({
+      language: carried.language,
+      source: lines.slice(0, closing).join("\n"),
+      line: CARRIED,
+      endLine: closing,
+      attributes: carried.attributes,
+    });
+
+    from = closing + 1;
+  }
+
+  for (let index = from; index < lines.length; index++) {
     const opening = OPENING.exec(lines[index]);
     if (!opening) continue;
 
@@ -67,11 +137,22 @@ export function fencedBlocks(markdown: string): FencedBlock[] {
     // keeps inline code on the same line from opening a block.
     if (fence.startsWith("`") && info.includes("`")) continue;
 
-    const closing = findClosing(lines, index + 1, fence);
-    // An unclosed fence is a block still arriving; it is not an artifact yet (§20).
-    if (closing === -1) break;
-
     const [first, ...rest] = info.split(/\s+/);
+    const closing = findClosing(lines, index + 1, fence);
+    // An unclosed fence is a block still arriving; it is not an artifact yet
+    // (§20). Nothing after it can open another, so the scan ends here.
+    if (closing === -1) {
+      return {
+        blocks,
+        lines,
+        open: {
+          language: first?.toLowerCase() || null,
+          attributes: attributesOf(rest.join(" ")),
+          line: index,
+          fence,
+        },
+      };
+    }
 
     blocks.push({
       language: first?.toLowerCase() || null,
@@ -84,7 +165,37 @@ export function fencedBlocks(markdown: string): FencedBlock[] {
     index = closing;
   }
 
-  return blocks;
+  return { blocks, lines, open: null };
+}
+
+/** Every closed fenced block, in the order it appears. An unclosed fence is skipped. */
+export function fencedBlocks(markdown: string): FencedBlock[] {
+  return scanFences(markdown).blocks;
+}
+
+/**
+ * A fence long enough to hold this source (§13).
+ *
+ * A source that itself contains a line of three backticks — a page explaining
+ * markdown, a component with a template literal — closes a three-backtick fence
+ * early, and everything after that point reaches the model as prose. CommonMark
+ * answers this with a longer fence, and `fencedBlocks` already honours one, so
+ * what the model reads is unchanged for every source that did not need it.
+ *
+ * Counted exactly as `findClosing` reads them: a run of backticks at the start
+ * of a line, indented no more than the three spaces CommonMark allows a closing
+ * fence. A deeper indent is an indented code block and closes nothing, and a run
+ * that does not start the line cannot close anything either.
+ */
+export function fenceFor(source: string): string {
+  let longest = 0;
+
+  for (const line of source.split("\n")) {
+    const run = /^ {0,3}(`+)/.exec(line);
+    if (run) longest = Math.max(longest, run[1].length);
+  }
+
+  return "`".repeat(Math.max(3, longest + 1));
 }
 
 function findClosing(lines: readonly string[], from: number, fence: string): number {

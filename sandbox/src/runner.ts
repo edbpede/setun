@@ -36,6 +36,22 @@ const stage = document.getElementById("stage") as HTMLIFrameElement;
 /** The render currently on screen; results from earlier ones are dropped. */
 let currentRunId: string | null = null;
 /**
+ * Which word a run has already said, so the first terminal one wins (§13).
+ *
+ * A page that mounts and then throws — a click handler with a typo, a timer that
+ * divides by nothing — is on the pupil's screen, and reporting that as `failed`
+ * told the model a working artifact never ran at all, which is answered by a
+ * rewrite rather than by a fix. So an error is `threw` once its run has acked
+ * its mount, and `failed` before that.
+ *
+ * `settledRunId` is either of those words having been said, and a `mounted`
+ * arriving after one is dropped: a document that broke on its way up can still
+ * finish parsing and ack, and a `rendered` behind a `threw` would tell the panel
+ * the page is fine while the pupil is looking at the error it just reported.
+ */
+let mountedRunId: string | null = null;
+let settledRunId: string | null = null;
+/**
  * Which artifact each staged document belongs to, newest last.
  *
  * Replacing the stage's document fires `pagehide` in the old one, and the shim
@@ -332,6 +348,8 @@ async function render(
   source: string,
 ): Promise<void> {
   currentRunId = runId;
+  mountedRunId = null;
+  settledRunId = null;
 
   // Read before the awaits below: the shim is seeded with what this artifact
   // held, and a snapshot arriving mid-render belongs to the document being
@@ -370,6 +388,7 @@ async function render(
 
   if (!result.ok) {
     stage.srcdoc = "";
+    settledRunId = runId;
     toHost({ channel: ARTIFACT_CHANNEL, type: "failed", runId, message: result.message });
     return;
   }
@@ -417,6 +436,11 @@ window.addEventListener("message", (event) => {
     }
 
     if (staged.type === "mounted") {
+      // A run that already reported `failed` or `threw` has said its word; the
+      // document finishing its parse afterwards does not take it back.
+      if (staged.runId === settledRunId) return;
+
+      mountedRunId = staged.runId;
       toHost({ channel: ARTIFACT_CHANNEL, type: "rendered", runId: staged.runId });
       // A game listens for keys on its own window, and a pupil who has not
       // clicked inside the frame is typing at the conversation. Taken only when
@@ -426,12 +450,28 @@ window.addEventListener("message", (event) => {
       return;
     }
 
-    toHost({
-      channel: ARTIFACT_CHANNEL,
-      type: "failed",
-      runId: staged.runId,
-      message: staged.message,
-    });
+    // Named rather than a fall-through: a future stage message would otherwise
+    // be reported to the application as this artifact having failed.
+    if (staged.type === "runtime-error") {
+      if (staged.runId === mountedRunId) {
+        settledRunId = staged.runId;
+        toHost({
+          channel: ARTIFACT_CHANNEL,
+          type: "threw",
+          runId: staged.runId,
+          message: staged.message,
+        });
+        return;
+      }
+
+      settledRunId = staged.runId;
+      toHost({
+        channel: ARTIFACT_CHANNEL,
+        type: "failed",
+        runId: staged.runId,
+        message: staged.message,
+      });
+    }
     return;
   }
 
@@ -466,6 +506,12 @@ window.addEventListener("message", (event) => {
   // waiting on a build that is never coming, with nothing to tell the pupil.
   void render(message.runId, message.artifactId, message.language, message.source).catch(
     (cause) => {
+      // Unless the stage has moved on. A render rejecting after a later one
+      // began is not what the panel is waiting on, and settling it here would
+      // take the terminal word off the run that is actually on screen.
+      if (currentRunId !== message.runId) return;
+
+      settledRunId = message.runId;
       toHost({
         channel: ARTIFACT_CHANNEL,
         type: "failed",

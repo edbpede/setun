@@ -147,6 +147,10 @@ test("a student builds an artifact, edits it, and the edit travels back", async 
   expect(body.versions[0].authoredBy).toBe("model");
   expect(body.versions[1].authoredBy).toBe("student");
   expect(body.versions[1].source).toContain("Min knap");
+  // Each revision carries the tag it was written under, so restoring one later
+  // does not run it through the pipeline the row has since moved to (§13).
+  expect(body.versions[0].language).toBe("html");
+  expect(body.versions[1].language).toBe("html");
 
   await page.getByRole("button", { name: m.artifact_close() }).click();
 
@@ -166,6 +170,21 @@ test("a student builds an artifact, edits it, and the edit travels back", async 
   // so the model's own next revision is what the artifact now holds.
   const after = await (await page.request.get(`/api/artifacts/${artifactId}`)).json();
   expect(after.versions.at(-1).authoredBy).toBe("model");
+
+  // The language tag, last: posting one appends a student revision of its own,
+  // and doing it earlier would have made *that* the edit carried above rather
+  // than the one the pupil typed into CodeMirror.
+  const posted = await page.request.post(`/api/artifacts/${artifactId}/versions`, {
+    data: { source: "<p>en komponent</p>", language: "svelte" },
+  });
+  expect(posted.status()).toBe(201);
+  expect((await posted.json()).language).toBe("svelte");
+
+  // And a tag Setun does not recognise is refused before it reaches the database.
+  const refused = await page.request.post(`/api/artifacts/${artifactId}/versions`, {
+    data: { source: "<p>nej</p>", language: "cobol" },
+  });
+  expect(refused.status()).toBe(400);
 });
 
 test("the creations gallery holds what the student made", async ({ page }) => {
@@ -327,6 +346,14 @@ test("a run's outcome is recorded against the version it ran", async ({ page }) 
   const after = await read();
   expect(after.buildStatus).toBe("failed");
   expect(after.buildMessage).toBe("SyntaxError");
+
+  // A page that mounted and then threw is a third outcome the endpoint takes:
+  // the pupil is looking at it, and "did not run" would ask for a rewrite (§13).
+  const threw = await page.request.patch(`/api/artifacts/${artifactId}/versions/${versionId}`, {
+    data: { buildStatus: "threw", buildMessage: "TypeError" },
+  });
+  expect(threw.status()).toBe(200);
+  expect((await read()).buildStatus).toBe("threw");
 
   // A status the schema does not name is refused before it reaches the database.
   const invalid = await page.request.patch(

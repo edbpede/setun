@@ -74,8 +74,8 @@ export const ARTIFACT_INSTRUCTIONS = [
   "touch/pointer with targets ≥ 44 px. The frame gets keyboard focus after it renders and when the",
   "pupil taps it. Start audio only inside a click or key handler.",
   "Before the pupil's message you may find a note listing this conversation's artifacts by id,",
-  "language, revision, author and last run result. If the last run failed, fix that error in your",
-  "next complete version of the same id.",
+  "language, revision, author and last run result. If the last run failed or threw, fix that error",
+  "in your next complete version of the same id.",
 ].join("\n");
 
 /**

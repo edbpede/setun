@@ -34,6 +34,9 @@ export const GET: RequestHandler = ({ params, locals }) => {
       id: version.id,
       revision: version.revision,
       source: version.source,
+      // Null for a revision written before the column, which reads as "whatever
+      // the artifact says" — `effectiveLanguage` is the one that resolves it.
+      language: version.language,
       authoredBy: version.authoredBy,
       buildStatus: version.buildStatus,
       buildMessage: version.buildMessage,

@@ -36,6 +36,18 @@ function artifact(overrides: Partial<ArtifactView> = {}): ArtifactView {
   };
 }
 
+/** Every request body the panel has sent, in the order it sent them. */
+function sentBodies(fetched: { mock: { calls: unknown[][] } }): string[] {
+  return fetched.mock.calls.map(([, init]) =>
+    String((init as RequestInit | undefined)?.body ?? ""),
+  );
+}
+
+/** The status strip's own sentence, read whole rather than as a substring. */
+function statusStrip(): string | undefined {
+  return document.querySelector('[role="status"]')?.textContent?.trim();
+}
+
 function openWorkspace(items: ArtifactView[] = [artifact()]): ArtifactWorkspace {
   const workspace = new ArtifactWorkspace();
   workspace.items = items;
@@ -250,7 +262,86 @@ describe("ArtifactPanel", () => {
     });
 
     await page.getByRole("button", { name: m.artifact_ask_fix() }).click();
-    expect(asked).toHaveBeenCalled();
+    expect(asked).toHaveBeenCalledWith("failed");
+  });
+
+  it("tells a page that mounted and then threw from one that never ran", async () => {
+    const workspace = openWorkspace();
+    const asked = vi.fn();
+    // Resolved by hand, so the order the two PATCHes are *sent* in is observable.
+    const settle: ((response: Response) => void)[] = [];
+    const fetched = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(() => new Promise((resolve) => settle.push(resolve)));
+
+    try {
+      render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX, onaskforhelp: asked });
+
+      // The mount ack, then the click handler throwing a moment later.
+      workspace.status = "running";
+      workspace.recordOutcome("ok", null);
+      await vi.waitFor(() => expect(fetched).toHaveBeenCalledTimes(1));
+
+      workspace.error = "TypeError: t.score is not a function";
+      workspace.recordOutcome("threw", "TypeError: t.score is not a function");
+
+      // Serialised: `v:ok` then `v:threw` landing out of order would leave the
+      // server disagreeing with what the pupil is looking at.
+      expect(fetched).toHaveBeenCalledTimes(1);
+      settle[0]?.(new Response("{}", { status: 200 }));
+      await vi.waitFor(() => expect(fetched).toHaveBeenCalledTimes(2));
+      settle[1]?.(new Response("{}", { status: 200 }));
+
+      // The page is still on screen, so the strip and the trit say it ran and
+      // then stopped rather than that it never ran (§13).
+      await expect.element(page.getByText("TypeError: t.score is not a function")).toBeVisible();
+      await expect.element(page.getByText(m.artifact_status_threw())).toBeVisible();
+      await expect
+        .element(page.getByRole("img", { name: m.artifact_status_threw() }).first())
+        .toBeInTheDocument();
+
+      await vi.waitFor(() => expect(workspace.pendingBuildReport).toBeNull());
+      await page.getByRole("button", { name: m.artifact_ask_fix() }).click();
+      // The pupil's sentence has to agree with the note beside it.
+      expect(asked).toHaveBeenCalledWith("threw");
+    } finally {
+      fetched.mockRestore();
+    }
+  });
+
+  it("marks a version that ran and then stopped in the history list", async () => {
+    const workspace = openWorkspace();
+    const fetched = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "artifact-1",
+          language: "html",
+          title: "Klikkeren",
+          key: "klikkeren",
+          versions: [
+            {
+              id: "version-1",
+              revision: 1,
+              source: "<button>Klik</button>",
+              authoredBy: "model",
+              buildStatus: "threw",
+              buildMessage: "TypeError",
+              createdAt: new Date(0).toISOString(),
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+
+    try {
+      render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX });
+      await page.getByRole("tab", { name: m.artifact_tab_history() }).click();
+
+      await expect.element(page.getByText(m.artifact_version_build_threw())).toBeVisible();
+    } finally {
+      fetched.mockRestore();
+    }
   });
 
   it("shows what the artifact printed, as text", async () => {
@@ -333,6 +424,74 @@ describe("ArtifactPanel", () => {
     }
   });
 
+  it("sends a superseded report once, when the one before it did not land", async () => {
+    const workspace = openWorkspace();
+
+    // The mount's `ok` is held open until the `threw` behind it is queued, so
+    // the refusal lands while the second report is the one the panel owes.
+    let refuse!: (response: Response) => void;
+    const held = new Promise<Response>((resolve) => {
+      refuse = resolve;
+    });
+
+    const fetched = vi
+      .spyOn(globalThis, "fetch")
+      .mockReturnValueOnce(held)
+      .mockResolvedValue(new Response("{}", { status: 200 }));
+
+    try {
+      render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX });
+
+      workspace.recordOutcome("ok", null);
+      await vi.waitFor(() => expect(fetched).toHaveBeenCalledTimes(1));
+
+      // Reports travel one chain, so this one waits on the held request.
+      workspace.recordOutcome("threw", "TypeError");
+      await vi.waitFor(() => expect(workspace.pendingBuildReport?.status).toBe("threw"));
+
+      refuse(new Response("nej", { status: 500 }));
+      await vi.waitFor(() => expect(workspace.open?.latest.buildStatus).toBe("threw"));
+
+      // A sentinel behind everything already queued. Reports travel one chain in
+      // the order they were raised, so a duplicate queued by the refusal above
+      // must have been sent before this one is — no sleep needed to see it.
+      workspace.recordOutcome("failed", "boom");
+      await vi.waitFor(() =>
+        expect(sentBodies(fetched).some((body) => body.includes("failed"))).toBe(true),
+      );
+
+      // Clearing the stamp on the refusal would have reopened the effect on the
+      // stamp the throw already held, and sent the throw a second time.
+      expect(sentBodies(fetched).filter((body) => body.includes("threw"))).toHaveLength(1);
+    } finally {
+      fetched.mockRestore();
+    }
+  });
+
+  it("says a stored run threw rather than only that it ran", async () => {
+    // Reopened later: nothing is running, so the strip has only the stored
+    // status to read — and the trit beside it already says `threw` (§13, §20).
+    const workspace = openWorkspace([
+      artifact({ latest: { buildStatus: "threw", buildMessage: "TypeError" } as never }),
+    ]);
+
+    render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX });
+
+    // Read exactly: "It ran" is a prefix of "It ran, then stopped", so a
+    // substring match would pass on the wrong sentence.
+    await vi.waitFor(() => expect(statusStrip()).toBe(m.artifact_status_threw()));
+  });
+
+  it("says a stored run failed rather than that it ran", async () => {
+    const workspace = openWorkspace([
+      artifact({ latest: { buildStatus: "failed", buildMessage: "boom" } as never }),
+    ]);
+
+    render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX });
+
+    await vi.waitFor(() => expect(statusStrip()).toBe(m.artifact_status_failed()));
+  });
+
   it("reports nothing for a draft the version does not hold", async () => {
     const workspace = openWorkspace();
     const fetched = vi
@@ -355,6 +514,156 @@ describe("ArtifactPanel", () => {
     } finally {
       fetched.mockRestore();
     }
+  });
+});
+
+describe("the frame's renders", () => {
+  /** Say `ready` as the runner does, so the frame will send a render at all. */
+  function announceReady(): HTMLIFrameElement {
+    const frame = document.querySelector("iframe") as HTMLIFrameElement;
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data: { channel: "setun-artifact", type: "ready" },
+        source: frame.contentWindow,
+      }),
+    );
+    return frame;
+  }
+
+  it("does not re-render the artifact when a build status is recorded", async () => {
+    const workspace = openWorkspace();
+    // The frame is sandboxed without `allow-same-origin`, so its `postMessage`
+    // is unreachable from here — but a render mints exactly one run id, and that
+    // is countable (§14).
+    const minted = vi.spyOn(crypto, "randomUUID");
+
+    try {
+      render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX });
+      announceReady();
+
+      await vi.waitFor(() => expect(minted).toHaveBeenCalled());
+      const before = minted.mock.calls.length;
+
+      // Recording an outcome replaces the artifact list, so every value the
+      // frame reads comes from a new object — and re-sending the render tears
+      // the document down, losing whatever state the artifact had built up.
+      // With two outcomes in one run it also fed itself: the fresh mount
+      // reported `ok` over the `threw` that caused it, and round again (§13).
+      workspace.applyBuildStatus({
+        artifactId: "artifact-1",
+        versionId: "version-1",
+        status: "threw",
+        message: "TypeError",
+      });
+      await vi.waitFor(() => expect(workspace.open?.latest.buildStatus).toBe("threw"));
+
+      expect(minted.mock.calls.length).toBe(before);
+    } finally {
+      minted.mockRestore();
+    }
+  });
+});
+
+describe("restoring a revision written under another language", () => {
+  /** An artifact the model has since rewritten as a component. */
+  function rewritten(): ArtifactView {
+    return {
+      ...artifact(),
+      language: "svelte",
+      latest: {
+        ...artifact().latest,
+        id: "version-2",
+        revision: 2,
+        source: "<p>komponent</p>",
+        language: "svelte",
+      },
+    };
+  }
+
+  const older = {
+    id: "version-1",
+    revision: 1,
+    source: "<button>Klik</button>",
+    language: "html" as const,
+    authoredBy: "model" as const,
+    createdAt: new Date(0).toISOString(),
+  };
+
+  it("reads the artifact's own tag when the version names none", () => {
+    const workspace = openWorkspace([
+      { ...artifact(), latest: { ...artifact().latest, language: null } },
+    ]);
+
+    // Null means "whatever the artifact says", which is every row that predates
+    // the column (§13).
+    expect(workspace.language).toBe("html");
+  });
+
+  it("stores the tag the restored revision was written under", async () => {
+    const workspace = openWorkspace([rewritten()]);
+    const fetched = vi.spyOn(globalThis, "fetch").mockImplementation((input) =>
+      Promise.resolve(
+        String(input).endsWith("/versions")
+          ? new Response(
+              JSON.stringify({
+                id: "version-3",
+                revision: 3,
+                source: older.source,
+                language: "html",
+                authoredBy: "student",
+                createdAt: new Date(2).toISOString(),
+              }),
+              { status: 201, headers: { "content-type": "application/json" } },
+            )
+          : new Response(
+              JSON.stringify({
+                id: "artifact-1",
+                language: "svelte",
+                title: "Klikkeren",
+                key: "klikkeren",
+                versions: [older, rewritten().latest],
+              }),
+              { status: 200, headers: { "content-type": "application/json" } },
+            ),
+      ),
+    );
+
+    try {
+      render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX });
+      await page.getByRole("tab", { name: m.artifact_tab_history() }).click();
+
+      // The oldest revision, restored onto an artifact the row now calls svelte.
+      await page.getByText(m.artifact_version_label({ revision: 1 })).click();
+      await page.getByRole("button", { name: m.artifact_restore() }).click();
+
+      const posted = fetched.mock.calls.find(([url]) => String(url).endsWith("/versions"));
+      expect(JSON.parse(String(posted?.[1]?.body))).toEqual({
+        source: older.source,
+        language: "html",
+      });
+
+      // And it runs as html: through the Svelte compiler it does not run at all.
+      await vi.waitFor(() => expect(workspace.runningLanguage).toBe("html"));
+    } finally {
+      fetched.mockRestore();
+    }
+  });
+
+  it("commits a restore that changes only the language", () => {
+    const same = {
+      ...artifact(),
+      language: "svelte" as const,
+      latest: { ...artifact().latest, language: "svelte" as const },
+    };
+    const workspace = openWorkspace([same]);
+
+    // Same text under a different tag is a different pipeline, so the commit
+    // point must not short-circuit on the source alone (§13).
+    workspace.restore({ ...same.latest, id: "version-0", revision: 0, language: "html" });
+    workspace.commit();
+
+    expect(workspace.runningLanguage).toBe("html");
+    expect(workspace.status).toBe("compiling");
   });
 });
 

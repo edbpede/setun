@@ -71,6 +71,23 @@ export function effectiveArtifactKey(input: {
 }
 
 /**
+ * The language a *particular* version was written under (§13).
+ *
+ * The artifact's own language is the current one: a page rewritten as a
+ * component under the same id is one thing to the pupil, and the row follows.
+ * But an older revision was written under the tag it was written under, and
+ * restoring it through the current row's language runs an html file through the
+ * Svelte compiler. Null means "whatever the artifact says", which is every row
+ * that predates the column.
+ */
+export function effectiveLanguage(
+  artifact: { language: ArtifactLanguage },
+  version: { language?: ArtifactLanguage | null } | null | undefined,
+): ArtifactLanguage {
+  return version?.language ?? artifact.language;
+}
+
+/**
  * Titles are written into a fence info string, so they carry no quote or newline.
  *
  * An apostrophe is not one of them: the value is emitted double-quoted, and

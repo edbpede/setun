@@ -116,6 +116,40 @@ describe("applyMigrations", () => {
     expect(version.source).toBe("<p>en</p>");
   });
 
+  it("leaves a version that predates the language column unattributed", () => {
+    const journal = readJournal();
+    const entry = journal.entries.find((item) => item.tag.includes("version_language"));
+    if (!entry) throw new Error("the version language migration is not in the journal");
+
+    const root = mkdtempSync(join(tmpdir(), "setun-migrate-language-"));
+    const db = createDatabase(join(root, "setun.sqlite"));
+
+    applyMigrations(db, migrationsThrough(entry.idx - 1, join(root, "previous")));
+    db.$client.exec(
+      "INSERT INTO classroom (id, name, timezone, createdAt, updatedAt) VALUES ('c1', 'Pilotklasse', 'Europe/Copenhagen', 1, 1)",
+    );
+    db.$client.exec(
+      "INSERT INTO student (id, classroomId, label, credentialDigest, credentialHint, createdAt, updatedAt) VALUES ('s1', 'c1', 'quiet-fox', 'x', 'y', 1, 1)",
+    );
+    db.$client.exec(
+      "INSERT INTO artifact (id, studentId, language, createdAt, updatedAt) VALUES ('a1', 's1', 'html', 1, 1)",
+    );
+    db.$client.exec(
+      "INSERT INTO artifact_version (id, artifactId, revision, source, authoredBy, createdAt) VALUES ('v1', 'a1', 1, '<p>en</p>', 'model', 1)",
+    );
+
+    expect(() => applyMigrations(db)).not.toThrow();
+
+    const version = db.$client
+      .query("SELECT language, source FROM artifact_version WHERE id = 'v1'")
+      .get() as { language: string | null; source: string };
+
+    // Null and not backfilled: a row that predates the column really is unknown,
+    // and `effectiveLanguage` reads it as "whatever the artifact says" (§13).
+    expect(version.language).toBeNull();
+    expect(version.source).toBe("<p>en</p>");
+  });
+
   it("is idempotent — a second application changes nothing", () => {
     const root = mkdtempSync(join(tmpdir(), "setun-migrate-"));
     const db = createDatabase(join(root, "setun.sqlite"));

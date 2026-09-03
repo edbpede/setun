@@ -51,6 +51,27 @@ function seedArtifact(key: string | null = "side") {
   return { artifact, version };
 }
 
+describe("appendArtifactVersion", () => {
+  it("records the tag a revision was written under", () => {
+    const { artifact } = seedArtifact();
+
+    const version = appendArtifactVersion(db, {
+      artifactId: artifact.id,
+      source: "<p>ny</p>",
+      language: "svelte",
+      authoredBy: "model",
+    });
+
+    expect(version.language).toBe("svelte");
+  });
+
+  it("leaves it null when the caller names none, which reads as the artifact's", () => {
+    const { version } = seedArtifact();
+
+    expect(version.language).toBeNull();
+  });
+});
+
 describe("recordVersionBuild", () => {
   it("records what happened when the browser ran the version", () => {
     const { artifact, version } = seedArtifact();

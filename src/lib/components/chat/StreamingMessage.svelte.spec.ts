@@ -49,6 +49,41 @@ describe("StreamingMessage", () => {
     expect(document.querySelector("strong")).toBeNull();
   });
 
+  it("shows a stub while an artifact streams, and names it once the fence closes", async () => {
+    const turn = new StreamingTurn();
+    turn.begin("turn-1");
+    render(StreamingMessage, { turn });
+
+    turn.apply(
+      { type: "text-delta", text: 'Her er siden:\n```html id=side title="Min side"\n<h1>' },
+      0,
+    );
+
+    // Mid-fence: the pupil is told something is being built rather than shown
+    // the markup arriving a word at a time (§13, §20).
+    await expect
+      .element(page.getByText(m.artifact_card_building({ title: "Min side" })))
+      .toBeVisible();
+    await expect.element(page.getByText("Her er siden:")).toBeVisible();
+
+    // The stub appearing is half of it. A partial leak — the card above the
+    // markup it stood in for — would satisfy every assertion around this one,
+    // and is the regression the stub exists to prevent.
+    expect(document.body.textContent).not.toContain("<h1>");
+
+    turn.apply({ type: "text-delta", text: "</h1>\n```\nFærdig." }, 1);
+
+    await expect
+      .element(page.getByText(m.artifact_card_building({ title: "Min side" })))
+      .not.toBeInTheDocument();
+    await expect.element(page.getByText("Min side")).toBeVisible();
+    await expect.element(page.getByText("Færdig.")).toBeVisible();
+
+    // Closed, the fence body is still the card's and not the prose's.
+    expect(document.body.textContent).not.toContain("<h1>");
+    expect(document.body.textContent).not.toContain("</h1>");
+  });
+
   it("never renders model output as live HTML", async () => {
     const turn = new StreamingTurn();
     turn.begin("turn-1");

@@ -39,6 +39,9 @@ export const load: PageServerLoad = ({ locals }) => {
         id: latest.id,
         revision: latest.revision,
         source: latest.source,
+        // Null reads as "whatever the artifact says"; the gallery frame runs it
+        // through `effectiveLanguage` rather than the row's current tag (§13).
+        language: latest.language,
         authoredBy: latest.authoredBy,
         createdAt: latest.createdAt.toISOString(),
       },

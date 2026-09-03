@@ -1,4 +1,5 @@
-import type { BuildStatus } from "./types";
+import { effectiveLanguage } from "./identity";
+import type { ArtifactLanguage, BuildStatus } from "./types";
 
 /**
  * What a run tells the server, and therefore the model (PRD §13).
@@ -9,11 +10,17 @@ import type { BuildStatus } from "./types";
  * whether an artifact ran, so it reports the outcome onto the version it ran,
  * and the next turn's prompt states it.
  *
- * Two conditions bound what is reported, and both are about *which* source ran:
+ * Three conditions bound what is reported, and the first two are about *which*
+ * source ran:
  *
  * - The outcome must belong to the stored source. A pupil running an unsaved
  *   draft is running something the version does not hold, and stamping the
  *   version with that result would tell the model a lie about its own code.
+ * - And to the tag it ran under. A Restore can bring back a source the artifact
+ *   already holds under a different tag — same text, different pipeline — and
+ *   the revision that records the new tag is still being stored while the frame
+ *   is already running. Without this the html run's result lands on the svelte
+ *   version it replaced, which is the one thing this file exists to prevent.
  * - The status must differ from what is stored. Re-running working code is the
  *   ordinary case and must not be a PATCH per run.
  */
@@ -21,6 +28,8 @@ import type { BuildStatus } from "./types";
 export interface BuildOutcome {
   /** The source that actually ran, so a draft can be told from the version. */
   readonly source: string;
+  /** And the tag it ran under, so a restore can be told from the version too. */
+  readonly language: ArtifactLanguage | null;
   readonly status: BuildStatus;
   /** The compiler's or the browser's own words; text, never markup (§13, §21). */
   readonly message: string | null;
@@ -28,9 +37,11 @@ export interface BuildOutcome {
 
 export interface BuildTarget {
   readonly id: string;
+  readonly language: ArtifactLanguage;
   readonly latest: {
     readonly id: string;
     readonly source: string;
+    readonly language?: ArtifactLanguage | null;
     readonly buildStatus?: BuildStatus | null;
     readonly buildMessage?: string | null;
   };
@@ -52,6 +63,7 @@ export function buildReportFor(
 ): BuildReport | null {
   if (!open || !outcome) return null;
   if (outcome.source !== open.latest.source) return null;
+  if (outcome.language !== effectiveLanguage(open, open.latest)) return null;
   if ((open.latest.buildStatus ?? null) === outcome.status) return null;
 
   return {

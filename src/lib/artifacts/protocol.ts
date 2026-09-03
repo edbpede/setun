@@ -91,6 +91,21 @@ export type SandboxMessage =
       readonly message: string;
     }
   /**
+   * The artifact mounted and then threw. Same shape as `failed`, and a different
+   * word because it is a different thing: the page is on screen, and what the
+   * pupil needs is that error rather than a rewrite of a file that nearly works.
+   *
+   * The runner decides which of the two a `runtime-error` becomes — the first
+   * terminal word per run wins — so this boundary carries the outcome, not the
+   * stage's raw event.
+   */
+  | {
+      readonly channel: typeof ARTIFACT_CHANNEL;
+      readonly type: "threw";
+      readonly runId: string;
+      readonly message: string;
+    }
+  /**
    * A pinned file the sandbox needs and will not fetch for itself (§13, §14).
    *
    * The path is checked against `isSandboxAssetPath` before anything is read, so
@@ -300,10 +315,11 @@ export function asSandboxMessage(value: unknown): SandboxMessage | null {
         ? { channel: ARTIFACT_CHANNEL, type: record.type, runId: record.runId }
         : null;
     case "failed":
+    case "threw":
       return typeof record.runId === "string" && typeof record.message === "string"
         ? {
             channel: ARTIFACT_CHANNEL,
-            type: "failed",
+            type: record.type,
             runId: record.runId,
             message: record.message,
           }

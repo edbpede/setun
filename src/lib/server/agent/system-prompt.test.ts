@@ -91,6 +91,14 @@ describe("the artifact layer", () => {
     expect(ARTIFACT_INSTRUCTIONS).toContain("id=home-page");
   });
 
+  it("asks for a fix when the last run failed or threw", () => {
+    // A page that mounted and then threw is on the pupil's screen: the model
+    // has to be told to fix that error rather than to rewrite the file (§13).
+    // Line-wrapped in the source, so the two halves are asserted apart.
+    expect(ARTIFACT_INSTRUCTIONS).toContain("If the last run failed or threw, fix that error");
+    expect(ARTIFACT_INSTRUCTIONS).toContain("in your next complete version of the same id.");
+  });
+
   it("does not ask a svelte artifact for a default export", () => {
     // The Svelte compiler refuses a component with one, so following the
     // instruction would have made every svelte artifact fail to build (§13).

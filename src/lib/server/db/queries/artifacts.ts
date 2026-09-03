@@ -91,6 +91,8 @@ export function appendArtifactVersion(
     messageId?: string | null;
     source: string;
     authoredBy: VersionAuthor;
+    /** The tag it was written under; null for "whatever the artifact says" (§13). */
+    language?: ArtifactLanguage | null;
   },
 ): ArtifactVersion {
   const current =
@@ -107,6 +109,7 @@ export function appendArtifactVersion(
       messageId: input.messageId ?? null,
       revision: current + 1,
       source: input.source,
+      language: input.language ?? null,
       authoredBy: input.authoredBy,
     })
     .returning()

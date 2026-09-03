@@ -1,5 +1,6 @@
 <script lang="ts">
 import { enhance } from "$app/forms";
+import { effectiveLanguage } from "$lib/artifacts/identity";
 import ArtifactFrame from "$lib/components/artifacts/ArtifactFrame.svelte";
 import * as m from "$lib/paraglide/messages";
 import type { PageProps } from "./$types";
@@ -90,7 +91,7 @@ const empty = $derived(data.artifacts.length === 0 && data.images.length === 0);
                 <ArtifactFrame
                   sandboxOrigin={data.sandboxOrigin}
                   artifactId={selected.id}
-                  language={selected.language}
+                  language={effectiveLanguage(selected, selected.latest)}
                   source={selected.latest.source}
                 />
               </div>

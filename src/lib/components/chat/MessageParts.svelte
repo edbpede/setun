@@ -1,11 +1,17 @@
 <script lang="ts">
-import { artifactSegmentCount, artifactSegments } from "$lib/artifacts/segments";
+import {
+  artifactSegmentCount,
+  artifactSegments,
+  type StreamingSegment,
+  streamingMessageSegments,
+} from "$lib/artifacts/segments";
 import { toolLabel } from "$lib/chat/tool-labels";
 import { turnNoticeText } from "$lib/chat/turn-notices";
 import * as m from "$lib/paraglide/messages";
 import type { MessagePart } from "$lib/server/db/schema";
 import type { MessageArtifactRef } from "$lib/state/conversation.svelte";
 import ArtifactCard from "./ArtifactCard.svelte";
+import ArtifactStubCard from "./ArtifactStubCard.svelte";
 import MarkdownMessage from "./MarkdownMessage.svelte";
 import ToolAttribution from "./ToolAttribution.svelte";
 
@@ -18,7 +24,10 @@ import ToolAttribution from "./ToolAttribution.svelte";
  *
  * Prose is plain preformatted text while the turn streams and markdown once it
  * settles: re-parsing and re-highlighting a growing message on every delta is
- * the work that drops frames on the target hardware (§20).
+ * the work that drops frames on the target hardware (§20). Fence *boundaries*
+ * are scanned even while streaming — one split and one regular expression per
+ * line — because the alternative is a pupil watching `<!doctype html>` arrive a
+ * word at a time where the page they asked for should be (§13).
  *
  * The type import is erased at compile time; no server code enters the bundle.
  */
@@ -77,6 +86,34 @@ const aligned = $derived.by(() => {
   });
 });
 
+/**
+ * The streaming scan, over the message's text parts as one document (§13, §20).
+ *
+ * A tool call or a generated image between two deltas starts a new text part,
+ * and a fence can span one — so the parts are scanned together rather than each
+ * on its own, and the part that opened a fence is the one that shows its stub.
+ * Only while streaming: a settled message goes through `artifactSegments`, which
+ * is where the refs exist.
+ */
+const streamingByPart = $derived.by(() => {
+  const byIndex = new Map<number, StreamingSegment[]>();
+  if (!streaming || plain) return byIndex;
+
+  const texts: string[] = [];
+  const indexes: number[] = [];
+  parts.forEach((part, index) => {
+    if (part.type !== "text") return;
+    texts.push(part.text);
+    indexes.push(index);
+  });
+
+  streamingMessageSegments(texts).forEach((segments, at) => {
+    byIndex.set(indexes[at], segments);
+  });
+
+  return byIndex;
+});
+
 const results = $derived(
   parts.filter(
     (part): part is Extract<MessagePart, { type: "tool-result" }> => part.type === "tool-result",
@@ -92,8 +129,32 @@ const failed = $derived(
 
 {#each parts as part, index (index)}
   {#if part.type === "text"}
-    {#if plain || streaming}
+    {#if plain}
       <p class="whitespace-pre-wrap break-words">{part.text}</p>
+    {:else if streaming}
+      <!--
+        Still arriving: prose stays unparsed, and each artifact fence is a stub
+        card. There are no refs yet, so nothing here opens anything — the real
+        cards arrive with the settled message (§13, §20).
+      -->
+      {#each streamingByPart.get(index) ?? [] as segment, at (at)}
+        {#if segment.kind === "text"}
+          <p class="whitespace-pre-wrap break-words">{segment.text}</p>
+        {:else if segment.kind === "artifact"}
+          <ArtifactStubCard
+            language={segment.artifact.language}
+            artifactKey={segment.artifact.key}
+            title={segment.artifact.title}
+          />
+        {:else}
+          <ArtifactStubCard
+            language={segment.language}
+            artifactKey={segment.key}
+            title={segment.title}
+            pending
+          />
+        {/if}
+      {/each}
     {:else if !aligned}
       <MarkdownMessage text={part.text} />
     {:else}

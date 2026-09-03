@@ -1,5 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import * as v from "valibot";
+import { ARTIFACT_LANGUAGES } from "$lib/artifacts/types";
 import { requireStudentApi } from "$lib/server/auth/guards";
 import { getDb } from "$lib/server/boot";
 import { appendArtifactVersion, getOwnedArtifact } from "$lib/server/db/queries/artifacts";
@@ -18,6 +19,15 @@ import type { RequestHandler } from "./$types";
  */
 const VersionSchema = v.object({
   source: v.pipe(v.string(), v.maxLength(256_000)),
+  /**
+   * The tag this revision is written under (§13).
+   *
+   * Optional, because a plain edit is written under whatever the artifact says.
+   * A Restore is the case that needs it: an html revision of an artifact since
+   * rewritten as a component comes back as html, and running it through the
+   * Svelte compiler is not a lesson about anything.
+   */
+  language: v.optional(v.picklist(ARTIFACT_LANGUAGES)),
 });
 
 export const POST: RequestHandler = async ({ params, request, locals }) => {
@@ -33,6 +43,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   const version = appendArtifactVersion(db, {
     artifactId: record.id,
     source: parsed.output.source,
+    language: parsed.output.language ?? null,
     authoredBy: "student",
   });
 
@@ -41,6 +52,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
       id: version.id,
       revision: version.revision,
       source: version.source,
+      language: version.language,
       authoredBy: version.authoredBy,
       buildStatus: version.buildStatus,
       buildMessage: version.buildMessage,

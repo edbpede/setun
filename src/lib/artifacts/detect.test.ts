@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { continuityDecision } from "./continuity";
 import { artifactLanguage, detectArtifacts } from "./detect";
-import { fencedBlocks } from "./fences";
+import { fencedBlocks, fenceFor, scanFences } from "./fences";
 import { tierOf } from "./types";
 
 /**
@@ -58,6 +58,48 @@ describe("fencedBlocks", () => {
 
   it("ignores a fence that never closes", () => {
     expect(fencedBlocks("```html\n<p>still typing")).toEqual([]);
+  });
+
+  it("hands the fence still arriving back to a caller that wants it", () => {
+    // A streaming transcript needs to know a block is open, or it renders the
+    // markup as prose while the pupil watches (§13, §20).
+    const { blocks, open } = scanFences('før\n```html id=side title="Min side"\n<p>still typing');
+
+    expect(blocks).toEqual([]);
+    expect(open).toEqual({
+      language: "html",
+      attributes: { id: "side", title: "Min side" },
+      line: 1,
+      fence: "```",
+    });
+  });
+
+  it("opens a fence long enough to hold a source that contains one", () => {
+    expect(fenceFor("<p>hi</p>")).toBe("```");
+    expect(fenceFor("<p>så:</p>\n```\net loop\n```")).toBe("````");
+    expect(fenceFor("`````\n")).toBe("``````");
+    // Only a leading run can close a fence, so an inline one does not widen it.
+    expect(fenceFor("skriv `kode` sådan")).toBe("```");
+    // CommonMark lets a closing fence sit under three spaces of indentation, and
+    // `findClosing` honours that — so a source holding one has to widen the
+    // wrapper, or the pupil's file is truncated at that line.
+    expect(fenceFor("<p>så:</p>\n   ```\net loop\n   ```")).toBe("````");
+    // A fourth space is an indented code block and closes nothing.
+    expect(fenceFor("<p>så:</p>\n    ```")).toBe("```");
+  });
+
+  it("wraps a source whose indented fence would otherwise close the block", () => {
+    const source = "<p>så:</p>\n   ```\net loop\n   ```";
+    const fence = fenceFor(source);
+    const blocks = fencedBlocks(`${fence}html\n${source}\n${fence}`);
+
+    // The whole file, not the two lines before its own indented fence (§13).
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].source).toBe(source);
+  });
+
+  it("has no open fence when every block closed", () => {
+    expect(scanFences("```html\n<p>hi</p>\n```").open).toBeNull();
   });
 
   it("keeps a shorter inner fence inside a longer outer one", () => {

@@ -10,6 +10,7 @@ import {
 import { createConversation } from "../db/queries/conversations";
 import { appendMessage, appendSibling, getActivePath } from "../db/queries/messages";
 import { createTestDatabase, seedTestFixtures } from "../db/testing";
+import { buildArtifactContext } from "./artifact-context";
 import {
   markArtifactEditsDelivered,
   outgoingArtifactEditParts,
@@ -37,10 +38,10 @@ beforeEach(() => {
 });
 
 /** Persist an assistant message carrying `text`, then record its artifacts. */
-function assistantTurn(text: string) {
+function assistantTurn(text: string, parentId: string | null = null) {
   const message = appendMessage(db, {
     conversationId,
-    parentId: null,
+    parentId,
     role: "assistant",
     parts: [{ type: "text", text }],
   });
@@ -176,6 +177,21 @@ describe("recordTurnArtifacts", () => {
     expect(listArtifactVersions(db, first.artifactId)).toHaveLength(1);
   });
 
+  it("appends a revision when only the tag changed", () => {
+    const [first] = assistantTurn("```html id=side\n<p>en</p>\n```");
+    const retagged = assistantTurn("```svelte id=side\n<p>en</p>\n```");
+
+    // Same text, different pipeline. Left on the old revision the row would say
+    // `svelte` while its current version still said `html`, and that is the tag
+    // Restore and the sandbox both resolve through (§13).
+    expect(retagged[0].unchanged).toBe(false);
+    expect(retagged[0].versionId).not.toBe(first.versionId);
+
+    const versions = listArtifactVersions(db, first.artifactId);
+    expect(versions).toHaveLength(2);
+    expect(versions.at(-1)?.language).toBe("svelte");
+  });
+
   it("keeps every revision, so a wrong continuity guess loses nothing", () => {
     assistantTurn("```html\n<p>en</p>\n```");
     assistantTurn("```html\n<p>to</p>\n```");
@@ -294,6 +310,34 @@ describe("the student's edit travelling back to the model", () => {
     );
     expect(sent).toContain('```html id=side title="Kort"');
     expect(sent).toContain("To change it, reuse id=side and write the complete file.");
+  });
+
+  it("opens a longer fence for a pupil's page that holds a fence of its own", () => {
+    const source = ["<p>Sådan:</p>", "```", "et loop", "```"].join("\n");
+    const sent = String(
+      assembleContext([
+        {
+          role: "user",
+          parts: [
+            {
+              type: "artifact-edit",
+              artifactId: crypto.randomUUID(),
+              versionId: crypto.randomUUID(),
+              language: "html",
+              title: null,
+              source,
+              key: "side",
+            },
+          ],
+        },
+      ]).at(-1)?.content,
+    );
+
+    // A three-backtick fence closes on the artifact's own line, and everything
+    // after it reaches the model as prose rather than as the pupil's file (§13).
+    expect(sent).toContain("````html id=side");
+    expect(sent).toContain(source);
+    expect(sent.trimEnd().endsWith("````")).toBe(true);
   });
 
   it("encodes a part written before ids existed in the form it was written in", () => {
@@ -473,5 +517,91 @@ describe("an edited prompt re-carrying what it replaces", () => {
         editOfMessageId: prompt.id,
       }),
     ).toEqual([]);
+  });
+});
+
+describe("the language a version was written under", () => {
+  it("records each revision's own tag while the row follows the newest", () => {
+    const [first] = assistantTurn("```html id=side\n<p>en</p>\n```");
+    assistantTurn("```svelte id=side\n<p>to</p>\n```");
+
+    const versions = listArtifactVersions(db, first.artifactId);
+    const row = getOwnedArtifact(db, {
+      artifactId: first.artifactId,
+      studentId: fixtures.student.id,
+    });
+
+    // One thing to the pupil, so the row changes tag rather than forking — but
+    // restoring revision 1 must not hand an html file to the Svelte compiler.
+    expect(row?.language).toBe("svelte");
+    expect(versions.map((version) => version.language)).toEqual(["html", "svelte"]);
+  });
+
+  it("carries a pupil's edit under the tag their revision holds", () => {
+    const [recorded] = assistantTurn("```html id=side\n<p>en</p>\n```");
+    appendArtifactVersion(db, {
+      artifactId: recorded.artifactId,
+      source: "<p>min</p>",
+      language: "html",
+      authoredBy: "student",
+    });
+    // The model rewrites it as a component; the pupil's html edit is still html.
+    assistantTurn("```svelte id=side\n<p>tre</p>\n```");
+    appendArtifactVersion(db, {
+      artifactId: recorded.artifactId,
+      source: "<p>min igen</p>",
+      language: "html",
+      authoredBy: "student",
+    });
+
+    const [part] = pendingArtifactEditParts(db, {
+      conversationId,
+      studentId: fixtures.student.id,
+    });
+
+    expect(part.language).toBe("html");
+  });
+});
+
+describe("an artifact whose newest revision is off the active path", () => {
+  it("carries its complete source into the request the branch assembles", () => {
+    // Turn one writes the page, turn two revises it. Then the pupil edits the
+    // first prompt, which sends a path from a branch on which revision 2 never
+    // happened — the state note names it and nothing holds it (§10, §13).
+    const first = appendMessage(db, {
+      conversationId,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "byg en side" }],
+    });
+    assistantTurn("```html id=side\n<p>en</p>\n```", first.id);
+    const second = appendMessage(db, {
+      conversationId,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "gør den blå" }],
+    });
+    assistantTurn("```html id=side\n<p>to</p>\n```", second.id);
+
+    const sibling = appendSibling(db, {
+      siblingOfId: first.id,
+      conversationId,
+      role: "user",
+      parts: [{ type: "text", text: "byg en side, men grøn" }],
+    });
+    const path = getActivePath(db, sibling?.id ?? "");
+    const artifacts = buildArtifactContext(db, {
+      conversationId,
+      studentId: fixtures.student.id,
+      path,
+    });
+
+    const sent = String(assembleContext(path, undefined, undefined, artifacts).at(-1)?.content);
+
+    expect(sent).toContain("byg en side, men grøn");
+    expect(sent).toContain("id=side (html) — revision 2");
+    // Without this the model rewrote revision 2 from a copy it could not see.
+    expect(sent).toContain("does not appear above");
+    expect(sent).toContain("<p>to</p>");
   });
 });

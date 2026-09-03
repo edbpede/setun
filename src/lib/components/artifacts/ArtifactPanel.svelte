@@ -1,6 +1,21 @@
+<script lang="ts" module>
+/**
+ * Reports are sent one at a time, in the order they were raised.
+ *
+ * One run can produce two of them — `ok` when the page mounts, `threw` when it
+ * breaks a moment later — against the same version. Sent concurrently they can
+ * land in either order, and the loser is what the server keeps: the model would
+ * then be told a page ran when the pupil is looking at an error, or the reverse.
+ * A chain rather than a per-instance field so a panel remounted mid-flight does
+ * not start a second one.
+ */
+let sending: Promise<unknown> = Promise.resolve();
+</script>
+
 <script lang="ts">
-import { effectiveArtifactKey } from "$lib/artifacts/identity";
+import { effectiveArtifactKey, effectiveLanguage } from "$lib/artifacts/identity";
 import type { ConsoleLine } from "$lib/artifacts/protocol";
+import type { ArtifactLanguage, BuildStatus } from "$lib/artifacts/types";
 import * as m from "$lib/paraglide/messages";
 import {
   type ArtifactVersionView,
@@ -35,8 +50,13 @@ interface Props {
   workspace: ArtifactWorkspace;
   /** A distinct hostname from this one; isolation is by origin (§14). */
   sandboxOrigin: string;
-  /** The pupil asking the model to fix what did not run; the page pre-fills the composer. */
-  onaskforhelp?: () => void;
+  /**
+   * The pupil asking the model to fix what went wrong; the page pre-fills the
+   * composer. The status travels with it: "it did not run" and "it ran, then
+   * stopped" are different sentences, and the wrong one contradicts the note the
+   * model is given beside it.
+   */
+  onaskforhelp?: (status: BuildStatus) => void;
 }
 
 let { workspace, sandboxOrigin, onaskforhelp }: Props = $props();
@@ -55,6 +75,20 @@ let frame = $state<ReturnType<typeof ArtifactFrame> | null>(null);
 
 /** Reports already sent, so a re-render does not PATCH the same outcome twice. */
 let reported = $state<string | null>(null);
+
+/**
+ * Clear the stamp so a report that did not land can be re-sent — but only while
+ * it is still the report the panel owes.
+ *
+ * One run produces two outcomes, `ok` at the mount and `threw` a moment later,
+ * and they are sent along one chain. Clearing unconditionally when the first
+ * fails would reopen the effect on a stamp the *second* already holds, and the
+ * second would be PATCHed twice. A superseded report has nothing to retry: the
+ * outcome it described is no longer the one the panel is reporting.
+ */
+function release(stamp: string): void {
+  if (reported === stamp) reported = null;
+}
 
 const artifact = $derived(workspace.open);
 const title = $derived(
@@ -80,13 +114,21 @@ const tabs = $derived([
   { value: "history" as const, label: m.artifact_tab_history() },
 ]);
 
-/** What the trit shows: this run's outcome if there is one, else what is stored. */
+/**
+ * What the trit shows: this run's outcome if there is one, else what is stored.
+ *
+ * `threw` is checked before the `running → ok` mapping below: a page that
+ * mounted and then threw stays "running" — it is still on screen — and the
+ * outcome is the only thing that knows it broke afterwards.
+ */
 const runStatus = $derived(
   workspace.status === "failed"
     ? ("failed" as const)
-    : workspace.status === "running"
-      ? ("ok" as const)
-      : (artifact?.latest.buildStatus ?? null),
+    : workspace.outcome?.status === "threw"
+      ? ("threw" as const)
+      : workspace.status === "running"
+        ? ("ok" as const)
+        : (artifact?.latest.buildStatus ?? null),
 );
 
 const shell = $derived(
@@ -144,14 +186,19 @@ function nudgeSplit(event: KeyboardEvent): void {
  * "Edits recompile locally with no model request" — this reaches Setun and no
  * further; nothing about it touches the gateway or a student's allowance (§13).
  */
-async function store(source: string): Promise<void> {
+async function store(source: string, language: ArtifactLanguage | null): Promise<void> {
   const target = workspace.open;
-  if (!target || source === target.latest.source) return;
+  if (!target) return;
+  // Both, because a restore can bring back a source the artifact already holds
+  // under a different tag — same text, different pipeline (§13).
+  if (source === target.latest.source && language === effectiveLanguage(target, target.latest)) {
+    return;
+  }
 
   const response = await fetch(`/api/artifacts/${target.id}/versions`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ source }),
+    body: JSON.stringify({ source, language }),
   }).catch(() => null);
 
   if (!response?.ok) {
@@ -167,12 +214,16 @@ async function store(source: string): Promise<void> {
 /** A commit point: run what is on screen, and keep it. */
 async function commit(): Promise<void> {
   const source = workspace.source;
+  const language = workspace.language;
   workspace.commit();
-  await store(source);
+  await store(source, language);
 }
 
 async function restore(version: ArtifactVersionView): Promise<void> {
-  workspace.edit(version.source);
+  // Not `edit`: the revision comes back under the tag it was written with, and
+  // an html revision of an artifact since rewritten as a component must not go
+  // through the Svelte compiler (§13).
+  workspace.restore(version);
   await commit();
   workspace.view = "preview";
 }
@@ -240,20 +291,20 @@ $effect(() => {
   if (reported === stamp) return;
   reported = stamp;
 
-  void fetch(`/api/artifacts/${report.artifactId}/versions/${report.versionId}`, {
-    method: "PATCH",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ buildStatus: report.status, buildMessage: report.message }),
-  })
-    .then((response) => {
-      // Folded back in either way is wrong: an unrecorded outcome would be
-      // re-sent on the next render, and the model would be told nothing.
-      if (response.ok) workspace.applyBuildStatus(report);
-      else reported = null;
+  sending = sending.then(() =>
+    fetch(`/api/artifacts/${report.artifactId}/versions/${report.versionId}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ buildStatus: report.status, buildMessage: report.message }),
     })
-    .catch(() => {
-      reported = null;
-    });
+      .then((response) => {
+        // Folded back in either way is wrong: an unrecorded outcome would be
+        // re-sent on the next render, and the model would be told nothing.
+        if (response.ok) workspace.applyBuildStatus(report);
+        else release(stamp);
+      })
+      .catch(() => release(stamp)),
+  );
 });
 </script>
 
@@ -306,8 +357,8 @@ $effect(() => {
         {#if artifact}
           <!-- Identity is always the mono face, so code-things read as code-things. -->
           <p class="truncate font-mono text-xs tabular-nums text-muted-foreground">
-            {m.artifact_id_label()}={artifactKey} · {artifact.language} · v{artifact.latest
-              .revision}
+            {m.artifact_id_label()}={artifactKey} · {workspace.language ??
+              artifact.language} · v{artifact.latest.revision}
           </p>
         {/if}
       </div>
@@ -415,10 +466,16 @@ $effect(() => {
               {m.artifact_status_compiling()}
             {:else if workspace.status === "failed"}
               {m.artifact_status_failed()}
+            {:else if workspace.outcome?.status === "threw"}
+              {m.artifact_status_threw()}
             {:else if workspace.status === "running"}
               {m.artifact_status_ready()}
             {:else if runStatus === null}
               {m.artifact_status_not_run()}
+            {:else if runStatus === "threw"}
+              {m.artifact_status_threw()}
+            {:else if runStatus === "failed"}
+              {m.artifact_status_failed()}
             {:else}
               {m.artifact_status_ran()}
             {/if}
@@ -460,7 +517,7 @@ $effect(() => {
               bind:this={frame}
               {sandboxOrigin}
               artifactId={artifact.id}
-              language={artifact.language}
+              language={workspace.runningLanguage ?? artifact.language}
               source={workspace.running}
               oncompiling={() => (workspace.status = "compiling")}
               onrunning={() => {
@@ -476,17 +533,30 @@ $effect(() => {
                 workspace.error = message;
                 workspace.recordOutcome("failed", message);
               }}
+              onthrew={(message) => {
+                // The status stays "running": the page is still on screen, and
+                // what changed is that something on it broke.
+                workspace.error = message;
+                workspace.recordOutcome("threw", message);
+              }}
               onconsole={(lines: readonly ConsoleLine[]) => workspace.appendConsole(lines)}
             />
           {/if}
         </div>
 
         {#if workspace.view === "code" && workspace.layout !== "fullscreen"}
-          <ArtifactEditor
-            value={workspace.source}
-            language={artifact.language}
-            onchange={(source) => workspace.edit(source)}
-          />
+          <!--
+            Re-keyed on the language: the editor resolves its grammar once inside
+            its attachment and holds no compartment, so a restore that changes
+            the tag is only followed by a fresh editor (§13).
+          -->
+          {#key workspace.language}
+            <ArtifactEditor
+              value={workspace.source}
+              language={workspace.language ?? artifact.language}
+              onchange={(source) => workspace.edit(source)}
+            />
+          {/key}
         {/if}
 
         {#if workspace.view === "history" && workspace.layout !== "fullscreen"}
@@ -510,6 +580,11 @@ $effect(() => {
                       <span class="font-mono tabular-nums font-medium">
                         {m.artifact_version_label({ revision: version.revision })}
                       </span>
+                      {#if version.language && version.language !== artifact.language}
+                        <!-- Only when it differs: the tag a revision was written
+                             under is otherwise the one already in the header. -->
+                        <span class="font-mono text-muted-foreground">{version.language}</span>
+                      {/if}
                     </span>
                     <span>
                       {version.authoredBy === "student"
@@ -518,6 +593,8 @@ $effect(() => {
                     </span>
                     {#if version.buildStatus === "failed"}
                       <span class="text-destructive">{m.artifact_version_build_failed()}</span>
+                    {:else if version.buildStatus === "threw"}
+                      <span class="text-destructive">{m.artifact_version_build_threw()}</span>
                     {:else if !version.buildStatus}
                       <span>{m.artifact_status_not_run()}</span>
                     {/if}
@@ -589,7 +666,7 @@ $effect(() => {
             -->
             <button
               type="button"
-              onclick={onaskforhelp}
+              onclick={() => onaskforhelp?.(workspace.outcome?.status ?? "failed")}
               disabled={workspace.pendingBuildReport !== null}
               class="min-h-9 shrink-0 rounded-md border border-input bg-background px-2.5 text-xs font-medium text-foreground hover:bg-secondary disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >

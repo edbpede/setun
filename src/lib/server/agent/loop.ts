@@ -1,3 +1,4 @@
+import { fenceFor } from "../../artifacts/fences";
 import { fenceInfo } from "../../artifacts/identity";
 import { isArtifactLanguage } from "../../artifacts/types";
 import type { Message, MessagePart, PermissionMode } from "../db/schema";
@@ -12,6 +13,7 @@ import {
   type ArtifactContext,
   elideSupersededArtifacts,
   formatArtifactState,
+  formatCarriedSources,
 } from "./artifact-context";
 import { BUDGET_PRESETS, type BudgetSettings, TurnBudget } from "./budgets";
 import type { InteractionAnswer, TurnInteractionRegistry } from "./interactions";
@@ -107,8 +109,6 @@ function textOf(message: Pick<Message, "parts">): string {
     .join("");
 }
 
-const FENCE = "```";
-
 /**
  * The marked block an edited artifact travels in (§13).
  *
@@ -126,15 +126,20 @@ function encodeArtifactEdit(part: Extract<MessagePart, { type: "artifact-edit" }
       ? fenceInfo(part.language, { key, title: part.title })
       : part.language;
 
+  // Long enough for this source: a page that explains markdown holds a line of
+  // three backticks, which would close a three-backtick fence early and send the
+  // rest of the pupil's file to the model as prose.
+  const fence = fenceFor(part.source);
+
   return [
     "",
     "",
     `[The student's edited version of the ${part.language} artifact${named}.`,
     "This is the current source, not the version you last wrote.",
     ...(key ? [`To change it, reuse id=${key} and write the complete file.]`] : ["]"]),
-    `${FENCE}${info}`,
+    `${fence}${info}`,
     part.source,
-    FENCE,
+    fence,
   ].join("\n");
 }
 
@@ -222,6 +227,12 @@ function encodeStoredMessage(
  * user message, so the model reads what exists immediately before the request
  * that asks it to change one of them.
  *
+ * Behind the note travel the sources the path does not hold. An artifact whose
+ * current revision sits on another branch of the message tree — which is what a
+ * pupil editing an earlier prompt produces — is named by the note and present
+ * nowhere, so the model would rewrite it from the last copy it can see. They go
+ * in the same slot for the same reasons.
+ *
  * The note is not a system message: it changes every turn, and putting it in the
  * system layer would break the cacheable prefix on every send. It is not
  * persisted either — it describes the moment the turn was assembled.
@@ -239,7 +250,11 @@ export function assembleContext(
     ...elided.flatMap((message) => encodeStoredMessage(message, payloads)),
   ];
 
-  const note = artifacts ? formatArtifactState(artifacts.state) : null;
+  const note = artifacts
+    ? [formatArtifactState(artifacts.state), formatCarriedSources(artifacts.carried)]
+        .filter((part): part is string => part !== null)
+        .join("\n\n")
+    : "";
   return note ? withStateNote(messages, note) : messages;
 }
 
