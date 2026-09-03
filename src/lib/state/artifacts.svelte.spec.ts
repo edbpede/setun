@@ -87,17 +87,6 @@ describe("the workspace stage", () => {
     expect(workspace.running).toBe("<button>Klik</button>");
   });
 
-  it("toggles back to the conversation from either build stage", () => {
-    const workspace = new ArtifactWorkspace();
-    workspace.items = [artifact()];
-
-    workspace.toggle();
-    expect(workspace.stage).toBe("both");
-
-    workspace.toggle();
-    expect(workspace.stage).toBe("chat");
-  });
-
   it("never lets the divider drag either side out of existence (§20)", () => {
     const workspace = new ArtifactWorkspace();
 

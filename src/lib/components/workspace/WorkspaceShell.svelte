@@ -34,8 +34,8 @@ interface Props {
 let { workspace, axis, chat, build }: Props = $props();
 
 const split = $derived(workspace.stage === "both");
-const chatHidden = $derived(workspace.stage === "build");
-const buildHidden = $derived(workspace.stage === "chat");
+const chatHidden = $derived(!workspace.conversationVisible);
+const buildHidden = $derived(!workspace.visible);
 
 /**
  * The conversation's share, applied along the current axis.

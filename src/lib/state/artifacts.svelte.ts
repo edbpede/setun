@@ -350,25 +350,8 @@ export class ArtifactWorkspace {
     this.reveal(stage);
   }
 
-  /** The keyboard and the transcript card both toggle rather than only opening. */
-  toggle(): void {
-    if (this.visible) {
-      this.stage = "chat";
-      return;
-    }
-    this.reveal();
-  }
-
-  /** The pupil choosing an artifact from the index or the transcript. */
-  select(artifactId: string | null): void {
-    if (artifactId === null) {
-      this.openId = null;
-      this.resetRun();
-      this.tab = "index";
-      if (this.stage === "chat") this.stage = "both";
-      return;
-    }
-
+  /** The pupil choosing an artifact from the index or from the transcript. */
+  select(artifactId: string): void {
     this.show(artifactId);
     this.reveal();
   }
