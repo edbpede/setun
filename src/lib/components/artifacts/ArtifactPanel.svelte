@@ -205,6 +205,11 @@ async function loadVersions(artifactId: string): Promise<void> {
   if (!response?.ok) return;
 
   const body = (await response.json()) as { versions: ArtifactVersionView[] };
+  // The pupil can move to another artifact while this is in flight, and two
+  // requests can land in either order. A late answer about the artifact they
+  // have left must not become the history of the one they are looking at.
+  if (workspace.openId !== artifactId) return;
+
   versions = body.versions;
   selectedVersionId = body.versions.at(-1)?.id ?? null;
 }
