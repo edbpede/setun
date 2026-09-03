@@ -56,13 +56,17 @@ const runStatus = $derived(
  * actually act on — the message, and the button that hands it back to the model
  * — was missing from the one place it belongs.
  *
- * Only until this run has said something of its own: an outcome supersedes what
- * the last one stored, and a page that now runs must not still be showing why it
- * once did not.
+ * Only while no run of this artifact is live. `idle` is both "the frame has not
+ * been mounted" — which is where a reopened artifact genuinely has nothing but
+ * the stored record — and "reset, not yet compiling". Once it is compiling, the
+ * last run's error beneath a line that says *Compiling…* is a contradiction, and
+ * once it is running or failed this run has its own words to show.
  */
 const diagnostic = $derived(
   workspace.error ??
-    (workspace.outcome === null && (runStatus === "failed" || runStatus === "threw")
+    (workspace.status === "idle" &&
+    workspace.outcome === null &&
+    (runStatus === "failed" || runStatus === "threw")
       ? (workspace.open?.latest.buildMessage ?? null)
       : null),
 );
