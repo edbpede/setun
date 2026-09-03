@@ -2,6 +2,7 @@
 import Monitor from "@lucide/svelte/icons/monitor";
 import Moon from "@lucide/svelte/icons/moon";
 import Sun from "@lucide/svelte/icons/sun";
+import { rovingTarget } from "$lib/a11y/roving";
 import * as m from "$lib/paraglide/messages";
 import { getTheme, THEME_PREFERENCES, type ThemePreference } from "$lib/state/theme.svelte";
 
@@ -24,11 +25,41 @@ const labels: Record<ThemePreference, string> = $derived({
 });
 
 const icons = { light: Sun, auto: Monitor, dark: Moon };
+
+let group = $state<HTMLDivElement | null>(null);
+
+/**
+ * One tab stop, and the arrows move within it.
+ *
+ * The same contract the workspace switcher keeps, and for the same reason:
+ * three tabbable buttons cost a keyboard user three stops on the way past a
+ * setting they are usually not looking for, and roving `tabindex` without arrow
+ * handling would leave two of the three unreachable altogether.
+ */
+function onkeydown(event: KeyboardEvent): void {
+  const next = rovingTarget(event, {
+    values: THEME_PREFERENCES,
+    current: theme.preference,
+    attribute: "data-preference",
+  });
+  if (!next) return;
+
+  event.preventDefault();
+  theme.set(next);
+
+  // The moved-to radio takes focus, so the next arrow press continues from it.
+  queueMicrotask(() => {
+    group?.querySelector<HTMLElement>(`[data-preference="${next}"]`)?.focus();
+  });
+}
 </script>
 
 <div
+  bind:this={group}
   role="radiogroup"
   aria-label={m.theme_label()}
+  tabindex="-1"
+  {onkeydown}
   class="flex items-center gap-0.5 rounded-lg border border-border p-0.5"
 >
   {#each THEME_PREFERENCES as candidate (candidate)}
@@ -37,9 +68,11 @@ const icons = { light: Sun, auto: Monitor, dark: Moon };
     <button
       type="button"
       role="radio"
+      data-preference={candidate}
       aria-checked={active}
       aria-label={labels[candidate]}
       title={labels[candidate]}
+      tabindex={active ? 0 : -1}
       onclick={() => theme.set(candidate)}
       class={[
         "grid h-8 flex-1 place-items-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",

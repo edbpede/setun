@@ -13,6 +13,7 @@ let sending: Promise<unknown> = Promise.resolve();
 </script>
 
 <script lang="ts">
+import { rovingTarget } from "$lib/a11y/roving";
 import { effectiveArtifactKey, effectiveLanguage } from "$lib/artifacts/identity";
 import type { ConsoleLine } from "$lib/artifacts/protocol";
 import type { ArtifactLanguage, BuildStatus } from "$lib/artifacts/types";
@@ -63,6 +64,7 @@ const IDLE_MS = 3_000;
 let versions = $state<ArtifactVersionView[]>([]);
 let selectedVersionId = $state<string | null>(null);
 let frame = $state<ReturnType<typeof ArtifactFrame> | null>(null);
+let tablist = $state<HTMLDivElement | null>(null);
 
 /** Reports already sent, so a re-render does not PATCH the same outcome twice. */
 let reported = $state<string | null>(null);
@@ -123,6 +125,32 @@ const tabs = $derived([
 const tab = $derived<PanelTab>(
   tabs.some((candidate) => candidate.value === workspace.tab) ? workspace.tab : "preview",
 );
+
+/**
+ * One tab stop for the list, and the arrows move within it.
+ *
+ * Roving `tabindex` is only half of the tab pattern. Without this the tabs that
+ * are not selected carry `tabindex="-1"` and nothing moves the focus off the one
+ * that is, so *Code* and *History* are unreachable by keyboard entirely.
+ */
+function ontablistkeydown(event: KeyboardEvent): void {
+  const next = rovingTarget(event, {
+    values: tabs.map((candidate) => candidate.value),
+    current: tab,
+    attribute: "data-tab",
+  });
+  if (!next) return;
+
+  event.preventDefault();
+  workspace.tab = next;
+
+  // The moved-to tab keeps the focus, so the next arrow press continues from it.
+  // Not the frame, unlike a click: arrowing along the list is looking at what is
+  // there, and handing the keyboard to a game halfway would end the journey.
+  queueMicrotask(() => {
+    tablist?.querySelector<HTMLElement>(`[data-tab="${next}"]`)?.focus();
+  });
+}
 
 /**
  * Store the current source as a revision.
@@ -293,8 +321,11 @@ $effect(() => {
     </header>
 
     <div
+      bind:this={tablist}
       role="tablist"
       aria-label={m.artifact_panel_title()}
+      tabindex="-1"
+      onkeydown={ontablistkeydown}
       class="flex shrink-0 items-center gap-1 border-b border-border px-2"
     >
       {#each tabs as candidate (candidate.value)}
@@ -302,6 +333,7 @@ $effect(() => {
           type="button"
           role="tab"
           id="artifact-tab-{candidate.value}"
+          data-tab={candidate.value}
           aria-controls="artifact-view"
           aria-selected={tab === candidate.value}
           tabindex={tab === candidate.value ? 0 : -1}

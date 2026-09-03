@@ -1,4 +1,5 @@
 <script lang="ts">
+import { rovingTarget } from "$lib/a11y/roving";
 import * as m from "$lib/paraglide/messages";
 import type { WorkspaceStage } from "$lib/state/artifacts.svelte";
 import type { SplitAxis } from "$lib/workspace/axis";
@@ -46,15 +47,17 @@ let group = $state<HTMLDivElement | null>(null);
  * The move is applied immediately rather than only on Enter: with three
  * positions and a live layout behind them, "arrow to it and it happens" is both
  * the pattern's default and the thing a pupil expects.
+ *
+ * It counts from the focused radio rather than from `stage`, because `stage` is
+ * not only the pupil's to move: `replace` reveals what the model just wrote, and
+ * an arrow counting from the new stage would jump from a focused *Chat* to
+ * *Build*, straight over the *Both* it had just been moved to.
  */
 function onkeydown(event: KeyboardEvent): void {
-  const forward = event.key === "ArrowRight" || event.key === "ArrowDown";
-  const back = event.key === "ArrowLeft" || event.key === "ArrowUp";
-  if (!forward && !back) return;
+  const next = rovingTarget(event, { values: STAGES, current: stage, attribute: "data-stage" });
+  if (!next) return;
 
   event.preventDefault();
-  const at = STAGES.indexOf(stage);
-  const next = STAGES[(at + (forward ? 1 : STAGES.length - 1)) % STAGES.length];
   onstage(next);
 
   // The moved-to radio takes focus, so the next arrow press continues from it.
@@ -108,9 +111,18 @@ function onkeydown(event: KeyboardEvent): void {
   {#if unseen}
     <!-- Something was built while the pupil was reading (§13). -->
     <span
+      aria-hidden="true"
       class="pointer-events-none absolute -right-1 -top-1 size-2.5 rounded-full bg-primary ring-2 ring-background"
-    >
-      <span class="sr-only">{m.artifact_build_unseen()}</span>
-    </span>
+    ></span>
   {/if}
 </div>
+
+<!--
+  The same news, for a pupil who cannot see the dot.
+
+  In the document from the first render, with only its text changing: a live
+  region that appears and fills in the same update is not announced, which is
+  what the dot's own hidden label used to be. Outside the group, because a
+  radiogroup's children are its radios.
+-->
+<span role="status" class="sr-only">{unseen ? m.artifact_build_unseen() : ""}</span>

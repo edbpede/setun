@@ -68,16 +68,40 @@ let confirming = $state<string | null>(null);
 
 let panel = $state<HTMLElement | null>(null);
 
+/** Whatever had the keyboard when the drawer opened, so closing can hand it back. */
+let opener: HTMLElement | null = null;
+
 // A conversation that has gone — deleted, or the drawer reopened on a new list —
 // must not leave its confirmation armed against whatever now sits in that row.
 $effect(() => {
   if (confirming && !conversations.some((c) => c.id === confirming)) confirming = null;
 });
 
-// Opening moves the keyboard into the panel, so the first Tab lands inside the
-// thing that just appeared rather than back in the conversation behind it.
+/**
+ * The keyboard follows the panel in, and comes back out with it.
+ *
+ * Opening moves focus into the panel, so the first Tab lands inside the thing
+ * that just appeared rather than back in the conversation behind it. Closing has
+ * to undo that: the element the focus was in has gone from the document with the
+ * panel, and a pupil dropped onto `<body>` has to Tab the whole page again to
+ * reach the control they just pressed.
+ *
+ * Only where dismissing actually dropped it. This panel deliberately does not
+ * trap the keyboard, so a pupil can Tab out of an open drawer, and hauling them
+ * back to the opener afterwards would be its own kind of rude.
+ */
 $effect(() => {
-  if (open) panel?.focus();
+  if (open) {
+    const active = document.activeElement;
+    opener = active instanceof HTMLElement && active !== panel ? active : opener;
+    panel?.focus();
+    return;
+  }
+
+  const returning = opener;
+  opener = null;
+  const active = document.activeElement;
+  if (returning?.isConnected && (active === null || active === document.body)) returning.focus();
 });
 
 const link =

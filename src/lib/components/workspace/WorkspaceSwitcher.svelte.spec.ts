@@ -54,6 +54,26 @@ describe("WorkspaceSwitcher", () => {
     expect(chosen).toHaveBeenLastCalledWith("both");
   });
 
+  it("counts an arrow from the focused radio, not from a stage that moved", async () => {
+    const chosen = vi.fn();
+    // The model wrote something while the pupil was reading, so `reveal` has
+    // already moved the stage to `both` — but the keyboard never left *Chat*.
+    const { rerender } = await render(WorkspaceSwitcher, {
+      stage: "chat",
+      axis: "inline",
+      onstage: chosen,
+    });
+
+    await page.getByRole("radio", { name: m.workspace_stage_chat() }).click();
+    await rerender({ stage: "both", axis: "inline", onstage: chosen });
+
+    await userEvent.keyboard("{ArrowRight}");
+
+    // Counting from the new stage would land on *Build*, skipping the position
+    // the pupil was just moved to and never asked to leave.
+    expect(chosen).toHaveBeenLastCalledWith("both");
+  });
+
   it("badges the switcher when something was built that the pupil has not seen", async () => {
     render(WorkspaceSwitcher, {
       stage: "chat",
@@ -63,6 +83,16 @@ describe("WorkspaceSwitcher", () => {
       onstage: () => {},
     });
 
-    await expect.element(page.getByText(m.artifact_build_unseen())).toBeInTheDocument();
+    // A live region that is in the document from the start and only changes its
+    // text: one created and filled in the same update is not announced, so a
+    // pupil who cannot see the dot would learn nothing (§13).
+    const announcement = page.getByRole("status");
+    await expect.element(announcement).toHaveTextContent(m.artifact_build_unseen());
+  });
+
+  it("keeps the announcement region present while there is nothing to announce", async () => {
+    render(WorkspaceSwitcher, { stage: "chat", axis: "inline", count: 2, onstage: () => {} });
+
+    await expect.element(page.getByRole("status")).toHaveTextContent("");
   });
 });
