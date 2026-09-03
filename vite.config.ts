@@ -58,6 +58,8 @@ export default defineConfig({
       "@codemirror/lang-html",
       "@codemirror/lang-javascript",
       "@codemirror/merge",
+      "@codemirror/language",
+      "@lezer/highlight",
     ],
   },
   test: {
