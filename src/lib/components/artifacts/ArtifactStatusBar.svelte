@@ -1,7 +1,7 @@
 <script lang="ts">
 import type { BuildStatus } from "$lib/artifacts/types";
 import * as m from "$lib/paraglide/messages";
-import { type ArtifactWorkspace, CONSOLE_KEPT } from "$lib/state/artifacts.svelte";
+import type { ArtifactWorkspace } from "$lib/state/artifacts.svelte";
 import ArtifactTrit from "./ArtifactTrit.svelte";
 
 /**
@@ -45,6 +45,31 @@ const runStatus = $derived(
       : workspace.status === "running"
         ? ("ok" as const)
         : (workspace.open?.latest.buildStatus ?? null),
+);
+
+/**
+ * The compiler's or the browser's own words — this run's, or the stored ones.
+ *
+ * Reopening a failed artifact resets the run, so `workspace.error` is empty
+ * while the failure itself is still on record against the version. Without the
+ * fallback the pupil got the trit and one sentence, and the thing they can
+ * actually act on — the message, and the button that hands it back to the model
+ * — was missing from the one place it belongs.
+ *
+ * Only until this run has said something of its own: an outcome supersedes what
+ * the last one stored, and a page that now runs must not still be showing why it
+ * once did not.
+ */
+const diagnostic = $derived(
+  workspace.error ??
+    (workspace.outcome === null && (runStatus === "failed" || runStatus === "threw")
+      ? (workspace.open?.latest.buildMessage ?? null)
+      : null),
+);
+
+/** What the pupil is asking about: this run's verdict, else the stored one. */
+const diagnosticStatus = $derived(
+  workspace.outcome?.status ?? workspace.open?.latest.buildStatus ?? "failed",
 );
 </script>
 
@@ -102,7 +127,7 @@ const runStatus = $derived(
         class="max-h-32 overflow-auto bg-muted p-2 font-mono text-xs whitespace-pre-wrap text-foreground">{workspace.consoleLines
           .map((line) => `${line.level === "log" ? "" : `${line.level}: `}${line.text}`)
           .join("\n")}</pre>
-      {#if workspace.consoleLines.length >= CONSOLE_KEPT}
+      {#if workspace.consoleTruncated}
         <!-- A rAF loop with a stray log prints sixty lines a second; the useful
              ones are the newest, so the older ones are gone. -->
         <p class="px-2 py-1 text-xs text-muted-foreground">{m.artifact_console_truncated()}</p>
@@ -110,12 +135,12 @@ const runStatus = $derived(
     </div>
   {/if}
 
-  {#if workspace.error}
+  {#if diagnostic}
     <!-- The compiler's own words. Rendered as text, never as markup (§13, §21). -->
     <div class="flex items-start gap-2 border-t border-border bg-destructive/10 p-2">
       <pre
         class="max-h-24 min-w-0 flex-1 overflow-auto text-xs whitespace-pre-wrap text-foreground"
-        role="status">{workspace.error}</pre>
+        role="status">{diagnostic}</pre>
       {#if onaskforhelp}
         <!--
           The one thing a pupil can do about an error they cannot read: hand it
@@ -124,7 +149,7 @@ const runStatus = $derived(
         -->
         <button
           type="button"
-          onclick={() => onaskforhelp?.(workspace.outcome?.status ?? "failed")}
+          onclick={() => onaskforhelp?.(diagnosticStatus)}
           disabled={workspace.pendingBuildReport !== null}
           class="min-h-9 shrink-0 rounded-md border border-input bg-background px-2.5 text-xs font-medium text-foreground hover:bg-secondary disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
