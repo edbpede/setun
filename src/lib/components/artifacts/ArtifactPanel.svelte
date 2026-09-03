@@ -219,7 +219,13 @@ async function loadVersions(artifactId: string): Promise<void> {
   if (!response?.ok) return;
 
   const body = (await response.json()) as { versions: ArtifactVersionView[] };
-  if (request !== versionsRequest) return;
+  // Both, because they answer different questions. The generation catches a
+  // second request overtaking the first — which is how a revision of this same
+  // artifact races. The artifact catches the case where no second request was
+  // ever made: choosing another build leaves the history tab, so the effect
+  // returns early and this reply, still the newest, would otherwise become the
+  // new artifact's history.
+  if (request !== versionsRequest || workspace.openId !== artifactId) return;
 
   versions = body.versions;
   selectedVersionId = body.versions.at(-1)?.id ?? null;
