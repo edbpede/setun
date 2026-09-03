@@ -1,4 +1,8 @@
 <script lang="ts">
+import Trash2 from "@lucide/svelte/icons/trash-2";
+import X from "@lucide/svelte/icons/x";
+import type { Snippet } from "svelte";
+import ThemeControl from "$lib/components/ui/ThemeControl.svelte";
 import * as m from "$lib/paraglide/messages";
 
 /**
@@ -8,7 +12,11 @@ import * as m from "$lib/paraglide/messages";
  * is no persistent application header and the sidebar is an overlay rather than
  * a permanent column" (§20). At 1366 pixels wide a permanent column would cost a
  * quarter of the reading width for a list that is consulted between lessons, not
- * during one.
+ * during one — and the build surface is what that width is now for.
+ *
+ * It is also where everything that is not the lesson lives: starting a new
+ * conversation, the rest of the pupil's navigation, how the interface is
+ * coloured, and signing out.
  *
  * Hand-rolled rather than a dialog primitive: this is a plain panel with a
  * scrim, it must not trap the page in a modal while a turn is streaming behind
@@ -28,18 +36,24 @@ interface Props {
   /** Absent while the drawer is used somewhere deletion does not belong. */
   ondelete?: (conversationId: string) => void;
   /**
+   * Starting a new conversation, with the model it will use (§9).
+   *
+   * A form the caller owns, because it posts to that route's own action and has
+   * to keep working with JavaScript off.
+   */
+  actions?: Snippet;
+  /**
    * The rest of the pupil's navigation (§20).
    *
-   * The header is one compact strip on a 640-pixel screen, and four text links
-   * across it left the title and the Build button fighting for what remained. The
-   * links are consulted between lessons rather than during one, which is exactly
-   * what this drawer already is — so the caller passes them here, keeping the
-   * sign-out form on the route whose action it posts to.
+   * The header is one compact strip on a 640-pixel screen. The links are
+   * consulted between lessons rather than during one, which is exactly what this
+   * drawer already is — so the caller passes them here, keeping the sign-out form
+   * on the route whose action it posts to.
    */
-  footer?: import("svelte").Snippet;
+  footer?: Snippet;
 }
 
-let { conversations, activeId, open, onclose, ondelete, footer }: Props = $props();
+let { conversations, activeId, open, onclose, ondelete, actions, footer }: Props = $props();
 
 /**
  * The row whose delete control is awaiting confirmation (§16).
@@ -52,11 +66,22 @@ let { conversations, activeId, open, onclose, ondelete, footer }: Props = $props
  */
 let confirming = $state<string | null>(null);
 
+let panel = $state<HTMLElement | null>(null);
+
 // A conversation that has gone — deleted, or the drawer reopened on a new list —
 // must not leave its confirmation armed against whatever now sits in that row.
 $effect(() => {
   if (confirming && !conversations.some((c) => c.id === confirming)) confirming = null;
 });
+
+// Opening moves the keyboard into the panel, so the first Tab lands inside the
+// thing that just appeared rather than back in the conversation behind it.
+$effect(() => {
+  if (open) panel?.focus();
+});
+
+const link =
+  "flex min-h-11 items-center rounded-md px-2 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 </script>
 
 <svelte:window onkeydown={(event) => open && event.key === "Escape" && onclose()} />
@@ -65,35 +90,42 @@ $effect(() => {
   <!-- No backdrop blur (§20): a scrim, not a compositing effect. -->
   <button
     type="button"
-    class="fixed inset-0 z-40 bg-black/40"
+    class="fixed inset-0 z-40 bg-black/40 motion-safe:animate-in motion-safe:fade-in motion-safe:duration-150"
     aria-label={m.chat_conversations_close()}
     onclick={onclose}
   ></button>
 
   <aside
-    class="fixed inset-y-0 start-0 z-50 flex w-72 max-w-[85vw] flex-col gap-2 border-e border-border bg-background p-3"
+    bind:this={panel}
+    tabindex="-1"
+    aria-label={m.chat_conversations()}
+    class="fixed inset-y-0 start-0 z-50 flex w-76 max-w-[85vw] flex-col gap-3 border-e border-border bg-background p-3 outline-none motion-safe:animate-in motion-safe:slide-in-from-left-4 motion-safe:duration-200"
   >
     <div class="flex items-center justify-between gap-2">
-      <h2 class="text-sm font-medium text-foreground">{m.chat_conversations()}</h2>
+      <h2 class="text-sm font-semibold tracking-tight text-foreground">{m.chat_conversations()}</h2>
       <button
         type="button"
         onclick={onclose}
-        class="h-9 rounded-md px-2 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground"
+        aria-label={m.chat_conversations_close()}
+        class="grid size-9 place-items-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
-        {m.chat_conversations_close()}
+        <X size={16} aria-hidden="true" />
       </button>
     </div>
 
-    <nav class="flex min-h-0 flex-1 flex-col overflow-y-auto">
+    {@render actions?.()}
+
+    <nav aria-label={m.chat_conversations()} class="flex min-h-0 flex-1 flex-col overflow-y-auto">
       {#each conversations as conversation (conversation.id)}
         {@const title = conversation.title ?? m.chat_untitled_conversation()}
         <!-- Touch-sized rows, not compact ones: the target device is a touchscreen (§20). -->
-        <div class="group/row flex min-h-11 items-center gap-1 rounded-md pe-1"
+        <div
+          class="group/row flex min-h-11 items-center gap-1 rounded-md pe-1"
           class:bg-secondary={conversation.id === activeId}
         >
           <a
             href="/chat?c={conversation.id}"
-            class="flex min-h-11 flex-1 items-center rounded-md px-2 text-sm hover:bg-secondary"
+            class="flex min-h-11 flex-1 items-center rounded-md px-2 text-sm hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
             class:font-medium={conversation.id === activeId}
             aria-current={conversation.id === activeId ? "page" : undefined}
           >
@@ -108,14 +140,14 @@ $effect(() => {
                   confirming = null;
                   ondelete?.(conversation.id);
                 }}
-                class="min-h-11 shrink-0 rounded-md px-2 text-xs font-medium text-destructive hover:bg-destructive hover:text-destructive-foreground"
+                class="min-h-11 shrink-0 rounded-md px-2 text-xs font-medium text-destructive hover:bg-destructive hover:text-destructive-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 {m.chat_delete_conversation_confirm()}
               </button>
               <button
                 type="button"
                 onclick={() => (confirming = null)}
-                class="min-h-11 shrink-0 rounded-md px-2 text-xs text-muted-foreground hover:text-foreground"
+                class="min-h-11 shrink-0 rounded-md px-2 text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 {m.chat_delete_conversation_cancel()}
               </button>
@@ -124,26 +156,22 @@ $effect(() => {
                 type="button"
                 onclick={() => (confirming = conversation.id)}
                 aria-label={m.chat_delete_conversation_aria({ title })}
-                class="min-h-11 shrink-0 rounded-md px-2 text-xs text-muted-foreground opacity-0 hover:text-destructive focus-visible:opacity-100 group-hover/row:opacity-100"
+                class="grid size-9 shrink-0 place-items-center rounded-md text-muted-foreground opacity-0 hover:bg-secondary hover:text-destructive focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/row:opacity-100"
               >
-                {m.chat_delete_conversation()}
+                <Trash2 size={15} aria-hidden="true" />
               </button>
             {/if}
           {/if}
         </div>
       {:else}
-        <p class="px-2 py-1.5 text-xs text-muted-foreground">{m.chat_empty_heading()}</p>
+        <p class="px-2 py-1.5 text-xs text-muted-foreground">{m.chat_conversations_empty()}</p>
       {/each}
     </nav>
 
-    <div class="flex flex-col border-t border-border pt-1">
-      <a
-        href="/dashboard"
-        class="flex min-h-11 items-center rounded-md px-2 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        {m.student_dashboard_link()}
-      </a>
+    <div class="flex flex-col gap-2 border-t border-border pt-2">
+      <a href="/dashboard" class={link}>{m.student_dashboard_link()}</a>
       {@render footer?.()}
+      <ThemeControl />
     </div>
   </aside>
 {/if}

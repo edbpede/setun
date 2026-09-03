@@ -1,23 +1,24 @@
 <script lang="ts">
+import Plus from "@lucide/svelte/icons/plus";
 import { untrack } from "svelte";
 import { enhance } from "$app/forms";
 import { goto, invalidateAll, replaceState } from "$app/navigation";
 import { page } from "$app/state";
 import type { BuildStatus } from "$lib/artifacts/types";
 import { readEventStream } from "$lib/chat/sse-client";
-import { fitVisualViewport, readScrollPosition, writeScrollPosition } from "$lib/chat/viewport";
+import { fitVisualViewport } from "$lib/chat/viewport";
 import ArtifactPanel from "$lib/components/artifacts/ArtifactPanel.svelte";
-import SetunMark from "$lib/components/brand/SetunMark.svelte";
-import ChatMessage from "$lib/components/chat/ChatMessage.svelte";
+import ChatHeader from "$lib/components/chat/ChatHeader.svelte";
 import Composer from "$lib/components/chat/Composer.svelte";
 import ConversationDrawer from "$lib/components/chat/ConversationDrawer.svelte";
+import ConversationStarters from "$lib/components/chat/ConversationStarters.svelte";
 import ElicitationForm from "$lib/components/chat/ElicitationForm.svelte";
 import PermissionPrompt from "$lib/components/chat/PermissionPrompt.svelte";
-import StreamingMessage from "$lib/components/chat/StreamingMessage.svelte";
-import AllowanceMeter from "$lib/components/classroom/AllowanceMeter.svelte";
+import Transcript from "$lib/components/chat/Transcript.svelte";
 import ClassroomClosed from "$lib/components/classroom/ClassroomClosed.svelte";
+import WorkspaceShell from "$lib/components/workspace/WorkspaceShell.svelte";
 import * as m from "$lib/paraglide/messages";
-import { ArtifactWorkspace } from "$lib/state/artifacts.svelte";
+import { ArtifactWorkspace, type WorkspaceStage } from "$lib/state/artifacts.svelte";
 import { ClassroomState } from "$lib/state/classroom.svelte";
 import { ComposerState } from "$lib/state/composer.svelte";
 import {
@@ -26,10 +27,18 @@ import {
   textOf,
 } from "$lib/state/conversation.svelte";
 import { attachmentRefusalMessage, imageRefusalMessage, refusalMessage } from "$lib/state/refusals";
+import { type SplitAxis, watchSplitAxis } from "$lib/workspace/axis";
 import type { PageProps } from "./$types";
 
 /**
- * The chat route (PRD §10, §20).
+ * The student workspace (PRD §10, §13, §20).
+ *
+ * The conversation and the thing being built are two panes of one screen rather
+ * than two screens, so the composer is never covered and a pupil can look at what
+ * the model made while asking for the next change. This route owns the wiring —
+ * the turn stream, the endpoints, the refusals — and nothing about the layout:
+ * `WorkspaceShell` holds the geometry and `ArtifactPanel` fills the pane it is
+ * given.
  *
  * State containers are instantiated here rather than imported as module
  * singletons: a singleton in a `.svelte.ts` module is shared across every SSR
@@ -37,37 +46,29 @@ import type { PageProps } from "./$types";
  */
 let { data }: PageProps = $props();
 
-/** Messages rendered before the window has to be widened by hand (§20). */
-const MESSAGE_WINDOW = 30;
-
 const conversation = new ConversationState();
 const composer = new ComposerState();
 const classroom = new ClassroomState();
 const artifacts = new ArtifactWorkspace();
 
-let scroller = $state<HTMLDivElement | null>(null);
 let refusal = $state<string | null>(null);
 /** The conversation list, which is an overlay rather than a permanent column (§20). */
 let drawerOpen = $state(false);
-/**
- * How many messages of the active path are rendered (§20).
- *
- * "Long conversations are windowed." A lesson-long thread is hundreds of
- * messages, each with its own markdown render and highlight pass, and a device
- * with one spare core cannot afford to lay all of them out to show the last
- * five. Earlier messages are one click away and cost nothing until asked for.
- */
-let windowSize = $state(MESSAGE_WINDOW);
 /** True while the composer's image mode is waiting on a picture (§15). */
 let generating = $state(false);
+/** Which way the workspace splits; the header's switcher draws the same axis (§20). */
+let axis = $state<SplitAxis>("block");
+let composerRef = $state<ReturnType<typeof Composer> | null>(null);
+
+$effect(() => watchSplitAxis((next) => (axis = next)));
 
 /**
  * The model the next conversation will be created with (§9).
  *
  * An alias is bound to a conversation when it is created and the messages in one
- * were answered by that model, so the choice sits beside *New conversation*
- * rather than over a thread already under way. The first message of a visit
- * mints its conversation and carries the same value.
+ * were answered by that model, so the choice sits beside *New conversation* in
+ * the drawer rather than over a thread already under way. The first message of a
+ * visit mints its conversation and carries the same value.
  *
  * Presentation only. Both `?/create` and `POST /api/conversations` fall back to
  * an allowlisted alias whatever a client sends: hiding a control is never access
@@ -113,17 +114,8 @@ $effect(() => {
   composer.attach(data.conversation?.id ?? null);
   // Uploads that survived a reload; the server is the record of what is pending.
   composer.setAttachments(data.pendingAttachments);
-  // A different conversation starts at the newest end again (§20).
-  windowSize = MESSAGE_WINDOW;
   drawerOpen = false;
 });
-
-/** The newest slice of the active path — the rest is behind "show earlier" (§20). */
-const visibleMessages = $derived(
-  conversation.messages.length > windowSize
-    ? conversation.messages.slice(-windowSize)
-    : conversation.messages,
-);
 
 // Every turn ends with an `invalidateAll`, so an artifact the model just wrote
 // arrives here without a second request. A draft the pupil is typing survives
@@ -153,38 +145,6 @@ $effect(() => {
   consumedTurnId = turnId;
   conversation.turn.resume(turnId, -1);
   void consume(`/api/turns/${turnId}/events?after=-1`, { method: "GET" });
-});
-
-// Keep the newest content in view as it streams.
-$effect(() => {
-  conversation.turn.text;
-  conversation.messages.length;
-
-  scroller?.scrollTo({ top: scroller.scrollHeight });
-});
-
-/**
- * Scroll position across a tab discard (§20).
- *
- * A 4 GB Chromebook discards background tabs routinely. The composer draft
- * already survives one and the in-flight turn resumes from the server; this is
- * the third piece — coming back to where you were reading rather than to the
- * top of the lesson.
- *
- * Restored once per conversation, and only when there is something stored:
- * otherwise the autoscroll above is right and this would fight it.
- */
-$effect(() => {
-  const element = scroller;
-  const conversationId = data.conversation?.id ?? null;
-  if (!element || !conversationId) return;
-
-  const stored = untrack(() => readScrollPosition(conversationId));
-  if (stored > 0) element.scrollTo({ top: stored });
-
-  const remember = () => writeScrollPosition(conversationId, element.scrollTop);
-  element.addEventListener("scroll", remember, { passive: true });
-  return () => element.removeEventListener("scroll", remember);
 });
 
 /** Active fetch controller — cancelled when the student presses Stop. */
@@ -276,11 +236,10 @@ let minting: Promise<string | null> | null = null;
 /**
  * The conversation this composer writes into, minting one if there is none (§10).
  *
- * A pupil's very first visit has no conversation, and the empty state tells them
- * to "write a message below". Before this the composer was withheld until they
- * found a *New conversation* button first — the page asked for something it had
- * not provided. The conversation is a container the pupil never asked for, so it
- * is created when they first need one rather than made a step they must take.
+ * A pupil's very first visit has no conversation, and the empty state offers
+ * three things to ask for. The conversation is a container the pupil never asked
+ * for, so it is created when they first need one rather than made a step they
+ * must take.
  *
  * Still lazy: arriving and leaving without typing mints nothing.
  *
@@ -529,25 +488,31 @@ async function deleteConversation(conversationId: string): Promise<void> {
 /**
  * Open an artifact from its card in the transcript (§13, §20).
  *
- * The pupil's route from "here is the page" to the page is one tap. An artifact
- * the conversation no longer holds — deleted from the gallery, or on a branch
- * that is not on screen — simply does nothing rather than opening an empty panel.
+ * The pupil's route from "here is the page" to the page is one tap, and tapping
+ * the card of the artifact already on screen puts the conversation back — the
+ * card is the same control both ways round, which is what a pupil expects of a
+ * thing that says "Showing".
  *
- * Tapping the card of the artifact already on screen only brings the panel
- * forward. `show` resets the editor, and in split view the pupil can reach a
- * card while they are typing into that very artifact — so re-showing it would
- * throw away the draft rather than show them anything they were not already
- * looking at. A closed panel is a different matter: it holds no running source,
- * so reopening it is what puts the artifact back on screen.
+ * An artifact the conversation no longer holds — deleted from the gallery, or on
+ * a branch that is not on screen — simply does nothing.
+ *
+ * Selecting while the pupil is typing into that very artifact would throw the
+ * draft away, so re-selecting what is already open only brings it forward.
  */
 function openArtifact(artifactId: string): void {
   if (!artifacts.items.some((item) => item.id === artifactId)) return;
 
-  const showing = artifacts.visible && artifacts.openId === artifactId;
-  artifacts.visible = true;
-  if (showing) return;
+  if (artifacts.visible && artifacts.openId === artifactId) {
+    artifacts.hide();
+    return;
+  }
 
-  artifacts.show(artifactId);
+  if (artifacts.openId === artifactId) {
+    artifacts.reveal();
+    return;
+  }
+
+  artifacts.select(artifactId);
 }
 
 /**
@@ -555,8 +520,8 @@ function openArtifact(artifactId: string): void {
  *
  * The error is already recorded against the version by the time this is
  * reachable, so the next turn's prompt states it; this only puts the sentence in
- * the composer and gets the panel out of the way. The overlay is closed because
- * it covers the composer; a split panel does not, so it stays.
+ * the composer and puts the caret in it. Nothing has to be closed first — the
+ * composer is beside the error rather than underneath it.
  */
 function askForHelp(status: BuildStatus): void {
   // A question, sent now, as text. An edit in progress would send it as a
@@ -568,7 +533,19 @@ function askForHelp(status: BuildStatus): void {
   // page that mounted and then threw did run, and saying otherwise asks for a
   // rewrite of a file that nearly works.
   composer.setDraft(status === "threw" ? m.artifact_fix_request_threw() : m.artifact_fix_request());
-  if (artifacts.layout !== "split") artifacts.close();
+  // The conversation has to be on screen for the composer to be reachable.
+  if (artifacts.stage === "build") artifacts.setStage("both");
+  composerRef?.focus();
+}
+
+function pickStarter(starter: { text: string; mode: "text" | "image" }): void {
+  composer.mode = starter.mode;
+  composer.setDraft(starter.text);
+  composerRef?.focus();
+}
+
+function setStage(stage: WorkspaceStage): void {
+  artifacts.setStage(stage);
 }
 
 async function abort(): Promise<void> {
@@ -600,6 +577,41 @@ async function abort(): Promise<void> {
   onclose={() => (drawerOpen = false)}
   ondelete={deleteConversation}
 >
+  {#snippet actions()}
+    <!--
+      Starting a thread, and the model it will use (§9).
+
+      A form action, so it works with JavaScript off; the same value is sent when
+      a conversation is minted by the first message instead. The picker appears
+      only where the educator has allowlisted more than one alias — a control
+      with one option decides nothing.
+    -->
+    <form method="POST" action="?/create" use:enhance class="flex flex-col gap-2">
+      {#if data.aliases.length > 1}
+        <label class="flex flex-col gap-1">
+          <span class="text-xs text-muted-foreground">{m.chat_model_label()}</span>
+          <select
+            name="modelAliasId"
+            bind:value={selectedAliasId}
+            class="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {#each data.aliases as alias (alias.id)}
+              <option value={alias.id}>{alias.name}</option>
+            {/each}
+          </select>
+        </label>
+      {/if}
+
+      <button
+        type="submit"
+        class="flex min-h-11 items-center justify-center gap-1.5 rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <Plus size={16} aria-hidden="true" />
+        {m.chat_new_conversation()}
+      </button>
+    </form>
+  {/snippet}
+
   {#snippet footer()}
     <a
       href="/creations"
@@ -629,225 +641,128 @@ async function abort(): Promise<void> {
   in tablet mode pushes the composer up instead of covering it (§20).
 -->
 <div class="flex h-svh flex-col bg-background" {@attach fitVisualViewport}>
-  <!--
-    No persistent application header: usable height on the target device is
-    roughly 640 pixels, so the chrome is one compact strip (PRD §20).
-  -->
-  <header
-    class="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2"
-  >
-    <div class="flex w-full min-w-0 items-center gap-2 sm:w-auto sm:flex-1">
-      <!-- Opens the conversation list. Touch-sized, because the device is a touchscreen (§20). -->
-      <button
-        type="button"
-        onclick={() => (drawerOpen = true)}
-        aria-expanded={drawerOpen}
-        class="flex size-9 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground"
-      >
-        <span class="sr-only">{m.chat_conversations()}</span>
-        <SetunMark size={20} class="text-primary" />
-      </button>
-      <span class="truncate text-sm font-medium text-foreground">
-        {conversation.title ?? m.chat_untitled_conversation()}
-      </span>
-    </div>
-
-    <div
-      class="flex w-full min-w-0 flex-wrap items-center gap-2 sm:w-auto sm:shrink-0 sm:flex-nowrap"
-    >
-      <!--
-        Which model this conversation is using (§9).
-        Read-only, because an alias is bound to a conversation when it is created
-        and every message already in one was answered by that model. The choice
-        is made beside *New conversation*, where it applies.
-
-        Only the friendly name ever appears — the gateway identifier behind it is
-        editable in the panel and reaches no pupil's browser (§9, §21).
-      -->
-      {#if activeAlias && data.aliases.length > 1}
-        <span class="hidden text-xs text-muted-foreground sm:inline">
-          {m.chat_model_in_use({ model: activeAlias.name })}
-        </span>
-      {/if}
-
-      <div class="hidden w-28 sm:block">
-        <AllowanceMeter allowance={status.allowance} compact />
-      </div>
-
-      <form method="POST" action="?/create" use:enhance class="flex items-center gap-1.5">
-        <!--
-          The model the next conversation will use. Inside this form so the
-          choice travels with the button that acts on it, and so it works with
-          JavaScript off; the same value is sent when a conversation is minted by
-          the first message instead.
-
-          Only where the educator has allowlisted more than one alias: a picker
-          with one option is a control that decides nothing (§9).
-        -->
-        {#if data.aliases.length > 1}
-          <label class="hidden items-center gap-1.5 sm:flex">
-            <span class="sr-only">{m.chat_model_label()}</span>
-            <select
-              name="modelAliasId"
-              bind:value={selectedAliasId}
-              class="h-8 rounded-md border border-input bg-background px-1.5 text-xs text-foreground"
-            >
-              {#each data.aliases as alias (alias.id)}
-                <option value={alias.id}>{alias.name}</option>
-              {/each}
-            </select>
-          </label>
-        {/if}
-
-        <button
-          type="submit"
-          class="rounded-md border border-input px-2.5 py-1.5 text-xs font-medium text-foreground hover:bg-secondary"
-        >
-          {m.chat_new_conversation()}
-        </button>
-      </form>
-      <!--
-        The Build entry point. Prominent and always present rather than an
-        obscure toggle, and it opens whether or not anything has been built —
-        the empty panel is where a pupil learns that building is a thing (§13).
-      -->
-      <!--
-        The primary action of this strip: everything else on the row is context,
-        and the four navigation links have moved into the drawer, which is where
-        a pupil goes between lessons rather than during one (§20).
-      -->
-      <button
-        type="button"
-        onclick={() => artifacts.toggle()}
-        aria-expanded={artifacts.visible}
-        class="relative min-h-9 shrink-0 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        {m.artifact_build()}{artifacts.items.length > 0 ? ` (${artifacts.items.length})` : ""}
-        {#if artifacts.unseen}
-          <!-- Something was built while the panel was closed (§13). -->
-          <span
-            class="absolute -right-0.5 -top-0.5 size-2.5 rounded-full bg-destructive ring-2 ring-background"
-          >
-            <span class="sr-only">{m.artifact_build_unseen()}</span>
-          </span>
-        {/if}
-      </button>
-    </div>
-  </header>
+  <ChatHeader
+    title={conversation.title ?? m.chat_untitled_conversation()}
+    {drawerOpen}
+    ondrawer={() => (drawerOpen = true)}
+    allowance={status.allowance}
+    stage={artifacts.stage}
+    {axis}
+    unseen={artifacts.unseen !== null}
+    buildCount={artifacts.items.length}
+    onstage={setStage}
+  />
 
   {#if !status.open}
     <!--
-      Closed: the status screen replaces the conversation entirely (§8). Hiding
-      the composer is a courtesy, not the control — every send is refused by the
+      Closed: the status screen replaces the workspace entirely (§8). Hiding the
+      composer is a courtesy, not the control — every send is refused by the
       server whether or not this tab ever heard about the lock (§21).
     -->
     <ClassroomClosed {status} />
   {:else}
-  <div bind:this={scroller} class="flex-1 overflow-y-auto">
-    <div class="mx-auto flex max-w-2xl flex-col gap-4 p-3">
-      {#if conversation.messages.length === 0 && !conversation.hasPendingAssistantText}
-        <div class="mt-12 flex flex-col items-center gap-2 text-center">
-          <SetunMark size={40} class="text-primary" />
-          <h1 class="text-base font-semibold text-foreground">{m.chat_empty_heading()}</h1>
-          <p class="max-w-xs text-sm text-muted-foreground">{m.chat_empty_body()}</p>
-        </div>
-      {/if}
-
-      {#if conversation.messages.length > visibleMessages.length}
-        <button
-          type="button"
-          onclick={() => (windowSize += MESSAGE_WINDOW)}
-          class="mx-auto min-h-11 rounded-md border border-input px-3 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"
-        >
-          {m.chat_show_earlier({
-            count: conversation.messages.length - visibleMessages.length,
-          })}
-        </button>
-      {/if}
-
-      {#each visibleMessages as message (message.id)}
-        <ChatMessage
-          {message}
+    <WorkspaceShell workspace={artifacts} {axis}>
+      {#snippet chat()}
+        <Transcript
+          {conversation}
+          conversationId={data.conversation?.id ?? null}
+          activeArtifactId={artifacts.visible ? artifacts.openId : null}
           onedit={(target) => composer.beginEdit(target.id, target.text)}
           onregenerate={regenerate}
           onswitch={switchBranch}
           onopenartifact={openArtifact}
+        >
+          {#snippet empty()}
+            <ConversationStarters
+              imageModeAvailable={data.imageModeAvailable}
+              onpick={pickStarter}
+            />
+          {/snippet}
+
+          {#snippet footer()}
+            <!--
+              The turn's only interactive parts. Rendered inline in the
+              conversation rather than as a dialog: on a 640-pixel screen a modal
+              covers the answer the pupil is deciding about (§11, §20).
+            -->
+            {#if conversation.turn.permission}
+              {#key conversation.turn.permission.toolCallId}
+                <PermissionPrompt
+                  permission={conversation.turn.permission}
+                  onrespond={(approved) =>
+                    respond({
+                      requestId: conversation.turn.permission?.toolCallId,
+                      kind: "permission",
+                      approved,
+                    })}
+                />
+              {/key}
+            {/if}
+
+            {#if conversation.turn.elicitation}
+              {#key conversation.turn.elicitation.toolCallId}
+                <ElicitationForm
+                  elicitation={conversation.turn.elicitation}
+                  onrespond={(answer) =>
+                    respond({
+                      requestId: conversation.turn.elicitation?.toolCallId,
+                      kind: "elicitation",
+                      ...answer,
+                    })}
+                />
+              {/key}
+            {/if}
+
+            {#if generating}
+              <p class="text-center text-xs text-muted-foreground" role="status">
+                {m.chat_image_generating()}
+              </p>
+            {/if}
+          {/snippet}
+        </Transcript>
+
+        {#if refusal}
+          <!--
+            Beside the control it is about, rather than at the end of a transcript
+            the pupil may have scrolled away from (§8, §10).
+          -->
+          <div class="shrink-0 px-3 pt-2">
+            <p
+              class="mx-auto max-w-2xl rounded-lg border border-border bg-secondary px-3 py-2 text-xs text-secondary-foreground"
+              role="status"
+            >
+              {refusal}
+            </p>
+          </div>
+        {/if}
+
+        <!--
+          Always present, including on a pupil's very first visit: the conversation
+          it needs is minted on the first send rather than demanded of the pupil
+          first (§10). The drawer keeps its own *New conversation* control, which
+          is the affordance that still works with JavaScript off.
+        -->
+        <Composer
+          bind:this={composerRef}
+          {composer}
+          streaming={conversation.turn.streaming || generating}
+          attachmentsEnabled={data.attachmentsEnabled}
+          imageModeAvailable={data.imageModeAvailable}
+          modelName={data.aliases.length > 1 ? (activeAlias?.name ?? null) : null}
+          onsend={() => (composer.mode === "image" ? generateImage() : send())}
+          onabort={abort}
+          onattach={attach}
+          ondetach={detach}
         />
-      {/each}
+      {/snippet}
 
-      <StreamingMessage turn={conversation.turn} />
-
-      <!--
-        The turn's only interactive parts. Rendered inline in the conversation
-        rather than as a dialog: on a 640-pixel screen a modal covers the answer
-        the pupil is deciding about (§11, §20).
-      -->
-      {#if conversation.turn.permission}
-        {#key conversation.turn.permission.toolCallId}
-          <PermissionPrompt
-            permission={conversation.turn.permission}
-            onrespond={(approved) =>
-              respond({
-                requestId: conversation.turn.permission?.toolCallId,
-                kind: "permission",
-                approved,
-              })}
-          />
-        {/key}
-      {/if}
-
-      {#if conversation.turn.elicitation}
-        {#key conversation.turn.elicitation.toolCallId}
-          <ElicitationForm
-            elicitation={conversation.turn.elicitation}
-            onrespond={(answer) =>
-              respond({
-                requestId: conversation.turn.elicitation?.toolCallId,
-                kind: "elicitation",
-                ...answer,
-              })}
-          />
-        {/key}
-      {/if}
-
-      {#if generating}
-        <p class="text-center text-xs text-muted-foreground" role="status">
-          {m.chat_image_generating()}
-        </p>
-      {/if}
-
-      {#if refusal}
-        <p class="text-center text-xs text-muted-foreground" role="status">{refusal}</p>
-      {/if}
-    </div>
-  </div>
-
-  <!--
-    Always present, including on a pupil's very first visit: the empty state says
-    "write a message below", and the conversation it needs is minted on the first
-    send rather than demanded of the pupil first (§10). The header keeps its own
-    *New conversation* control for starting a second one, and is the affordance
-    that still works with JavaScript off.
-  -->
-  <Composer
-    {composer}
-    streaming={conversation.turn.streaming || generating}
-    attachmentsEnabled={data.attachmentsEnabled}
-    imageModeAvailable={data.imageModeAvailable}
-    onsend={() => (composer.mode === "image" ? generateImage() : send())}
-    onabort={abort}
-    onattach={attach}
-    ondetach={detach}
-  />
+      {#snippet build()}
+        <ArtifactPanel
+          workspace={artifacts}
+          sandboxOrigin={data.sandboxOrigin}
+          onaskforhelp={askForHelp}
+        />
+      {/snippet}
+    </WorkspaceShell>
   {/if}
-
-  <!--
-    Over the conversation rather than beside it: at 1366x768 a second column
-    costs more than it shows, so split view is a choice and not the default (§20).
-  -->
-  <ArtifactPanel
-    workspace={artifacts}
-    sandboxOrigin={data.sandboxOrigin}
-    onaskforhelp={askForHelp}
-  />
 </div>

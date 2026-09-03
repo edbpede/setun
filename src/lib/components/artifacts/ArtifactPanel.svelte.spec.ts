@@ -1,16 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
-import { page, userEvent } from "vitest/browser";
+import { page } from "vitest/browser";
 import { render } from "vitest-browser-svelte";
 import * as m from "$lib/paraglide/messages";
 import { type ArtifactView, ArtifactWorkspace } from "$lib/state/artifacts.svelte";
 import ArtifactPanel from "./ArtifactPanel.svelte";
 
 /**
- * The artifact panel's interaction logic (plan 4.3, PRD §13, §20, §22).
+ * The build pane's interaction logic (plan 4.3, PRD §13, §20, §22).
  *
- * What is under test is the panel's own behaviour — what a keystroke does, what
- * a commit point does, what the layout controls do — not the sandbox, which has
- * its own end-to-end suite on a real second origin (§14).
+ * What is under test is the pane's own behaviour — what a keystroke does, what a
+ * commit point does, what the tabs show — not the sandbox, which has its own
+ * end-to-end suite on a real second origin (§14), and not the workspace geometry,
+ * which belongs to `WorkspaceShell`.
  *
  * `about:blank` stands in for the sandbox origin: a component test has no second
  * origin to serve, and the frame's contents are not what these assertions are
@@ -51,23 +52,14 @@ function statusStrip(): string | undefined {
 function openWorkspace(items: ArtifactView[] = [artifact()]): ArtifactWorkspace {
   const workspace = new ArtifactWorkspace();
   workspace.items = items;
-  workspace.toggle();
+  workspace.reveal();
   return workspace;
 }
 
 describe("ArtifactPanel", () => {
-  it("stays out of the way until the Build entry point opens it", async () => {
+  it("says what to ask for when nothing has been built", async () => {
     const workspace = new ArtifactWorkspace();
-    workspace.items = [artifact()];
-
-    render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX });
-
-    await expect.element(page.getByText("Klikkeren")).not.toBeInTheDocument();
-  });
-
-  it("opens on nothing built yet and says what to ask for", async () => {
-    const workspace = new ArtifactWorkspace();
-    workspace.toggle();
+    workspace.reveal();
 
     render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX });
 
@@ -83,6 +75,38 @@ describe("ArtifactPanel", () => {
     await expect.element(page.getByRole("tab", { name: m.artifact_tab_preview() })).toBeVisible();
     await expect.element(page.getByRole("tab", { name: m.artifact_tab_code() })).toBeVisible();
     await expect.element(page.getByRole("tab", { name: m.artifact_tab_history() })).toBeVisible();
+  });
+
+  it("offers no list while there is only one thing to list", async () => {
+    render(ArtifactPanel, { workspace: openWorkspace(), sandboxOrigin: SANDBOX });
+
+    await expect
+      .element(page.getByRole("tab", { name: m.artifact_tab_builds({ count: 1 }) }))
+      .not.toBeInTheDocument();
+  });
+
+  it("lists every build of the conversation, and opens the one chosen", async () => {
+    const second: ArtifactView = {
+      ...artifact(),
+      id: "artifact-2",
+      title: "Quizzen",
+      latest: { ...artifact().latest, id: "version-2", source: "<p>quiz</p>" },
+    };
+    const workspace = openWorkspace([artifact(), second]);
+
+    render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX });
+
+    // Several things built is a question the header's `<select>` used to answer
+    // one name at a time; the list answers it with state and identity (§13).
+    await expect
+      .element(page.getByRole("tab", { name: m.artifact_tab_builds({ count: 2 }) }))
+      .toBeVisible();
+
+    await page.getByRole("tab", { name: m.artifact_tab_builds({ count: 2 }) }).click();
+    await page.getByText("Quizzen").click();
+
+    expect(workspace.openId).toBe("artifact-2");
+    expect(workspace.tab).toBe("preview");
   });
 
   it("names an untitled artifact by its language rather than inventing one", async () => {
@@ -158,60 +182,6 @@ describe("ArtifactPanel", () => {
     await expect.element(page.getByText(m.artifact_edit_carried())).toBeVisible();
   });
 
-  it("gives the preview the whole panel in fullscreen", async () => {
-    const workspace = openWorkspace();
-    render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX });
-
-    await page.getByRole("button", { name: m.artifact_layout_fullscreen() }).click();
-
-    // Fullscreen preview is the primary artifact mode on a 640-pixel screen (§20).
-    expect(workspace.layout).toBe("fullscreen");
-    await expect
-      .element(page.getByRole("tab", { name: m.artifact_tab_code() }))
-      .not.toBeInTheDocument();
-  });
-
-  it("offers split view as a choice and not as the default", async () => {
-    // Split view is offered only where there is room for it: at the target
-    // device's width a second column costs more than it shows (§20).
-    await page.viewport(1024, 768);
-
-    const workspace = openWorkspace();
-    render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX });
-
-    expect(workspace.layout).toBe("overlay");
-
-    await page.getByRole("button", { name: m.artifact_layout_split() }).click();
-    expect(workspace.layout).toBe("split");
-  });
-
-  it("gives split view a handle that moves the divider (§20)", async () => {
-    await page.viewport(1024, 768);
-
-    const workspace = openWorkspace();
-    render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX });
-    await page.getByRole("button", { name: m.artifact_layout_split() }).click();
-
-    const handle = page.getByRole("separator", { name: m.artifact_split_handle() });
-    await expect.element(handle).toBeInTheDocument();
-
-    // Keyboard first, because a drag must not be the only way to move it.
-    const before = workspace.splitFraction;
-    await handle.click();
-    await userEvent.keyboard("{ArrowRight}");
-    expect(workspace.splitFraction).toBeGreaterThan(before);
-  });
-
-  it("never lets the divider drag either side out of existence (§20)", () => {
-    const workspace = openWorkspace();
-
-    workspace.setSplitFraction(0);
-    expect(workspace.splitFraction).toBe(0.25);
-
-    workspace.setSplitFraction(1);
-    expect(workspace.splitFraction).toBe(0.8);
-  });
-
   it("shows a build failure as text", async () => {
     const workspace = openWorkspace();
     render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX });
@@ -221,16 +191,6 @@ describe("ArtifactPanel", () => {
 
     // The compiler's own words, rendered as text and never as markup (§13, §21).
     await expect.element(page.getByText("Line 3: Unexpected <")).toBeVisible();
-  });
-
-  it("closes back to the conversation", async () => {
-    const workspace = openWorkspace();
-    render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX });
-
-    await page.getByRole("button", { name: m.artifact_close() }).click();
-
-    expect(workspace.visible).toBe(false);
-    await expect.element(page.getByText("Klikkeren")).not.toBeInTheDocument();
   });
 
   it("shows the artifact's id in the mono identity line", async () => {
@@ -664,125 +624,5 @@ describe("restoring a revision written under another language", () => {
 
     expect(workspace.runningLanguage).toBe("html");
     expect(workspace.status).toBe("compiling");
-  });
-});
-
-describe("following the model's writes", () => {
-  it("opens the panel on a new artifact and shows it", () => {
-    const workspace = new ArtifactWorkspace();
-    workspace.replace([artifact()], "c1");
-    // First hydration is a page load, not a turn landing: nothing opens (§13).
-    expect(workspace.visible).toBe(false);
-
-    workspace.replace(
-      [
-        {
-          ...artifact(),
-          id: "artifact-2",
-          title: "Quiz",
-          latest: { ...artifact().latest, id: "v2" },
-        },
-        artifact(),
-      ],
-      "c1",
-    );
-
-    expect(workspace.visible).toBe(true);
-    expect(workspace.openId).toBe("artifact-2");
-  });
-
-  it("opens on the first artifact of a conversation that had none", () => {
-    const workspace = new ArtifactWorkspace();
-    workspace.replace([], "c1");
-
-    workspace.replace([artifact()], "c1");
-
-    expect(workspace.visible).toBe(true);
-    expect(workspace.openId).toBe("artifact-1");
-  });
-
-  it("does not open when the pupil merely switches conversation", () => {
-    const workspace = new ArtifactWorkspace();
-    workspace.replace([], "c1");
-
-    workspace.replace([artifact()], "c2");
-
-    expect(workspace.visible).toBe(false);
-  });
-
-  it("drops the unseen badge when the list it was raised over is replaced", () => {
-    const workspace = new ArtifactWorkspace();
-    workspace.replace([artifact()], "c1");
-    workspace.select("artifact-1");
-    workspace.edit("<p>jeg skriver</p>");
-    workspace.replace(
-      [artifact(), { ...artifact(), id: "artifact-2", latest: { ...artifact().latest, id: "v2" } }],
-      "c1",
-    );
-    expect(workspace.unseen).toBe("artifact-2");
-
-    // Another conversation's artifacts. The badge would otherwise go on
-    // pointing at an artifact this list does not hold (§13).
-    workspace.replace([{ ...artifact(), id: "artifact-9" }], "c2");
-
-    expect(workspace.unseen).toBeNull();
-  });
-
-  it("follows the first block written of two writes in one turn", () => {
-    const workspace = new ArtifactWorkspace();
-    workspace.replace([artifact()]);
-
-    // As the server hands it over: most recently written first. So the block
-    // the model wrote first is the *last* element, and only the revision's own
-    // timestamp says which that is (§13).
-    workspace.replace([
-      {
-        ...artifact(),
-        id: "artifact-2",
-        latest: { ...artifact().latest, id: "v2", createdAt: new Date(2_000).toISOString() },
-      },
-      {
-        ...artifact(),
-        latest: {
-          ...artifact().latest,
-          id: "version-2",
-          revision: 2,
-          createdAt: new Date(1_000).toISOString(),
-        },
-      },
-    ]);
-
-    expect(workspace.openId).toBe("artifact-1");
-  });
-
-  it("does not take the editor out from under a draft on another artifact", () => {
-    const workspace = new ArtifactWorkspace();
-    workspace.replace([artifact()]);
-    workspace.select("artifact-1");
-    workspace.edit("<p>jeg skriver</p>");
-
-    workspace.replace([
-      artifact(),
-      { ...artifact(), id: "artifact-2", latest: { ...artifact().latest, id: "v2" } },
-    ]);
-
-    expect(workspace.openId).toBe("artifact-1");
-    expect(workspace.draft).toBe("<p>jeg skriver</p>");
-    // But the pupil is told, so a closed panel is not a silent one (§13).
-    expect(workspace.unseen).toBe("artifact-2");
-  });
-
-  it("never follows the pupil's own save", () => {
-    const workspace = new ArtifactWorkspace();
-    workspace.replace([artifact()]);
-
-    workspace.replace([
-      {
-        ...artifact(),
-        latest: { ...artifact().latest, id: "version-2", revision: 2, authoredBy: "student" },
-      },
-    ]);
-
-    expect(workspace.visible).toBe(false);
   });
 });

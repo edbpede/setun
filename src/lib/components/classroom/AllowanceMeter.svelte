@@ -48,7 +48,7 @@ const cost = $derived(
     {#if !compact}
       <span class="text-sm font-medium text-foreground">{m.allowance_title()}</span>
     {/if}
-    <span class="text-xs text-muted-foreground">
+    <span class="truncate whitespace-nowrap text-xs text-muted-foreground">
       {m.allowance_used({
         used: numbers.format(allowance.usedTokens),
         limit: numbers.format(allowance.limitTokens),
