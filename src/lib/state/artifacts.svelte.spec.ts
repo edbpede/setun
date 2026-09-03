@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type ArtifactView, ArtifactWorkspace } from "./artifacts.svelte";
+import { type ArtifactView, ArtifactWorkspace, CONSOLE_KEPT } from "./artifacts.svelte";
 
 /**
  * The workspace's own state machine (PRD §13, §20, §22).
@@ -204,6 +204,31 @@ describe("following the model's writes", () => {
     expect(workspace.unseen).toBe("artifact-2");
   });
 
+  it("leaves the build surface behind with the thread the pupil left", () => {
+    const workspace = new ArtifactWorkspace();
+    workspace.replace([artifact()], "c1");
+    workspace.select("artifact-1");
+    expect(workspace.stage).toBe("both");
+
+    workspace.replace([], "c2");
+
+    // The artifacts it was showing belong to the conversation that is gone, so a
+    // split carried across the switch is a blank pane beside a new thread (§13).
+    expect(workspace.stage).toBe("chat");
+  });
+
+  it("does not close the build surface when the first conversation is minted", () => {
+    const workspace = new ArtifactWorkspace();
+    // A first visit has no conversation until the first send makes one, so the
+    // page hydrates on null and the same thread arrives named a moment later.
+    workspace.replace([], null);
+    workspace.setStage("build");
+
+    workspace.replace([artifact()], "c1");
+
+    expect(workspace.stage).toBe("build");
+  });
+
   it("never follows the pupil's own save", () => {
     const workspace = new ArtifactWorkspace();
     workspace.replace([artifact()]);
@@ -216,5 +241,82 @@ describe("following the model's writes", () => {
     ]);
 
     expect(workspace.visible).toBe(false);
+  });
+});
+
+describe("choosing an artifact", () => {
+  it("keeps the pupil's unsaved edit when they pick the one already open", () => {
+    const workspace = new ArtifactWorkspace();
+    workspace.replace([artifact()], "c1");
+    workspace.select("artifact-1");
+    workspace.edit("<button>Klik mig</button>");
+
+    // The Builds index lists the artifact the pupil is already on, and tapping
+    // that row used to throw their work away without saying so (§13).
+    workspace.select("artifact-1");
+
+    expect(workspace.draft).toBe("<button>Klik mig</button>");
+    expect(workspace.dirty).toBe(true);
+  });
+
+  it("clears the draft the model's own revision supersedes", () => {
+    const workspace = new ArtifactWorkspace();
+    workspace.replace([artifact()], "c1");
+    workspace.select("artifact-1");
+    workspace.edit("<button>Klik mig</button>");
+
+    workspace.replace(
+      [
+        {
+          ...artifact(),
+          latest: { ...artifact().latest, id: "version-2", revision: 2, source: "<h1>Nyt</h1>" },
+        },
+      ],
+      "c1",
+    );
+
+    // The revision it was based on is gone, so the draft goes with it.
+    expect(workspace.draft).toBeNull();
+    expect(workspace.running).toBe("<h1>Nyt</h1>");
+  });
+
+  it("starts a different artifact from scratch", () => {
+    const workspace = new ArtifactWorkspace();
+    workspace.replace([artifact(), { ...artifact(), id: "artifact-2" }], "c1");
+    workspace.select("artifact-1");
+    workspace.edit("<button>Klik mig</button>");
+
+    workspace.select("artifact-2");
+
+    expect(workspace.openId).toBe("artifact-2");
+    expect(workspace.draft).toBeNull();
+  });
+});
+
+describe("what the artifact printed", () => {
+  const line = (text: string) => ({ level: "log" as const, text });
+
+  it("says nothing was dropped when nothing was", () => {
+    const workspace = new ArtifactWorkspace();
+
+    workspace.appendConsole(Array.from({ length: CONSOLE_KEPT }, (_, at) => line(`linje ${at}`)));
+
+    // Exactly the number kept is exactly the number printed: telling a pupil
+    // their earlier output is gone sends them looking for something to fix.
+    expect(workspace.consoleLines).toHaveLength(CONSOLE_KEPT);
+    expect(workspace.consoleTruncated).toBe(false);
+  });
+
+  it("says so once a line has actually gone", () => {
+    const workspace = new ArtifactWorkspace();
+
+    workspace.appendConsole(
+      Array.from({ length: CONSOLE_KEPT + 1 }, (_, at) => line(`linje ${at}`)),
+    );
+
+    expect(workspace.consoleLines).toHaveLength(CONSOLE_KEPT);
+    expect(workspace.consoleTruncated).toBe(true);
+    // The newest are the useful ones (§13).
+    expect(workspace.consoleLines[CONSOLE_KEPT - 1].text).toBe(`linje ${CONSOLE_KEPT}`);
   });
 });

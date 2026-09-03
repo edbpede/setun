@@ -131,6 +131,15 @@ export class ArtifactWorkspace {
   consoleLines = $state<ConsoleLine[]>([]);
 
   /**
+   * Whether anything was actually thrown away to make room.
+   *
+   * Not `consoleLines.length >= CONSOLE_KEPT`: a run that printed exactly the
+   * number kept lost nothing, and telling a pupil their earlier output is gone
+   * when all of it is on screen sends them looking for something to fix.
+   */
+  consoleTruncated = $state(false);
+
+  /**
    * An artifact whose model-written revision the pupil has not looked at.
    *
    * The switcher wears it as a badge, so a pupil reading the conversation still
@@ -214,6 +223,16 @@ export class ArtifactWorkspace {
   replace(items: ArtifactView[], conversationId: string | null = null): void {
     const previous = this.open;
     const fresh = !this.hydrated || conversationId !== this.hydratedFor;
+    /**
+     * The pupil left a named thread for another one.
+     *
+     * Narrower than `fresh`, deliberately: a first visit has no conversation
+     * until the first send mints one, and that null-to-named step is `fresh` as
+     * well. It is not a switch — nothing was left behind — and treating it as
+     * one would close the build surface under a pupil who had opened it while
+     * their first answer was still arriving.
+     */
+    const switched = this.hydratedFor !== null && conversationId !== this.hydratedFor;
     const followed = fresh ? null : followModelWrite(this.items, items);
 
     this.hydrated = true;
@@ -222,6 +241,10 @@ export class ArtifactWorkspace {
     // replaces that list wholesale, so an artifact the pupil never looked at in
     // the conversation they have left must not go on badging the switcher.
     if (fresh) this.unseen = null;
+    // And so does the surface itself: the artifacts it was showing belong to the
+    // thread that is gone, so a split kept across the switch is a blank pane
+    // beside the new conversation.
+    if (switched) this.stage = "chat";
     /**
      * A draft on some *other* artifact is work the pupil is in the middle of,
      * and following the model's write would take the editor out from under them.
@@ -239,12 +262,12 @@ export class ArtifactWorkspace {
     }
 
     if (previous && this.open && previous.latest.id !== this.open.latest.id) {
-      this.draft = null;
-      this.draftLanguage = null;
+      // A new revision of the artifact on screen is a new subject: the draft it
+      // supersedes, the status of the run that produced the old one, and what
+      // that run printed all go together.
+      this.resetRun();
       this.running = this.open.latest.source;
       this.runningLanguage = effectiveLanguage(this.open, this.open.latest);
-      this.outcome = null;
-      this.consoleLines = [];
     }
 
     if (!followed) return;
@@ -270,6 +293,21 @@ export class ArtifactWorkspace {
   show(artifactId: string): void {
     if (!this.items.some((item) => item.id === artifactId)) return;
 
+    /**
+     * Choosing the artifact already open is navigation, not a new subject.
+     *
+     * Picking it out of the Builds index used to throw away the unsaved edit in
+     * the editor and restart whatever the frame was running — a pupil looking at
+     * the list of what they had built lost their work by tapping the row they
+     * were already on. A revision arriving is the case that *does* clear the
+     * draft, and `replace` above is where that happens.
+     */
+    if (this.openId === artifactId) {
+      this.tab = "preview";
+      if (this.unseen === artifactId) this.unseen = null;
+      return;
+    }
+
     this.openId = artifactId;
     this.tab = "preview";
     this.resetRun();
@@ -287,6 +325,7 @@ export class ArtifactWorkspace {
     this.saveFailed = false;
     this.outcome = null;
     this.consoleLines = [];
+    this.consoleTruncated = false;
     this.running = null;
     this.runningLanguage = null;
   }
@@ -303,7 +342,9 @@ export class ArtifactWorkspace {
 
   /** A batch of printed lines from the artifact. Text, never markup (§13, §21). */
   appendConsole(lines: readonly ConsoleLine[]): void {
-    this.consoleLines = [...this.consoleLines, ...lines].slice(-CONSOLE_KEPT);
+    const merged = [...this.consoleLines, ...lines];
+    if (merged.length > CONSOLE_KEPT) this.consoleTruncated = true;
+    this.consoleLines = merged.slice(-CONSOLE_KEPT);
   }
 
   /** Fold a stored build result back in, so the report is not sent twice. */
@@ -392,6 +433,7 @@ export class ArtifactWorkspace {
     this.error = null;
     this.outcome = null;
     this.consoleLines = [];
+    this.consoleTruncated = false;
   }
 
   /** Fold a version the server just stored back into the list. */
