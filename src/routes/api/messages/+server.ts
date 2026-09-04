@@ -175,6 +175,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     promptLayers: prepared.promptLayers,
     artifacts: prepared.artifacts,
     budgets: budgetsOf(access.classroom),
+    consumed: access.consumed,
     tools: prepared.tools,
     toolContext: prepared.toolContext,
     permissionMode: access.classroom.permissionMode,

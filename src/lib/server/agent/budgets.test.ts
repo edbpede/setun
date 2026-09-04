@@ -86,7 +86,7 @@ describe("mayRunUtilityWork", () => {
   });
 });
 
-describe("TurnBudget — per-turn caps", () => {
+describe("TurnBudget — per-turn caps are checkpoints", () => {
   const budgets: BudgetSettings = {
     perTurnStepCap: 3,
     perTurnWallClockSeconds: 1,
@@ -95,76 +95,145 @@ describe("TurnBudget — per-turn caps", () => {
     perClassroomDailyTokens: 50_000,
   };
 
-  it("reports no cap exceeded on a fresh turn", () => {
-    expect(new TurnBudget(budgets).exceeded()).toBeNull();
+  it("reports no checkpoint on a fresh turn", () => {
+    expect(new TurnBudget(budgets).reachedCaps()).toEqual([]);
   });
 
-  it("reports the step cap", () => {
+  it("reports the step checkpoint", () => {
     const tracker = new TurnBudget(budgets);
     for (let i = 0; i < 3; i++) tracker.recordStep();
 
-    expect(tracker.exceeded()).toBe("steps");
+    expect(tracker.reachedCaps()).toEqual(["steps"]);
   });
 
-  it("reports the token cap", () => {
+  it("reports the token checkpoint", () => {
     const tracker = new TurnBudget(budgets);
     tracker.recordTokens(500);
 
-    expect(tracker.exceeded()).toBe("tokens");
+    expect(tracker.reachedCaps()).toEqual(["tokens"]);
   });
 
   it("reports wall-clock expiry", () => {
-    const startedAt = Date.now() - 2000;
-    const tracker = new TurnBudget(budgets, startedAt);
+    const tracker = new TurnBudget(budgets, 1_000);
 
-    expect(tracker.exceeded()).toBe("wall-clock");
+    expect(tracker.reachedCaps(1_000 + 2_000)).toEqual(["wall-clock"]);
   });
 
-  it("steps takes priority over tokens when both are reached", () => {
-    const tracker = new TurnBudget(budgets);
+  /**
+   * Every reached cap, not the first: continuing past a step checkpoint that
+   * also blew the token allotment would otherwise stop again immediately.
+   */
+  it("reports every cap that was reached, steps first", () => {
+    const tracker = new TurnBudget(budgets, 1_000);
     for (let i = 0; i < 3; i++) tracker.recordStep();
-    tracker.recordTokens(1000);
+    tracker.recordTokens(1_000);
 
-    expect(tracker.exceeded()).toBe("steps");
+    expect(tracker.reachedCaps(1_000 + 2_000)).toEqual(["steps", "tokens", "wall-clock"]);
+  });
+
+  it("grants one more allotment of every reached cap when the pupil continues", () => {
+    const tracker = new TurnBudget(budgets, 1_000);
+    for (let i = 0; i < 3; i++) tracker.recordStep();
+    tracker.recordTokens(500);
+
+    tracker.extend(1_000);
+
+    expect(tracker.reachedCaps(1_000)).toEqual([]);
+    for (let i = 0; i < 3; i++) tracker.recordStep();
+    expect(tracker.reachedCaps(1_000)).toEqual(["steps"]);
+  });
+
+  it("restarts the clock from the moment the pupil said to continue", () => {
+    const tracker = new TurnBudget(budgets, 1_000);
+
+    expect(tracker.reachedCaps(1_000 + 2_000)).toEqual(["wall-clock"]);
+    tracker.extend(1_000 + 2_000);
+
+    // One more second of wall clock, counted from the answer rather than from
+    // the start of the turn.
+    expect(tracker.reachedCaps(1_000 + 2_500)).toEqual([]);
+    expect(tracker.reachedCaps(1_000 + 3_000)).toEqual(["wall-clock"]);
+  });
+
+  /**
+   * The pupil's reading time is not the model's working time. Counting it would
+   * make the very act of asking bring the next checkpoint forward.
+   */
+  it("excludes time spent waiting on the pupil from the clock", () => {
+    const tracker = new TurnBudget(budgets, 1_000);
+    tracker.recordWait(5_000);
+
+    expect(tracker.elapsedMs(1_000 + 5_500)).toBe(500);
+    expect(tracker.reachedCaps(1_000 + 5_500)).toEqual([]);
+    expect(tracker.reachedCaps(1_000 + 6_000)).toEqual(["wall-clock"]);
+  });
+
+  it("offers one full allotment to every question the turn asks", () => {
+    expect(new TurnBudget(BUDGET_PRESETS.standard).allotmentMs).toBe(300_000);
   });
 });
 
 /**
- * What every wait inside a turn is bounded by (§10, §11).
+ * The hard ceilings, binding *during* a turn (§10).
  *
- * The figure has to be what is *left*, not the cap: a wait handed the whole cap
- * restarts it, and one permission question followed by three elicitation rounds
- * would keep a five-minute turn alive for twenty.
+ * A turn that starts with the day 99 % spent used to run to its own per-turn cap
+ * regardless; now the day's figures travel with it and stop it where they run out.
  */
-describe("TurnBudget — the wall clock a wait may use", () => {
+describe("TurnBudget — the daily ceilings", () => {
   const budgets: BudgetSettings = {
-    perTurnStepCap: 20,
-    perTurnWallClockSeconds: 300,
+    perTurnStepCap: 100,
+    perTurnWallClockSeconds: 600,
     perTurnTokenCap: 100_000,
-    perStudentDailyTokens: 250_000,
-    perClassroomDailyTokens: 2_500_000,
+    perStudentDailyTokens: 10_000,
+    perClassroomDailyTokens: 50_000,
   };
 
-  it("offers the whole cap to a turn that has just started", () => {
-    expect(new TurnBudget(budgets, 1_000).remainingWallClockMs(1_000)).toBe(300_000);
+  it("counts the turn's own tokens against what the day had already spent", () => {
+    const tracker = new TurnBudget(budgets, 1_000, {
+      studentTokens: 9_000,
+      classroomTokens: 20_000,
+    });
+    tracker.recordTokens(500);
+
+    expect(tracker.dailyUsed()).toEqual({ studentTokens: 9_500, classroomTokens: 20_500 });
+    expect(tracker.dailyExhausted()).toBeNull();
+
+    tracker.recordTokens(500);
+    expect(tracker.dailyExhausted()).toBe("student-allowance-exhausted");
   });
 
-  it("draws successive waits down one cap rather than giving each the whole of it", () => {
-    const tracker = new TurnBudget(budgets, 1_000);
+  it("names the classroom cap first, exactly as checkTurnBudget does", () => {
+    const tracker = new TurnBudget(budgets, 1_000, {
+      studentTokens: 10_000,
+      classroomTokens: 50_000,
+    });
 
-    // Four waits, each taking a minute. The fourth is bounded by the minute the
-    // turn has left, not by the five it started with.
-    expect(tracker.remainingWallClockMs(1_000 + 60_000)).toBe(240_000);
-    expect(tracker.remainingWallClockMs(1_000 + 120_000)).toBe(180_000);
-    expect(tracker.remainingWallClockMs(1_000 + 180_000)).toBe(120_000);
-    expect(tracker.remainingWallClockMs(1_000 + 240_000)).toBe(60_000);
+    expect(tracker.dailyExhausted()).toBe("classroom-cap-exhausted");
   });
 
-  it("offers nothing once the cap is spent, rather than a negative wait", () => {
-    const tracker = new TurnBudget(budgets, 1_000);
+  it("reports the fuller of the two layers, and the figures that go with it", () => {
+    const tracker = new TurnBudget(budgets, 1_000, {
+      studentTokens: 1_000,
+      classroomTokens: 40_000,
+    });
 
-    expect(tracker.remainingWallClockMs(1_000 + 300_000)).toBe(0);
-    expect(tracker.remainingWallClockMs(1_000 + 900_000)).toBe(0);
+    expect(tracker.dailyFraction()).toBeCloseTo(0.8);
+    expect(tracker.dailyBinding()).toEqual({ usedTokens: 40_000, limitTokens: 50_000 });
+  });
+
+  it("warns exactly once, and only past 70 %", () => {
+    const tracker = new TurnBudget(budgets, 1_000, { studentTokens: 6_000, classroomTokens: 0 });
+
+    expect(tracker.takeWarning()).toBe(false);
+    expect(tracker.warningPending).toBe(false);
+
+    tracker.recordTokens(1_000);
+    expect(tracker.takeWarning()).toBe(true);
+    expect(tracker.takeWarning()).toBe(false);
+    expect(tracker.warningPending).toBe(true);
+
+    tracker.acknowledgeWarning();
+    expect(tracker.warningPending).toBe(false);
   });
 });
 

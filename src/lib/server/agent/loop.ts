@@ -5,7 +5,7 @@ import type { Message, MessagePart, PermissionMode } from "../db/schema";
 import type { DialectName, GatewayAdapter } from "../gateway/adapter";
 import type { GatewayContentPart, GatewayMessage, GatewayToolCall } from "../gateway/dialect";
 import { GatewayError } from "../gateway/errors";
-import type { GatewayEvent, TurnEndReason } from "../gateway/events";
+import type { FinishReason, GatewayEvent, TurnEndReason } from "../gateway/events";
 import { promptTextOf } from "../gateway/messages";
 import { estimateTokens, resolveUsage } from "../gateway/usage";
 import type { AttachmentPayload } from "../storage/attachments";
@@ -15,7 +15,14 @@ import {
   formatArtifactState,
   formatCarriedSources,
 } from "./artifact-context";
-import { BUDGET_PRESETS, type BudgetSettings, TurnBudget } from "./budgets";
+import {
+  BUDGET_PRESETS,
+  type BudgetSettings,
+  DAILY_WARNING_REQUEST_ID,
+  type DailyConsumption,
+  type PerTurnCap,
+  TurnBudget,
+} from "./budgets";
 import type { InteractionAnswer, TurnInteractionRegistry } from "./interactions";
 import {
   DECLINED_RESULT,
@@ -81,6 +88,15 @@ export interface RunTurnInput {
    * budgets should get the shipped policy, not none.
    */
   readonly budgets?: BudgetSettings;
+  /**
+   * What the classroom and this pupil have already spent today (§10).
+   *
+   * The daily layers are the hard ceilings and they bind *during* a turn, so the
+   * loop has to know where the day already stood. Defaulted to nothing spent:
+   * a caller that omits it gets a turn bounded only by its own consumption,
+   * never one that mistakenly believes an allowance is full.
+   */
+  readonly consumed?: DailyConsumption;
   readonly tooling?: TurnTooling;
   /** Aborting the turn cancels the upstream request and any running tool (§10). */
   readonly signal?: AbortSignal;
@@ -297,12 +313,15 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<GatewayEvent
     input.artifacts,
   );
   const now = input.now ?? Date.now;
-  const budget = new TurnBudget(input.budgets ?? BUDGET_PRESETS.standard, now());
+  const budget = new TurnBudget(input.budgets ?? BUDGET_PRESETS.standard, now(), input.consumed);
 
   /**
-   * Linked to the caller's signal so a per-turn cap cancels the upstream
-   * request exactly as an abort does. Without it, a generation that has already
-   * blown its token cap keeps costing tokens after the loop stopped reading.
+   * Linked to the caller's signal so a *hard* stop cancels the upstream request
+   * exactly as an abort does. Without it, a generation that has already spent
+   * the class's day keeps costing tokens after the loop stopped reading.
+   *
+   * A checkpoint never cancels upstream: it is a question asked at a boundary
+   * where nothing is in flight, and the answer may well be "keep going".
    *
    * A running tool execution reads the same signal, so aborting a turn cancels
    * the call in flight rather than waiting for it (§10).
@@ -314,6 +333,8 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<GatewayEvent
 
   let reason: TurnEndReason = "stop";
   const definitions = input.tooling?.tools.definitions() ?? [];
+  /** Numbers the checkpoints, so a second one is a question of its own. */
+  let checkpoints = 0;
 
   try {
     while (true) {
@@ -321,7 +342,6 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<GatewayEvent
         input,
         messages,
         budget,
-        now,
         signal: upstream.signal,
         definitions,
       });
@@ -330,7 +350,9 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<GatewayEvent
 
       if (step.stopped) {
         reason = step.stopped;
-        if (reason === "budget") upstream.abort();
+        // A daily ceiling is the one stop that has to reach upstream: the class
+        // is out of tokens, and a generation still running would spend more.
+        if (isDailyStop(reason)) upstream.abort();
         break;
       }
 
@@ -359,13 +381,59 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<GatewayEvent
       }
 
       // A clean boundary: every result is durable and the next model call has
-      // not been made. If a cap has been reached, this is where the turn ends
-      // with partial content preserved (§10).
-      const exceeded = budget.exceeded(now());
-      if (exceeded !== null) {
-        reason = "budget";
+      // not been made. This is where the daily ceilings end the turn, and where
+      // a checkpoint asks whether to carry on (§10).
+      const exhausted = budget.dailyExhausted();
+      if (exhausted) {
+        reason = exhausted;
         upstream.abort();
         break;
+      }
+
+      const caps = budget.reachedCaps(now());
+
+      if (!input.tooling) {
+        // No tools means no multi-step turn, so there is nobody to ask and no
+        // second model call to ask about; a reached cap simply ends it.
+        if (caps.length > 0) {
+          reason = "budget";
+          break;
+        }
+        budget.acknowledgeWarning();
+        continue;
+      }
+
+      // The pupil may have pressed "Keep going" on the warning banner minutes
+      // ago, while the answer was still streaming. That counts, and the boundary
+      // must not ask again for something already answered.
+      if (caps.length === 0 && budget.warningPending) {
+        const early = input.tooling.interactions.takeEarly({
+          turnId: input.tooling.turnId,
+          requestId: DAILY_WARNING_REQUEST_ID,
+        });
+        if (early?.kind === "continue") {
+          if (!early.proceed) {
+            reason = "aborted";
+            break;
+          }
+          budget.acknowledgeWarning();
+        }
+      }
+
+      if (caps.length > 0 || budget.warningPending) {
+        const asked = yield* askToContinue({
+          tooling: input.tooling,
+          budget,
+          now,
+          caps,
+          signal: upstream.signal,
+          requestId: caps.length > 0 ? `continue-${++checkpoints}` : DAILY_WARNING_REQUEST_ID,
+        });
+
+        if (asked !== null) {
+          reason = asked;
+          break;
+        }
       }
     }
   } catch (cause) {
@@ -407,11 +475,10 @@ async function* runStep(args: {
   input: RunTurnInput;
   messages: readonly GatewayMessage[];
   budget: TurnBudget;
-  now: () => number;
   signal: AbortSignal;
   definitions: ReturnType<ToolSet["definitions"]>;
 }): AsyncGenerator<GatewayEvent, StepOutcome> {
-  const { input, messages, budget, now } = args;
+  const { input, messages, budget } = args;
 
   let text = "";
   const toolCalls: GatewayToolCall[] = [];
@@ -429,6 +496,32 @@ async function* runStep(args: {
    */
   let provisional = 0;
   let stopped: TurnEndReason | null = null;
+  let finishReason: FinishReason | undefined;
+
+  /**
+   * The one warning this turn may show, claimed the moment the day passes 70 %.
+   *
+   * Emitted mid-stream and nothing more: the answer in flight is never cut for
+   * it. The confirmation to carry on is collected at the next clean boundary,
+   * or early if the pupil presses the banner's button before then (§10).
+   */
+  function* warnIfDue(): Generator<GatewayEvent> {
+    if (!budget.takeWarning()) return;
+
+    input.tooling?.interactions.expect({
+      turnId: input.tooling.turnId,
+      requestId: DAILY_WARNING_REQUEST_ID,
+    });
+
+    const binding = budget.dailyBinding();
+    yield {
+      type: "budget-warning",
+      requestId: DAILY_WARNING_REQUEST_ID,
+      fraction: budget.dailyFraction(),
+      usedTokens: binding.usedTokens,
+      limitTokens: binding.limitTokens,
+    };
+  }
 
   try {
     for await (const event of input.adapter.streamChat(input.dialect, {
@@ -449,6 +542,7 @@ async function* runStep(args: {
       }
       if (event.type === "usage") {
         sawUsage = true;
+        finishReason = event.finishReason;
         budget.settleStepTokens(event.inputTokens + event.outputTokens);
       }
       if (event.type === "tool-call-started") {
@@ -464,10 +558,14 @@ async function* runStep(args: {
 
       yield event;
 
-      // The clean boundary §10 asks for: the event just yielded is durable, the
-      // student keeps every word that reached them, and nothing further is read.
-      if (budget.exceeded(now()) !== null) {
-        stopped = "budget";
+      yield* warnIfDue();
+
+      // The one thing that stops a response mid-stream: the day's tokens are
+      // gone. The event just yielded is durable, the student keeps every word
+      // that reached them, and nothing further is read (§10).
+      const exhausted = budget.dailyExhausted();
+      if (exhausted) {
+        stopped = exhausted;
         break;
       }
     }
@@ -489,11 +587,21 @@ async function* runStep(args: {
     throw cause;
   }
 
-  // A budget stop cuts the dialect off before it reports usage, and those tokens
+  // A hard stop cuts the dialect off before it reports usage, and those tokens
   // were still spent: usage is never counted as zero (§10).
   if (!sawUsage && reachedUpstream) {
     yield resolveUsage({ promptText: promptTextOf(messages), completionText: text });
   }
+
+  /**
+   * The provider stopped at its own output ceiling.
+   *
+   * The answer is cut mid-sentence and anything the model was about to call is
+   * half-written, so the tool calls of a truncated step are not executed: the
+   * pupil is told the answer was cut short instead of watching it act on an
+   * argument list that never finished.
+   */
+  if (stopped === null && finishReason === "length") stopped = "truncated";
 
   return { text, toolCalls, stopped };
 }
@@ -641,12 +749,7 @@ async function* decide(args: {
     arguments: parseArguments(call.arguments),
   };
 
-  const answer = await tooling.interactions.wait({
-    turnId: tooling.turnId,
-    requestId: call.id,
-    timeoutMs: waitTimeout(args),
-    signal: args.signal,
-  });
+  const answer = await awaitAnswer({ ...args, tooling, requestId: call.id });
 
   if (answer?.kind !== "permission") return "unanswered";
   return answer.approved ? "approved" : "declined";
@@ -673,11 +776,10 @@ async function* elicit(args: {
     fields: args.elicitation.fields,
   };
 
-  const answer: InteractionAnswer | null = await tooling.interactions.wait({
-    turnId: tooling.turnId,
+  const answer: InteractionAnswer | null = await awaitAnswer({
+    ...args,
+    tooling,
     requestId: call.id,
-    timeoutMs: waitTimeout(args),
-    signal: args.signal,
   });
 
   if (answer?.kind !== "elicitation" || answer.declined) return null;
@@ -685,19 +787,83 @@ async function* elicit(args: {
 }
 
 /**
- * How long a question may wait.
+ * Ask the pupil whether the turn should keep going, at a clean boundary (§10).
  *
- * What is left of the turn's wall-clock cap, not the whole of it. A question
- * that outlived the turn it belongs to would be answered into nothing, and the
- * pupil would be looking at a form that no longer does anything; giving each
- * wait the full cap restarts it, so one permission and three elicitation rounds
- * keep a five-minute turn alive for twenty (§10, §11).
- *
- * Reaching zero is not a special case: the wait resolves unanswered, the call
- * returns a refusal, and the loop stops at its next clean boundary.
+ * Returns null to carry on, or the reason the turn ends. Saying yes grants one
+ * more allotment of every cap that was reached, so the same checkpoint recurs
+ * one allotment later rather than immediately.
  */
-function waitTimeout(args: { budget: TurnBudget; now: () => number }): number {
-  return args.budget.remainingWallClockMs(args.now());
+async function* askToContinue(args: {
+  tooling: TurnTooling;
+  budget: TurnBudget;
+  now: () => number;
+  caps: readonly PerTurnCap[];
+  signal: AbortSignal;
+  requestId: string;
+}): AsyncGenerator<GatewayEvent, TurnEndReason | null> {
+  const { budget, caps, now } = args;
+  const binding = budget.dailyBinding();
+
+  // Declared before it is emitted, so an answer that races the wait is held
+  // rather than dropped as a late click.
+  args.tooling.interactions.expect({ turnId: args.tooling.turnId, requestId: args.requestId });
+
+  yield {
+    type: "continue-request",
+    requestId: args.requestId,
+    cause: caps[0] ?? "daily-warning",
+    caps,
+    turn: { steps: budget.steps, tokens: budget.tokens, elapsedMs: budget.elapsedMs(now()) },
+    daily: { usedTokens: binding.usedTokens, limitTokens: binding.limitTokens },
+  };
+
+  const answer = await awaitAnswer({ ...args, budget });
+
+  // Nobody was there. The turn ends where it stood, with everything it produced
+  // preserved — the friendly notice §10 asks for, never an error.
+  if (answer?.kind !== "continue") return "budget";
+  // "Stop here" is the same decision as pressing Stop, and reads the same way.
+  if (!answer.proceed) return "aborted";
+
+  budget.extend(now());
+  budget.acknowledgeWarning();
+  return null;
+}
+
+/**
+ * Wait for one answer, and give the pupil's own time back to the turn.
+ *
+ * Every question — permission, elicitation, checkpoint — gets one full
+ * wall-clock allotment. That used to be what was *left* of the turn's cap, on
+ * the reasoning that a question outliving its turn would be answered into
+ * nothing; now that a cap is a checkpoint rather than a ceiling there is nothing
+ * left to outlive, and time spent reading a question is excluded from the
+ * elapsed figure instead, so asking cannot bring the next checkpoint forward
+ * (§10, §11).
+ */
+async function awaitAnswer(args: {
+  tooling: TurnTooling;
+  requestId: string;
+  budget: TurnBudget;
+  now: () => number;
+  signal: AbortSignal;
+}): Promise<InteractionAnswer | null> {
+  const startedAt = args.now();
+
+  const answer = await args.tooling.interactions.wait({
+    turnId: args.tooling.turnId,
+    requestId: args.requestId,
+    timeoutMs: args.budget.allotmentMs,
+    signal: args.signal,
+  });
+
+  args.budget.recordWait(args.now() - startedAt);
+  return answer;
+}
+
+/** Whether a stop is one of the hard daily ceilings rather than a checkpoint. */
+function isDailyStop(reason: TurnEndReason): boolean {
+  return reason === "student-allowance-exhausted" || reason === "classroom-cap-exhausted";
 }
 
 function parseArguments(raw: string): Record<string, unknown> {

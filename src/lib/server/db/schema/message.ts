@@ -101,7 +101,16 @@ export interface ToolResultPart {
  * the model finished has nothing to announce. `error` is included because a
  * failed turn may still have persisted the words it managed to stream.
  */
-export const TURN_NOTICES = ["aborted", "interrupted", "budget", "unanswered", "error"] as const;
+export const TURN_NOTICES = [
+  "aborted",
+  "interrupted",
+  "budget",
+  "truncated",
+  "student-allowance-exhausted",
+  "classroom-cap-exhausted",
+  "unanswered",
+  "error",
+] as const;
 export type TurnNotice = (typeof TURN_NOTICES)[number];
 
 export interface TurnNoticePart {

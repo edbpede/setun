@@ -172,16 +172,19 @@ describe("executeTurn", () => {
         scaffold,
         adapterOver(() => streamingResponse(OK_STREAM)),
       ),
-      // A cap small enough that the first chunk exhausts it: the loop stops at a
-      // clean boundary and the partial answer is kept (§10).
-      budgets: { ...BUDGET_PRESETS.standard, perTurnTokenCap: 1 },
+      // An allowance small enough that the first chunk empties it: the loop
+      // stops at a clean boundary and the partial answer is kept (§10).
+      budgets: { ...BUDGET_PRESETS.standard, perStudentDailyTokens: 1 },
     });
 
     const assistant = listConversationMessages(db, scaffold.conversation.id).find(
       (message) => message.role === "assistant",
     );
 
-    expect(assistant?.parts.at(-1)).toEqual({ type: "turn-notice", notice: "budget" });
+    expect(assistant?.parts.at(-1)).toEqual({
+      type: "turn-notice",
+      notice: "student-allowance-exhausted",
+    });
     // The words that reached the pupil are still there — the notice is added to
     // the answer, never in place of it.
     expect(assistant?.parts.some((part) => part.type === "text")).toBe(true);

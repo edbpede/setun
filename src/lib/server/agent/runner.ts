@@ -12,7 +12,7 @@ import { describeCause, log } from "../logging";
 import type { AttachmentPayload } from "../storage/attachments";
 import type { ArtifactContext } from "./artifact-context";
 import { recordTurnArtifacts } from "./artifacts";
-import type { BudgetSettings } from "./budgets";
+import type { BudgetSettings, DailyConsumption } from "./budgets";
 import { turnInteractions } from "./interactions";
 import { liveTurns } from "./live-turns";
 import { runTurn } from "./loop";
@@ -49,6 +49,8 @@ export interface ExecuteTurnInput {
   readonly artifacts?: ArtifactContext;
   /** The classroom's per-turn caps; the loop stops the turn at a clean boundary (§10). */
   readonly budgets?: BudgetSettings;
+  /** What the day has already cost, so the hard ceilings bind mid-turn (§10). */
+  readonly consumed?: DailyConsumption;
   /** The turn's tools and the mode that governs them; absent for plain chat (§11). */
   readonly tools?: ToolSet;
   readonly toolContext?: ToolContext;
@@ -91,6 +93,7 @@ export async function executeTurn(input: ExecuteTurnInput): Promise<void> {
       promptLayers: input.promptLayers,
       artifacts: input.artifacts,
       budgets: input.budgets,
+      consumed: input.consumed,
       signal,
       ...(input.tools && input.toolContext
         ? {
@@ -135,6 +138,9 @@ export async function executeTurn(input: ExecuteTurnInput): Promise<void> {
     logTurn(input, { status: "failed", usage, startedAt });
   } finally {
     liveTurns.end(turnId);
+    // Whatever the turn declared answerable — a checkpoint, the warning banner's
+    // button — dies with it, so a late click cannot be held against the next one.
+    turnInteractions.release(turnId);
   }
 }
 

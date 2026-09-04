@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { GatewayAdapter } from "../gateway/adapter";
 import type { GatewayEvent } from "../gateway/events";
 import { streamingResponse, stubFetch } from "../gateway/testing";
-import type { BudgetSettings } from "./budgets";
+import { type BudgetSettings, DAILY_WARNING_REQUEST_ID } from "./budgets";
 import { runTurn } from "./loop";
 
 /**
@@ -12,10 +12,12 @@ import { runTurn } from "./loop";
  * the next clean boundary, partial content is preserved, and the student sees a
  * friendly notice — never an error."
  *
- * So the assertions are about three things together: the turn ends with
- * `done: budget` rather than `error`, the text that already streamed survives,
- * and the tokens spent are still accounted for — "usage is never counted as
- * zero" (§10).
+ * A per-turn cap is now a *checkpoint*: it pauses at the next clean boundary and
+ * asks, so it can no longer cut a response in flight. The daily allowances are
+ * the hard ceilings, and they are what still stops a stream — gracefully: the
+ * turn ends with a named reason rather than an error, the text that already
+ * streamed survives, and the tokens spent are still accounted for — "usage is
+ * never counted as zero" (§10).
  */
 
 const BUDGETS: BudgetSettings = {
@@ -57,8 +59,14 @@ const LONG_STREAM = [
   "[DONE]",
 ];
 
-describe("the token cap binds mid-stream (§10)", () => {
-  it("ends the turn as a budget stop, not an error", async () => {
+describe("a per-turn cap no longer cuts a response in flight (§10)", () => {
+  /**
+   * The bug this replaces: a five-minute wall clock cut one long answer at 285
+   * seconds, mid-sentence. A cap is now a checkpoint asked at a clean boundary,
+   * and a single-step turn has no boundary after the answer — so the answer
+   * arrives whole.
+   */
+  it("streams the whole answer past the token cap", async () => {
     const events = await collect(
       runTurn({
         adapter: adapterOver(LONG_STREAM),
@@ -70,42 +78,103 @@ describe("the token cap binds mid-stream (§10)", () => {
       }),
     );
 
-    expect(doneOf(events)).toEqual({ type: "done", reason: "budget" });
-    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(doneOf(events)).toEqual({ type: "done", reason: "stop" });
+    expect(textOf(events).length).toBe(8 * 400);
   });
 
-  it("preserves the text that already reached the student", async () => {
+  it("streams the whole answer past the wall clock", async () => {
+    let clock = 1_000;
     const events = await collect(
       runTurn({
         adapter: adapterOver(LONG_STREAM),
         dialect: "openai",
         model: "m",
         path,
-        budgets: { ...BUDGETS, perTurnTokenCap: 200 },
+        budgets: { ...BUDGETS, perTurnWallClockSeconds: 1 },
+        // Every read of the clock advances it a second, so the cap is long past.
+        now: () => {
+          clock += 1_000;
+          return clock;
+        },
+      }),
+    );
+
+    expect(doneOf(events)).toEqual({ type: "done", reason: "stop" });
+    expect(textOf(events).length).toBe(8 * 400);
+  });
+});
+
+/**
+ * The one thing that still stops a response mid-stream: the day's tokens are
+ * gone. These are the hard ceilings, and they bind during a turn rather than
+ * only at its start (§10).
+ */
+describe("a daily ceiling binds mid-stream (§10)", () => {
+  const tiny = { ...BUDGETS, perStudentDailyTokens: 250, perClassroomDailyTokens: 2_500_000 };
+
+  it("stops the turn and names the student's allowance", async () => {
+    const events = await collect(
+      runTurn({
+        adapter: adapterOver(LONG_STREAM),
+        dialect: "openai",
+        model: "m",
+        path,
+        budgets: tiny,
+        consumed: { studentTokens: 0, classroomTokens: 0 },
+      }),
+    );
+
+    expect(doneOf(events)).toEqual({ type: "done", reason: "student-allowance-exhausted" });
+    expect(events.some((event) => event.type === "error")).toBe(false);
+  });
+
+  it("names the classroom cap when that is what ran out", async () => {
+    const events = await collect(
+      runTurn({
+        adapter: adapterOver(LONG_STREAM),
+        dialect: "openai",
+        model: "m",
+        path,
+        budgets: { ...BUDGETS, perClassroomDailyTokens: 250 },
+        consumed: { studentTokens: 0, classroomTokens: 0 },
+      }),
+    );
+
+    expect(doneOf(events)).toEqual({ type: "done", reason: "classroom-cap-exhausted" });
+  });
+
+  it("counts what the day had already spent before this turn began", async () => {
+    const events = await collect(
+      runTurn({
+        adapter: adapterOver(LONG_STREAM),
+        dialect: "openai",
+        model: "m",
+        path,
+        budgets: { ...BUDGETS, perStudentDailyTokens: 10_000 },
+        consumed: { studentTokens: 9_900, classroomTokens: 0 },
+      }),
+    );
+
+    expect(doneOf(events)).toEqual({ type: "done", reason: "student-allowance-exhausted" });
+  });
+
+  it("preserves the text that already reached the student, and prices it", async () => {
+    const events = await collect(
+      runTurn({
+        adapter: adapterOver(LONG_STREAM),
+        dialect: "openai",
+        model: "m",
+        path,
+        budgets: tiny,
       }),
     );
 
     const text = textOf(events);
     expect(text.length).toBeGreaterThan(0);
-    // It stopped early: the whole stream would have been eight chunks.
     expect(text.length).toBeLessThan(8 * 400);
-  });
-
-  it("still accounts for the tokens spent — usage is never zero (§10)", async () => {
-    const events = await collect(
-      runTurn({
-        adapter: adapterOver(LONG_STREAM),
-        dialect: "openai",
-        model: "m",
-        path,
-        budgets: { ...BUDGETS, perTurnTokenCap: 200 },
-      }),
-    );
 
     const usage = usageOf(events);
-    expect(usage).toBeDefined();
     if (usage?.type !== "usage") throw new Error("expected a usage event");
-
     // The gateway never got to report, so the figure is estimated and flagged.
     expect(usage.estimated).toBe(true);
     expect(usage.outputTokens).toBeGreaterThan(0);
@@ -119,7 +188,7 @@ describe("the token cap binds mid-stream (§10)", () => {
         dialect: "openai",
         model: "m",
         path,
-        budgets: { ...BUDGETS, perTurnTokenCap: 200 },
+        budgets: tiny,
       }),
     );
 
@@ -128,26 +197,45 @@ describe("the token cap binds mid-stream (§10)", () => {
   });
 });
 
-describe("the wall-clock cap binds mid-stream (§10)", () => {
-  it("stops the turn once the turn's time is up", async () => {
-    let clock = 1_000;
+describe("the 70 % warning (§10)", () => {
+  it("is emitted once, mid-stream, with the figures the pupil is shown", async () => {
     const events = await collect(
       runTurn({
         adapter: adapterOver(LONG_STREAM),
         dialect: "openai",
         model: "m",
         path,
-        budgets: { ...BUDGETS, perTurnWallClockSeconds: 1 },
-        // Each check advances the clock by a second; the first event is enough.
-        now: () => {
-          clock += 1_000;
-          return clock;
-        },
+        budgets: { ...BUDGETS, perStudentDailyTokens: 1_000 },
       }),
     );
 
-    expect(doneOf(events)).toEqual({ type: "done", reason: "budget" });
-    expect(textOf(events).length).toBeGreaterThan(0);
+    const warnings = events.filter((event) => event.type === "budget-warning");
+    expect(warnings.length).toBe(1);
+
+    const warning = warnings[0];
+    if (warning.type !== "budget-warning") throw new Error("expected a budget warning");
+    expect(warning.requestId).toBe(DAILY_WARNING_REQUEST_ID);
+    expect(warning.fraction).toBeGreaterThanOrEqual(0.7);
+    expect(warning.limitTokens).toBe(1_000);
+    expect(warning.usedTokens).toBeGreaterThanOrEqual(700);
+
+    // The answer in flight is never cut for a warning.
+    expect(doneOf(events)).toEqual({ type: "done", reason: "stop" });
+    expect(textOf(events).length).toBe(8 * 400);
+  });
+
+  it("stays quiet while the day has headroom", async () => {
+    const events = await collect(
+      runTurn({
+        adapter: adapterOver(LONG_STREAM),
+        dialect: "openai",
+        model: "m",
+        path,
+        budgets: BUDGETS,
+      }),
+    );
+
+    expect(events.some((event) => event.type === "budget-warning")).toBe(false);
   });
 });
 
