@@ -1,5 +1,6 @@
 <script lang="ts">
 import { isSandboxAssetPath, sandboxAssetUrl } from "$lib/artifacts/assets";
+import { type ProjectFiles, sameFiles } from "$lib/artifacts/project";
 import {
   ARTIFACT_CHANNEL,
   asSandboxMessage,
@@ -73,8 +74,10 @@ interface Props {
    */
   artifactId: string;
   language: ArtifactLanguage;
-  /** The source to run. Advanced only at a commit point, never per keystroke (§13). */
-  source: string;
+  /** Which file runs. Always a key of `files`. */
+  entry: string;
+  /** The project to run. Advanced only at a commit point, never per keystroke (§13). */
+  files: ProjectFiles;
   oncompiling?: () => void;
   onrunning?: () => void;
   onfailed?: (message: string) => void;
@@ -93,7 +96,8 @@ let {
   sandboxOrigin,
   artifactId,
   language,
-  source,
+  entry,
+  files,
   oncompiling,
   onrunning,
   onfailed,
@@ -132,7 +136,12 @@ let currentRunId: string | null = null;
  *
  * Plain, not reactive: written and read only inside the effect.
  */
-let showing: { artifactId: string; language: ArtifactLanguage; source: string } | null = null;
+let showing: {
+  artifactId: string;
+  language: ArtifactLanguage;
+  entry: string;
+  files: ProjectFiles;
+} | null = null;
 
 function send(message: HostMessage, transfer: Transferable[] = []): void {
   // `"*"` because the frame has an opaque origin, which has no addressable
@@ -200,7 +209,8 @@ $effect(() => {
 
 // Runs when the frame reports ready and whenever the committed source changes.
 $effect(() => {
-  const running = source;
+  const running = files;
+  const start = entry;
   const kind = language;
   const owner = artifactId;
   if (!ready || !owner) return;
@@ -209,11 +219,12 @@ $effect(() => {
     showing &&
     showing.artifactId === owner &&
     showing.language === kind &&
-    showing.source === running
+    showing.entry === start &&
+    sameFiles(showing.files, running)
   ) {
     return;
   }
-  showing = { artifactId: owner, language: kind, source: running };
+  showing = { artifactId: owner, language: kind, entry: start, files: running };
 
   currentRunId = crypto.randomUUID();
   send({
@@ -222,7 +233,8 @@ $effect(() => {
     runId: currentRunId,
     artifactId,
     language: kind,
-    source: running,
+    entry: start,
+    files: running,
   });
 });
 </script>

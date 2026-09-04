@@ -30,6 +30,8 @@ function artifact(): ArtifactView {
       id: "version-1",
       revision: 1,
       source: "<button>Klik</button>",
+      entry: "index.html",
+      files: { "index.html": "<button>Klik</button>" },
       authoredBy: "model",
       createdAt: new Date(0).toISOString(),
     },

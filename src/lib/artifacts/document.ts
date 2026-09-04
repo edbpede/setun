@@ -1,3 +1,4 @@
+import { findProjectFile, kindOf, type ProjectFiles, resolveRelative } from "./project";
 import {
   CONSOLE_MAX_LINES,
   CONSOLE_MAX_TEXT,
@@ -238,6 +239,17 @@ export function staticDocument(input: {
   runtimes: RuntimeSources;
   runId: string;
   storage?: ArtifactStorageSeed;
+  /** Which file this source is, so a relative reference resolves against it. */
+  entry?: string;
+  /**
+   * The rest of the project, so the entry's own links resolve (§13).
+   *
+   * A static artifact is not bundled — there is nothing to bundle — so a page
+   * that links a stylesheet or a script of its own has those inlined here. The
+   * frame has no network and no origin to fetch from, so an untouched
+   * `<link href="styles.css">` would silently do nothing.
+   */
+  files?: ProjectFiles;
 }): string {
   // A static artifact runs no module of its own, so the only thing the graph is
   // here for is UnoCSS — but it goes through the same script all the same, since
@@ -249,8 +261,81 @@ export function staticDocument(input: {
     return `<!doctype html><html><head><meta charset="utf-8">${head}<style>html,body{margin:0;height:100%;display:grid;place-items:center;background:#fff}svg{max-width:100%;max-height:100%}</style></head><body>${input.source}${ack}</body></html>`;
   }
 
-  return injectIntoHtml(input.source, head, ack);
+  const source = input.files
+    ? inlineStaticSiblings(input.source, entryFor(input), input.files)
+    : input.source;
+
+  return injectIntoHtml(source, head, ack);
 }
+
+/** Where the entry sits, so a relative reference resolves against its folder. */
+function entryFor(input: { files?: ProjectFiles; entry?: string }): string {
+  return input.entry ?? "index.html";
+}
+
+/**
+ * A `</style` or `</script` sequence inside inlined content (§21).
+ *
+ * The parser ends an element at the first matching end tag whatever the quoting
+ * around it, so a stylesheet holding the literal text `</style` would close the
+ * block and put the rest of the file on the page as markup. Escaped rather than
+ * removed: what a pupil wrote stays what a pupil wrote.
+ */
+function escapeStyle(css: string): string {
+  // A CSS hex escape, which the CSS parser reads back as the same character.
+  return css.replace(/<\/(style)/gi, "<\\3c /$1");
+}
+
+/** `<link rel=stylesheet href=…>` and `<script src=…></script>` in the entry's markup. */
+const STYLESHEET_LINK = /<link\b[^>]*?href\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>/gi;
+const SCRIPT_SRC = /<script\b[^>]*?src\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>\s*<\/script>/gi;
+
+/**
+ * Inline the project files an html entry references (§13).
+ *
+ * There is no server behind the frame, so a reference is either inlined here or
+ * it does nothing. Only references that name a file of *this* project are
+ * touched: an absolute URL, a data URI, or a path the project does not hold is
+ * left exactly as written, so the page still says what the pupil wrote and the
+ * frame's own network policy is what refuses it.
+ */
+export function inlineStaticSiblings(source: string, entry: string, files: ProjectFiles): string {
+  const resolve = (raw: string | undefined): string | null => {
+    if (!raw) return null;
+    const specifier = raw.trim();
+    // Anything that is not a plain relative path is somebody else's to resolve.
+    if (specifier === "" || /^[a-z][a-z0-9+.-]*:/i.test(specifier) || specifier.startsWith("//")) {
+      return null;
+    }
+
+    const resolved = resolveRelative(entry, specifier.replace(/^\//, "./"));
+    return resolved ? findProjectFile(files, resolved) : null;
+  };
+
+  const withLinks = source.replace(STYLESHEET_LINK, (whole, _quoted, dq, sq, bare) => {
+    if (!/rel\s*=\s*["']?stylesheet["']?/i.test(whole)) return whole;
+
+    const path = resolve(dq ?? sq ?? bare);
+    if (path === null || kindOf(path) !== "css") return whole;
+
+    return `<style>${escapeStyle(files[path])}</style>`;
+  });
+
+  return withLinks.replace(SCRIPT_SRC, (whole, _quoted, dq, sq, bare) => {
+    const path = resolve(dq ?? sq ?? bare);
+    const kind = path === null ? null : kindOf(path);
+    if (path === null || (kind !== "js" && kind !== "json")) return whole;
+
+    // The attributes are kept — `type=module`, `defer` — because they change how
+    // the browser runs it and the pupil wrote them on purpose.
+    const attributes = whole
+      .slice("<script".length, whole.indexOf(">"))
+      .replace(SCRIPT_SRC_ATTRIBUTE, "");
+    return `<script${attributes}>${escapeScript(files[path])}</script>`;
+  });
+}
+
+const SCRIPT_SRC_ATTRIBUTE = /\ssrc\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i;
 
 /**
  * Elements the parser does not read as markup: only their own end tag closes
@@ -389,6 +474,15 @@ export function compiledDocument(input: {
   framework: "react" | "svelte";
   /** ES module source, already through `esbuild-wasm` or the Svelte compiler. */
   module: string;
+  /**
+   * The stylesheets the bundle imported, concatenated (§13).
+   *
+   * esbuild lifts every imported `.css` file into an output of its own, so it
+   * arrives beside the module rather than inside it. Injected after the reset
+   * below and before the artifact mounts, so a component's own injected styles —
+   * Svelte's, which land at mount — still win, as they do in a real build.
+   */
+  css?: string;
   runtimes: RuntimeSources;
   runId: string;
   storage?: ArtifactStorageSeed;
@@ -437,9 +531,12 @@ try {
   // import map first, then the modules that resolve against it. A module script
   // in the markup — UnoCSS's, as it used to be — would begin loading before the
   // map existed, and a map added after that point is ignored.
+  const styles = input.css ? `<style>${escapeStyle(input.css)}</style>` : "";
+
   return `<!doctype html><html><head><meta charset="utf-8">
 ${preamble(input.runId, input.storage)}
 <style>html,body{margin:0}</style>
+${styles}
 </head><body><div id="setun-root"></div>
 ${modules(input.runtimes, harness)}
 </body></html>`;

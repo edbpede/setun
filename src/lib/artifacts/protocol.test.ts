@@ -20,8 +20,63 @@ import {
 
 const envelope = { channel: ARTIFACT_CHANNEL };
 
+/** A render as the application sends one: a whole project and the file that runs. */
+function render(overrides: Record<string, unknown> = {}) {
+  return {
+    ...envelope,
+    type: "render",
+    runId: "r1",
+    artifactId: "a1",
+    language: "tsx",
+    entry: "src/App.tsx",
+    files: { "src/App.tsx": "app", "src/styles.css": "css" },
+    ...overrides,
+  };
+}
+
 describe("asHostMessage", () => {
-  it("reads a render with its artifact", () => {
+  it("reads a render with its artifact and its whole project", () => {
+    expect(asHostMessage(render())).toEqual({
+      channel: ARTIFACT_CHANNEL,
+      type: "render",
+      runId: "r1",
+      artifactId: "a1",
+      language: "tsx",
+      entry: "src/App.tsx",
+      files: { "src/App.tsx": "app", "src/styles.css": "css" },
+    });
+  });
+
+  it("refuses a render without an artifact to group its storage under", () => {
+    expect(asHostMessage(render({ artifactId: undefined }))).toBeNull();
+  });
+
+  /**
+   * The gate a project crosses on its way into the sandbox origin (§21). A path
+   * that would leave the project must not reach the bundler.
+   */
+  it("refuses a path that escapes the project", () => {
+    expect(
+      asHostMessage(render({ files: { "../secrets.ts": "x" }, entry: "../secrets.ts" })),
+    ).toBeNull();
+  });
+
+  it("refuses a project over the caps", () => {
+    const many = Object.fromEntries(Array.from({ length: 65 }, (_, at) => [`f${at}.ts`, "x"]));
+
+    expect(asHostMessage(render({ files: { ...many, "src/App.tsx": "app" } }))).toBeNull();
+  });
+
+  it("refuses an entry the project does not hold", () => {
+    expect(asHostMessage(render({ entry: "src/Missing.tsx" }))).toBeNull();
+  });
+
+  /** A `.css` entry declared `tsx` would be handed to the compiler as a component. */
+  it("refuses an entry whose extension is not the language claimed", () => {
+    expect(asHostMessage(render({ entry: "src/styles.css" }))).toBeNull();
+  });
+
+  it("refuses the single-source shape the protocol used to take", () => {
     expect(
       asHostMessage({
         ...envelope,
@@ -31,19 +86,6 @@ describe("asHostMessage", () => {
         language: "html",
         source: "<p>hi</p>",
       }),
-    ).toEqual({
-      channel: ARTIFACT_CHANNEL,
-      type: "render",
-      runId: "r1",
-      artifactId: "a1",
-      language: "html",
-      source: "<p>hi</p>",
-    });
-  });
-
-  it("refuses a render without an artifact to group its storage under", () => {
-    expect(
-      asHostMessage({ ...envelope, type: "render", runId: "r1", language: "html", source: "x" }),
     ).toBeNull();
   });
 

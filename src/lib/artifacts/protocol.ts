@@ -1,4 +1,5 @@
 import { isSandboxAssetPath } from "./assets";
+import { asProjectFiles, type ProjectFiles, runnableLanguageOf } from "./project";
 import { type ArtifactLanguage, isArtifactLanguage } from "./types";
 
 /**
@@ -34,8 +35,12 @@ export type HostMessage =
        * Opaque to the sandbox: it is a grouping key and never a lookup.
        */
       readonly artifactId: string;
+      /** The language of the entry file, which decides the pipeline (§13). */
       readonly language: ArtifactLanguage;
-      readonly source: string;
+      /** Which file runs. Always a key of `files`. */
+      readonly entry: string;
+      /** The whole project: path → source (§13). */
+      readonly files: ProjectFiles;
     }
   | { readonly channel: typeof ARTIFACT_CHANNEL; readonly type: "clear" }
   /**
@@ -277,25 +282,38 @@ export function asHostMessage(value: unknown): HostMessage | null {
     return null;
   }
 
-  if (
-    record.type === "render" &&
-    typeof record.runId === "string" &&
-    typeof record.artifactId === "string" &&
-    typeof record.source === "string" &&
-    typeof record.language === "string" &&
-    isArtifactLanguage(record.language)
-  ) {
-    return {
-      channel: ARTIFACT_CHANNEL,
-      type: "render",
-      runId: record.runId,
-      artifactId: record.artifactId,
-      language: record.language,
-      source: record.source,
-    };
-  }
+  if (record.type === "render") return asRender(record);
 
   return null;
+}
+
+/**
+ * A render request, validated as a project (§13, §21).
+ *
+ * The one gate a project crosses on its way into the sandbox origin. Every path
+ * goes through `asProjectFiles`, so a path that would escape the project is
+ * refused here rather than reaching the bundler; the entry must be one of the
+ * files, and its extension must be the language claimed — a `.css` entry
+ * declared `tsx` would be handed to the compiler as a component.
+ */
+function asRender(record: Record<string, unknown>): HostMessage | null {
+  if (typeof record.runId !== "string" || typeof record.artifactId !== "string") return null;
+  if (typeof record.language !== "string" || !isArtifactLanguage(record.language)) return null;
+  if (typeof record.entry !== "string") return null;
+
+  const files = asProjectFiles(record.files);
+  if (!files || !(record.entry in files)) return null;
+  if (runnableLanguageOf(record.entry) !== record.language) return null;
+
+  return {
+    channel: ARTIFACT_CHANNEL,
+    type: "render",
+    runId: record.runId,
+    artifactId: record.artifactId,
+    language: record.language,
+    entry: record.entry,
+    files,
+  };
 }
 
 export function asSandboxMessage(value: unknown): SandboxMessage | null {

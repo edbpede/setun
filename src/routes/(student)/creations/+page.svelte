@@ -92,7 +92,8 @@ const empty = $derived(data.artifacts.length === 0 && data.images.length === 0);
                   sandboxOrigin={data.sandboxOrigin}
                   artifactId={selected.id}
                   language={effectiveLanguage(selected, selected.latest)}
-                  source={selected.latest.source}
+                  entry={selected.latest.entry}
+                  files={selected.latest.files}
                 />
               </div>
             {/key}

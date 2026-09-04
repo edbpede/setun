@@ -33,7 +33,7 @@ export const load: PageServerLoad = ({ locals }) => {
 
   return {
     artifacts: attachSnapshots(db, listStudentArtifacts(db, student.id)).map(
-      ({ artifact, latest, source }) => ({
+      ({ artifact, latest, source, snapshot }) => ({
         id: artifact.id,
         language: artifact.language,
         title: artifact.title,
@@ -42,6 +42,8 @@ export const load: PageServerLoad = ({ locals }) => {
           id: latest.id,
           revision: latest.revision,
           source,
+          entry: snapshot.entry,
+          files: snapshot.files,
           // Null reads as "whatever the artifact says"; the gallery frame runs it
           // through `effectiveLanguage` rather than the row's current tag (§13).
           language: latest.language,

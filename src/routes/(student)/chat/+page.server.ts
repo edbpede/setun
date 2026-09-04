@@ -179,7 +179,7 @@ export const load: PageServerLoad = ({ locals, url }) => {
       ? attachSnapshots(
           db,
           listConversationArtifacts(db, { conversationId: active.id, studentId: student.id }),
-        ).map(({ artifact, latest, source }) => ({
+        ).map(({ artifact, latest, source, snapshot }) => ({
           id: artifact.id,
           language: artifact.language,
           title: artifact.title,
@@ -188,6 +188,8 @@ export const load: PageServerLoad = ({ locals, url }) => {
             id: latest.id,
             revision: latest.revision,
             source,
+            entry: snapshot.entry,
+            files: snapshot.files,
             language: latest.language,
             authoredBy: latest.authoredBy,
             buildStatus: latest.buildStatus,

@@ -21,6 +21,9 @@ export interface ArtifactVersionView {
   readonly id: string;
   readonly revision: number;
   readonly source: string;
+  /** Which file runs, and the whole project it belongs to (§13). */
+  readonly entry: string;
+  readonly files: Readonly<Record<string, string>>;
   /** The tag it was written under; null for "whatever the artifact says" (§13). */
   readonly language?: ArtifactLanguage | null;
   readonly authoredBy: VersionAuthor;

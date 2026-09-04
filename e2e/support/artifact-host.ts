@@ -1,4 +1,6 @@
 import type { FrameLocator, Page } from "@playwright/test";
+import { defaultPathFor } from "../../src/lib/artifacts/project";
+import type { ArtifactLanguage } from "../../src/lib/artifacts/types";
 import { SANDBOX_ORIGIN } from "../../playwright.config";
 
 /**
@@ -26,12 +28,36 @@ declare global {
   }
 }
 
-export async function mountArtifact(
-  page: Page,
-  input: { language: string; source: string; artifactId?: string },
-): Promise<FrameLocator> {
+/**
+ * What the harness renders: a project, or the single source that stands for one.
+ *
+ * The escape suite says `{ language, source }` and means "one file", and it is
+ * about the origin boundary rather than about file layout — so that shape is
+ * still accepted and expanded here rather than rewritten across every test.
+ */
+export interface RenderInput {
+  language: string;
+  source?: string;
+  entry?: string;
+  files?: Record<string, string>;
+  artifactId?: string;
+}
+
+function projectOf(input: RenderInput): { entry: string; files: Record<string, string> } {
+  if (input.files) {
+    const entry = input.entry ?? Object.keys(input.files)[0];
+    return { entry, files: input.files };
+  }
+
+  const entry = input.entry ?? defaultPathFor(input.language as ArtifactLanguage);
+  return { entry, files: { [entry]: input.source ?? "" } };
+}
+
+export async function mountArtifact(page: Page, input: RenderInput): Promise<FrameLocator> {
+  const project = projectOf(input);
+
   await page.evaluate(
-    async ({ origin, language, source, id, artifactId }) => {
+    async ({ origin, language, entry, files, id, artifactId }) => {
       document.getElementById(id)?.remove();
       window.__setunSandboxMessages = [];
 
@@ -97,7 +123,8 @@ export async function mountArtifact(
           runId: "e2e",
           artifactId,
           language,
-          source,
+          entry,
+          files,
         },
         "*",
       );
@@ -105,7 +132,8 @@ export async function mountArtifact(
     {
       origin: SANDBOX_ORIGIN,
       language: input.language,
-      source: input.source,
+      entry: project.entry,
+      files: project.files,
       id: HOST_FRAME_ID,
       artifactId: input.artifactId ?? "e2e-artifact",
     },
@@ -124,20 +152,23 @@ export async function mountArtifact(
  */
 export async function rerenderArtifact(
   page: Page,
-  input: { language: string; source: string; artifactId?: string; runId?: string },
+  input: RenderInput & { runId?: string },
 ): Promise<FrameLocator> {
+  const project = projectOf(input);
+
   await page.evaluate(
-    ({ id, language, source, artifactId, runId }) => {
+    ({ id, language, entry, files, artifactId, runId }) => {
       const frame = document.getElementById(id) as HTMLIFrameElement | null;
       frame?.contentWindow?.postMessage(
-        { channel: "setun-artifact", type: "render", runId, artifactId, language, source },
+        { channel: "setun-artifact", type: "render", runId, artifactId, language, entry, files },
         "*",
       );
     },
     {
       id: HOST_FRAME_ID,
       language: input.language,
-      source: input.source,
+      entry: project.entry,
+      files: project.files,
       artifactId: input.artifactId ?? "e2e-artifact",
       runId: input.runId ?? `e2e-${Math.random()}`,
     },

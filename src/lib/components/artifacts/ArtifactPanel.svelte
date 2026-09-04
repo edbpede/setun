@@ -84,6 +84,19 @@ function release(stamp: string): void {
 }
 
 const artifact = $derived(workspace.open);
+
+/**
+ * The project the frame runs.
+ *
+ * The workspace still tracks one committed source, so this is that source at the
+ * revision's own entry path together with the other files the revision holds —
+ * which is what makes a multi-file artifact render at all (§13).
+ */
+const runningEntry = $derived(artifact?.latest.entry ?? "index.html");
+const runningFiles = $derived({
+  ...(artifact?.latest.files ?? {}),
+  [runningEntry]: workspace.running ?? "",
+});
 const title = $derived(
   artifact?.title ?? (artifact ? m.artifact_untitled({ language: artifact.language }) : ""),
 );
@@ -403,7 +416,8 @@ $effect(() => {
             {sandboxOrigin}
             artifactId={artifact.id}
             language={workspace.runningLanguage ?? artifact.language}
-            source={workspace.running}
+            entry={runningEntry}
+            files={runningFiles}
             oncompiling={() => (workspace.status = "compiling")}
             onrunning={() => {
               workspace.status = "running";

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { artifactTitle, compiledDocument, type RuntimeSources, staticDocument } from "./document";
+import {
+  artifactTitle,
+  compiledDocument,
+  inlineStaticSiblings,
+  type RuntimeSources,
+  staticDocument,
+} from "./document";
 
 /**
  * The document an artifact runs in (plan 4.1, 4.3; PRD §13, §14, §22).
@@ -426,5 +432,165 @@ describe("artifactTitle", () => {
 
   it("returns null when the source names nothing", () => {
     expect(artifactTitle("<button>Klik</button>")).toBeNull();
+  });
+});
+
+/**
+ * A project reaching the frame (PRD §13, §21, §22).
+ *
+ * There is no server behind the frame, so a file is either inlined into the
+ * document or it does nothing at all.
+ */
+describe("compiledDocument — bundled stylesheets", () => {
+  it("injects the bundle's css after the reset and before the artifact mounts", () => {
+    const html = compiledDocument({
+      framework: "react",
+      module: "export default () => null;",
+      css: "button { color: teal }",
+      runtimes: RUNTIMES,
+      runId: "r1",
+    });
+
+    expect(html).toContain("<style>button { color: teal }</style>");
+    // After the reset, so a project's own rule wins over `margin:0`; before the
+    // body, so a component's injected styles still land last (§13).
+    expect(html.indexOf("html,body{margin:0}")).toBeLessThan(
+      html.indexOf("button { color: teal }"),
+    );
+    expect(html.indexOf("button { color: teal }")).toBeLessThan(html.indexOf("<body>"));
+  });
+
+  it("escapes a closing style tag inside the stylesheet (§21)", () => {
+    const html = compiledDocument({
+      framework: "react",
+      module: "x",
+      css: 'a::before { content: "</style><script>alert(1)</script>" }',
+      runtimes: RUNTIMES,
+      runId: "r1",
+    });
+
+    // The parser ends an element at the first matching end tag whatever the
+    // quoting around it, so the sequence is escaped rather than left to close.
+    expect(html).not.toContain("</style><script>alert(1)");
+    expect(html).toContain("\\3c /style");
+  });
+
+  it("adds no style element when the project imported no css", () => {
+    const html = compiledDocument({
+      framework: "react",
+      module: "x",
+      runtimes: RUNTIMES,
+      runId: "r1",
+    });
+
+    expect(html).toContain("html,body{margin:0}");
+    expect(html.match(/<style>/g)).toHaveLength(1);
+  });
+});
+
+describe("inlineStaticSiblings", () => {
+  const files = {
+    "index.html": "<p>hi</p>",
+    "styles.css": "body { color: teal }",
+    "main.js": "console.log(1)",
+  };
+
+  it("inlines a stylesheet the page links", () => {
+    const html = inlineStaticSiblings(
+      '<link rel="stylesheet" href="styles.css"><p>hi</p>',
+      "index.html",
+      files,
+    );
+
+    expect(html).toBe("<style>body { color: teal }</style><p>hi</p>");
+  });
+
+  it("inlines a script the page names, keeping the attributes the pupil wrote", () => {
+    const html = inlineStaticSiblings(
+      '<script type="module" src="main.js"></script>',
+      "index.html",
+      files,
+    );
+
+    expect(html).toBe('<script type="module">console.log(1)</script>');
+  });
+
+  it("resolves against the entry's own folder", () => {
+    const html = inlineStaticSiblings(
+      '<link rel="stylesheet" href="../styles.css">',
+      "src/page.html",
+      {
+        ...files,
+        "src/page.html": "x",
+      },
+    );
+
+    expect(html).toContain("body { color: teal }");
+  });
+
+  /** Somebody else's to resolve, and the frame's own policy is what refuses it. */
+  it("leaves an absolute or unknown reference exactly as written", () => {
+    const untouched = [
+      '<link rel="stylesheet" href="https://cdn.example/x.css">',
+      '<link rel="stylesheet" href="//cdn.example/x.css">',
+      '<link rel="stylesheet" href="mangler.css">',
+      '<script src="https://cdn.example/x.js"></script>',
+    ].join("");
+
+    expect(inlineStaticSiblings(untouched, "index.html", files)).toBe(untouched);
+  });
+
+  it("leaves a link that is not a stylesheet alone", () => {
+    const icon = '<link rel="icon" href="styles.css">';
+
+    expect(inlineStaticSiblings(icon, "index.html", files)).toBe(icon);
+  });
+
+  /** A reference inside a comment is still a reference to the parser's eye. */
+  it("does not pretend a commented-out reference is invisible", () => {
+    const html = inlineStaticSiblings(
+      '<!-- <link rel="stylesheet" href="styles.css"> -->',
+      "index.html",
+      files,
+    );
+
+    expect(html).toContain("<style>body { color: teal }</style>");
+  });
+
+  it("escapes a closing script tag inside an inlined script (§21)", () => {
+    const html = inlineStaticSiblings('<script src="main.js"></script>', "index.html", {
+      ...files,
+      "main.js": 'document.write("</script><img src=x onerror=alert(1)>")',
+    });
+
+    expect(html).not.toContain("</script><img");
+    expect(html).toContain("<\\/script>");
+  });
+});
+
+describe("staticDocument — a project's own files", () => {
+  it("inlines the entry's siblings so the page has its styles", () => {
+    const html = staticDocument({
+      language: "html",
+      source: '<link rel="stylesheet" href="styles.css"><p>hi</p>',
+      entry: "index.html",
+      files: { "index.html": "x", "styles.css": "body { color: teal }" },
+      runtimes: RUNTIMES,
+      runId: "r1",
+    });
+
+    expect(html).toContain("<style>body { color: teal }</style>");
+    expect(html).not.toContain('href="styles.css"');
+  });
+
+  it("leaves a single-file page untouched", () => {
+    const html = staticDocument({
+      language: "html",
+      source: '<link rel="stylesheet" href="styles.css">',
+      runtimes: RUNTIMES,
+      runId: "r1",
+    });
+
+    expect(html).toContain('href="styles.css"');
   });
 });
