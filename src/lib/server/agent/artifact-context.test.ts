@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from "bun:test";
+import { defaultPathFor } from "../../artifacts/project";
+import type { ArtifactLanguage } from "../../artifacts/types";
 import type { AppDatabase } from "../db/client";
-import { appendArtifactVersion, recordVersionBuild } from "../db/queries/artifacts";
+import { appendSnapshot, recordVersionBuild } from "../db/queries/artifacts";
 import { createConversation } from "../db/queries/conversations";
 import { appendMessage } from "../db/queries/messages";
 import type { Message, MessagePart } from "../db/schema";
@@ -13,6 +15,27 @@ import {
   formatCarriedSources,
 } from "./artifact-context";
 import { recordTurnArtifacts } from "./artifacts";
+
+/**
+ * Append a one-file revision, the way every caller did before projects.
+ *
+ * These suites are about continuity, ordering and elision rather than about
+ * file layout, so they keep saying "here is the source" and this puts it at the
+ * conventional path for its language.
+ */
+function appendSource(
+  db: AppDatabase,
+  input: {
+    artifactId: string;
+    messageId?: string | null;
+    source: string;
+    language?: ArtifactLanguage | null;
+    authoredBy: "model" | "student";
+  },
+) {
+  const entry = defaultPathFor(input.language ?? "html");
+  return appendSnapshot(db, { ...input, entry, files: { [entry]: input.source } });
+}
 
 /**
  * What the model is told about the artifacts it has written (PRD §13).
@@ -135,7 +158,7 @@ describe("buildArtifactContext", () => {
 
   it("names the pupil when the newest revision is theirs", () => {
     const [recorded] = assistantTurn("```html id=side\n<p>en</p>\n```");
-    appendArtifactVersion(db, {
+    appendSource(db, {
       artifactId: recorded.artifactId,
       source: "<p>min</p>",
       authoredBy: "student",
@@ -251,7 +274,7 @@ describe("elideSupersededArtifacts", () => {
 
   it("keeps a delivered student edit that is still the current source", () => {
     const [recorded] = assistantTurn("```html id=side\n<p>en</p>\n```");
-    const version = appendArtifactVersion(db, {
+    const version = appendSource(db, {
       artifactId: recorded.artifactId,
       source: "<p>min</p>",
       authoredBy: "student",
@@ -277,7 +300,7 @@ describe("elideSupersededArtifacts", () => {
 
   it("turns a re-carried edit into a placeholder once the model has rewritten it", () => {
     const [recorded] = assistantTurn("```html id=side\n<p>en</p>\n```");
-    const version = appendArtifactVersion(db, {
+    const version = appendSource(db, {
       artifactId: recorded.artifactId,
       source: "<p>min</p>",
       authoredBy: "student",
@@ -415,7 +438,7 @@ describe("carried sources", () => {
 
   it("counts the pupil's own edit part as holding the source", () => {
     const [recorded] = assistantTurn("```html id=side\n<p>en</p>\n```");
-    const version = appendArtifactVersion(db, {
+    const version = appendSource(db, {
       artifactId: recorded.artifactId,
       source: "<p>min</p>",
       authoredBy: "student",

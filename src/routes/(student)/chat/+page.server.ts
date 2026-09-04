@@ -8,7 +8,11 @@ import { getDb } from "$lib/server/boot";
 import { classroomAvailability } from "$lib/server/classroom/enforcement";
 import { resolveClassroomStatus } from "$lib/server/classroom/status";
 import { getConfig } from "$lib/server/config";
-import { listConversationArtifacts, versionsByMessage } from "$lib/server/db/queries/artifacts";
+import {
+  attachSnapshots,
+  listConversationArtifacts,
+  versionsByMessage,
+} from "$lib/server/db/queries/artifacts";
 import { listPendingAttachments } from "$lib/server/db/queries/attachments";
 import { listClassroomAliases } from "$lib/server/db/queries/classroom-aliases";
 import { getClassroom } from "$lib/server/db/queries/classrooms";
@@ -172,10 +176,10 @@ export const load: PageServerLoad = ({ locals, url }) => {
     // Artifacts this conversation produced, each with the revision on screen.
     // Creations outlive conversations, so the gallery reads them separately (§16).
     artifacts: active
-      ? listConversationArtifacts(db, {
-          conversationId: active.id,
-          studentId: student.id,
-        }).map(({ artifact, latest }) => ({
+      ? attachSnapshots(
+          db,
+          listConversationArtifacts(db, { conversationId: active.id, studentId: student.id }),
+        ).map(({ artifact, latest, source }) => ({
           id: artifact.id,
           language: artifact.language,
           title: artifact.title,
@@ -183,7 +187,7 @@ export const load: PageServerLoad = ({ locals, url }) => {
           latest: {
             id: latest.id,
             revision: latest.revision,
-            source: latest.source,
+            source,
             language: latest.language,
             authoredBy: latest.authoredBy,
             buildStatus: latest.buildStatus,

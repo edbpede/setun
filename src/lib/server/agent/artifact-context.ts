@@ -8,7 +8,7 @@ import {
 } from "../../artifacts/identity";
 import type { ArtifactLanguage, BuildStatus, VersionAuthor } from "../../artifacts/types";
 import type { AppDatabase } from "../db/client";
-import { listConversationVersions } from "../db/queries/artifacts";
+import { listConversationVersions, snapshotsOf } from "../db/queries/artifacts";
 import type { Message, MessagePart } from "../db/schema";
 
 /**
@@ -96,6 +96,19 @@ export function buildArtifactContext(
   },
 ): ArtifactContext {
   const rows = listConversationVersions(db, input);
+  /**
+   * The files of every revision, in one query (§13).
+   *
+   * A version is a project now, so its source is no longer a column on the row.
+   * Fetched together rather than per version: a lesson with a dozen creations
+   * would otherwise be a dozen round trips to assemble one prompt.
+   */
+  const snapshots = snapshotsOf(
+    db,
+    rows.map((row) => row.version.id),
+  );
+  const sourceOf = (version: (typeof rows)[number]["version"]) =>
+    snapshots.get(version.id)?.files[version.entryPath] ?? "";
 
   // Ordered by artifact and then revision, so the last row of each group is the
   // current one and one pass is enough.
@@ -104,7 +117,8 @@ export function buildArtifactContext(
 
   const index = new Map<string, ArtifactSourceRef[]>();
   for (const { artifact, version } of rows) {
-    const refs = index.get(version.source) ?? [];
+    const source = sourceOf(version);
+    const refs = index.get(source) ?? [];
     refs.push({
       artifactId: artifact.id,
       key: effectiveArtifactKey(artifact),
@@ -114,7 +128,7 @@ export function buildArtifactContext(
       revision: version.revision,
       isCurrent: latest.get(artifact.id)?.version.id === version.id,
     });
-    index.set(version.source, refs);
+    index.set(source, refs);
   }
 
   const state = [...latest.values()].map(({ artifact, version }) => ({
@@ -135,7 +149,7 @@ export function buildArtifactContext(
       language: effectiveLanguage(artifact, version),
       title: artifact.title,
       revision: version.revision,
-      source: version.source,
+      source: sourceOf(version),
     }));
 
   return { index, state, carried };

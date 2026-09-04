@@ -2,11 +2,12 @@ import { continuityDecision } from "../../artifacts/continuity";
 import { detectArtifacts } from "../../artifacts/detect";
 import { artifactTitle } from "../../artifacts/document";
 import { effectiveArtifactKey, effectiveLanguage } from "../../artifacts/identity";
+import { defaultPathFor } from "../../artifacts/project";
 import type { ArtifactLanguage } from "../../artifacts/types";
 import type { AppDatabase } from "../db/client";
 import {
   type ArtifactWithLatest,
-  appendArtifactVersion,
+  appendSnapshot,
   createArtifact,
   listConversationAnchors,
   listConversationArtifacts,
@@ -14,6 +15,7 @@ import {
   setArtifactKey,
   setArtifactLanguage,
   setArtifactTitle,
+  snapshotOf,
   undeliveredStudentEdits,
 } from "../db/queries/artifacts";
 import { getMessage } from "../db/queries/messages";
@@ -113,10 +115,11 @@ export function recordTurnArtifacts(
         title: detected.title ?? artifactTitle(detected.source),
       });
 
-      const version = appendArtifactVersion(db, {
+      const version = appendSnapshot(db, {
         artifactId: created.id,
         messageId: input.messageId,
-        source: detected.source,
+        entry: defaultPathFor(detected.language),
+        files: { [defaultPathFor(detected.language)]: detected.source },
         language: detected.language,
         authoredBy: "model",
       });
@@ -158,12 +161,15 @@ export function recordTurnArtifacts(
       key: detected.key ?? existing.artifact.key,
     });
 
+    const current = snapshotOf(db, existing.latest.id);
+
     // Both, for the same reason a commit point in the panel compares both: the
     // same text under a new tag is a different pipeline, and leaving it on the
     // old revision would tag the row `svelte` while its current version still
     // says `html` — which is the tag anything running it resolves through (§13).
     if (
-      existing.latest.source === detected.source &&
+      current?.files[existing.latest.entryPath] === detected.source &&
+      Object.keys(current.files).length === 1 &&
       effectiveLanguage(existing.artifact, existing.latest) === detected.language
     ) {
       recorded.push({
@@ -176,10 +182,11 @@ export function recordTurnArtifacts(
       continue;
     }
 
-    const version = appendArtifactVersion(db, {
+    const version = appendSnapshot(db, {
       artifactId: existing.artifact.id,
       messageId: input.messageId,
-      source: detected.source,
+      entry: defaultPathFor(detected.language),
+      files: { [defaultPathFor(detected.language)]: detected.source },
       language: detected.language,
       authoredBy: "model",
     });
@@ -207,13 +214,13 @@ export function pendingArtifactEditParts(
   db: AppDatabase,
   input: { conversationId: string; studentId: string },
 ): Extract<MessagePart, { type: "artifact-edit" }>[] {
-  return undeliveredStudentEdits(db, input).map(toEditPart);
+  return undeliveredStudentEdits(db, input).map((row) => toEditPart(db, row));
 }
 
-function toEditPart({
-  artifact,
-  latest,
-}: ArtifactWithLatest): Extract<MessagePart, { type: "artifact-edit" }> {
+function toEditPart(
+  db: AppDatabase,
+  { artifact, latest }: ArtifactWithLatest,
+): Extract<MessagePart, { type: "artifact-edit" }> {
   return {
     type: "artifact-edit",
     artifactId: artifact.id,
@@ -222,7 +229,7 @@ function toEditPart({
     // a component still carries the pupil's html edit as html (§13).
     language: effectiveLanguage(artifact, latest),
     title: artifact.title,
-    source: latest.source,
+    source: snapshotOf(db, latest.id)?.files[latest.entryPath] ?? "",
     // The id the model must reuse to change it — the same identity it writes on
     // its own blocks, so the carried source is something it can answer in kind.
     key: effectiveArtifactKey(artifact),
@@ -268,7 +275,7 @@ export function outgoingArtifactEditParts(
     ({ artifact, latest }) => named.has(artifact.id) && latest.authoredBy === "student",
   );
 
-  return [...pending, ...carried.map(toEditPart)];
+  return [...pending, ...carried.map((row) => toEditPart(db, row))];
 }
 
 /** Marks those edits as carried, so the following message does not repeat them (§13). */

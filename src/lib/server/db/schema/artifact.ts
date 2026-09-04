@@ -1,4 +1,11 @@
-import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import {
+  index,
+  integer,
+  primaryKey,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from "drizzle-orm/sqlite-core";
 import { ARTIFACT_LANGUAGES, BUILD_STATUSES, VERSION_AUTHORS } from "../../../artifacts/types";
 import { conversation } from "./conversation";
 import { createdAt, primaryId, updatedAt } from "./helpers";
@@ -81,7 +88,14 @@ export const artifactVersion = sqliteTable(
     messageId: text().references(() => message.id, { onDelete: "set null" }),
     /** 1-based and contiguous per artifact: the "ordered revisions" of §19. */
     revision: integer().notNull(),
-    source: text().notNull(),
+    /**
+     * Which of this revision's files is rendered or compiled (§13).
+     *
+     * On the version rather than on the artifact, because a project can move its
+     * entry — a page reworked as a component under the same id changes both tag
+     * and entry — and every older revision must still know what *it* ran.
+     */
+    entryPath: text().notNull(),
     /**
      * The tag this revision was written under; null for "whatever the artifact
      * says" (§13).
@@ -120,3 +134,58 @@ export const artifactVersion = sqliteTable(
 );
 
 export type ArtifactVersion = typeof artifactVersion.$inferSelect;
+
+/**
+ * One file's content, stored once however many revisions hold it (§13).
+ *
+ * Git's model in SQLite. A pupil who changes one line of one file of a
+ * five-file project used to store five whole files again; now the revision
+ * stores five paths, four of which point at blobs that already existed. That is
+ * what makes per-file history affordable at all: a project of a hundred
+ * kilobytes revised twenty times is a hundred kilobytes plus the diffs, not two
+ * megabytes.
+ *
+ * The hash is the identity, so writing a blob is idempotent and two artifacts
+ * that happen to share a stylesheet share the row.
+ */
+export const artifactBlob = sqliteTable("artifact_blob", {
+  /** sha256 hex of the content — or `legacy:<versionId>` for a migrated row. */
+  hash: text().primaryKey(),
+  content: text().notNull(),
+  /** UTF-8 length, so a size can be shown without reading the content. */
+  bytes: integer().notNull(),
+  createdAt: createdAt(),
+});
+
+export type ArtifactBlob = typeof artifactBlob.$inferSelect;
+
+/**
+ * Which files one revision holds, and where each of them lives (§13).
+ *
+ * The revision is a snapshot: every file of the project is listed, not only the
+ * ones that changed. A history entry has to be restorable on its own, and a
+ * chain of diffs that must be replayed is a history one broken link can lose.
+ *
+ * No cascade from the blob: a blob is shared, and deleting one because a
+ * revision went would take it from every other revision holding it. Orphans are
+ * swept when an artifact is deleted instead.
+ */
+export const artifactVersionFile = sqliteTable(
+  "artifact_version_file",
+  {
+    versionId: text()
+      .notNull()
+      .references(() => artifactVersion.id, { onDelete: "cascade" }),
+    path: text().notNull(),
+    blobHash: text()
+      .notNull()
+      .references(() => artifactBlob.hash),
+  },
+  (t) => [
+    primaryKey({ columns: [t.versionId, t.path] }),
+    // For the orphan sweep, which asks which blobs any revision still holds.
+    index("artifact_version_file_blob_idx").on(t.blobHash),
+  ],
+);
+
+export type ArtifactVersionFile = typeof artifactVersionFile.$inferSelect;

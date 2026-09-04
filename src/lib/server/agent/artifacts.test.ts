@@ -1,11 +1,14 @@
 import { beforeEach, describe, expect, it } from "bun:test";
+import { defaultPathFor } from "../../artifacts/project";
+import type { ArtifactLanguage } from "../../artifacts/types";
 import type { AppDatabase } from "../db/client";
 import {
-  appendArtifactVersion,
+  appendSnapshot,
   getOwnedArtifact,
   listArtifactVersions,
   listConversationArtifacts,
   listStudentArtifacts,
+  snapshotOf,
 } from "../db/queries/artifacts";
 import { createConversation } from "../db/queries/conversations";
 import { appendMessage, appendSibling, getActivePath } from "../db/queries/messages";
@@ -18,6 +21,32 @@ import {
   recordTurnArtifacts,
 } from "./artifacts";
 import { assembleContext } from "./loop";
+
+/**
+ * Append a one-file revision, the way every caller did before projects.
+ *
+ * These suites are about continuity, ordering and elision rather than about
+ * file layout, so they keep saying "here is the source" and this puts it at the
+ * conventional path for its language.
+ */
+/** The entry file of one revision, which is what these suites mean by "source". */
+function sourceOf(version: { id: string; entryPath: string }): string {
+  return snapshotOf(db, version.id)?.files[version.entryPath] ?? "";
+}
+
+function appendSource(
+  db: AppDatabase,
+  input: {
+    artifactId: string;
+    messageId?: string | null;
+    source: string;
+    language?: ArtifactLanguage | null;
+    authoredBy: "model" | "student";
+  },
+) {
+  const entry = defaultPathFor(input.language ?? "html");
+  return appendSnapshot(db, { ...input, entry, files: { [entry]: input.source } });
+}
 
 /**
  * Artifacts recorded from a turn, and the student's edit travelling back
@@ -128,7 +157,7 @@ describe("recordTurnArtifacts", () => {
     // revision of that row, and a version that never landed would leave every
     // assertion above true and the pupil's page unchanged.
     const versions = listArtifactVersions(db, page[0].artifactId);
-    expect(versions.map((version) => version.source)).toEqual(["<p>en</p>", "<p>en igen</p>"]);
+    expect(versions.map((version) => sourceOf(version))).toEqual(["<p>en</p>", "<p>en igen</p>"]);
     expect(versions.at(-1)?.id).toBe(rewritten[0].versionId);
     expect(rewritten[0].unchanged).toBe(false);
   });
@@ -198,7 +227,7 @@ describe("recordTurnArtifacts", () => {
     assistantTurn("```html\n<p>tre</p>\n```");
 
     const [{ artifact }] = listStudentArtifacts(db, fixtures.student.id);
-    expect(listArtifactVersions(db, artifact.id).map((v) => v.source)).toEqual([
+    expect(listArtifactVersions(db, artifact.id).map((v) => sourceOf(v))).toEqual([
       "<p>en</p>",
       "<p>to</p>",
       "<p>tre</p>",
@@ -215,7 +244,7 @@ describe("the student's edit travelling back to the model", () => {
       pendingArtifactEditParts(db, { conversationId, studentId: fixtures.student.id }),
     ).toEqual([]);
 
-    appendArtifactVersion(db, {
+    appendSource(db, {
       artifactId: recorded.artifactId,
       source: "<p>min rettelse</p>",
       authoredBy: "student",
@@ -243,7 +272,7 @@ describe("the student's edit travelling back to the model", () => {
   it("carries a further edit made after the first was delivered", () => {
     const [recorded] = assistantTurn("```html\n<p>en</p>\n```");
 
-    appendArtifactVersion(db, {
+    appendSource(db, {
       artifactId: recorded.artifactId,
       source: "<p>første</p>",
       authoredBy: "student",
@@ -253,7 +282,7 @@ describe("the student's edit travelling back to the model", () => {
       pendingArtifactEditParts(db, { conversationId, studentId: fixtures.student.id }),
     );
 
-    appendArtifactVersion(db, {
+    appendSource(db, {
       artifactId: recorded.artifactId,
       source: "<p>anden</p>",
       authoredBy: "student",
@@ -292,7 +321,7 @@ describe("the student's edit travelling back to the model", () => {
 
   it("carries the artifact's id, so the model can answer with a complete file", () => {
     const [recorded] = assistantTurn('```html id=side title="Kort"\n<p>en</p>\n```');
-    appendArtifactVersion(db, {
+    appendSource(db, {
       artifactId: recorded.artifactId,
       source: "<p>min rettelse</p>",
       authoredBy: "student",
@@ -365,7 +394,7 @@ describe("the student's edit travelling back to the model", () => {
 
   it("is scoped to its owner: another student's edit never travels", () => {
     const [recorded] = assistantTurn("```html\n<p>en</p>\n```");
-    appendArtifactVersion(db, {
+    appendSource(db, {
       artifactId: recorded.artifactId,
       source: "<p>min rettelse</p>",
       authoredBy: "student",
@@ -389,7 +418,7 @@ describe("an edited prompt re-carrying what it replaces", () => {
   /** The state after a message carrying one student edit has been sent. */
   function sentWithEdit() {
     const [recorded] = assistantTurn("```html\n<p>en</p>\n```");
-    appendArtifactVersion(db, {
+    appendSource(db, {
       artifactId: recorded.artifactId,
       source: "<p>min rettelse</p>",
       authoredBy: "student",
@@ -443,7 +472,7 @@ describe("an edited prompt re-carrying what it replaces", () => {
   it("prefers a newer revision over the one the replaced prompt held", () => {
     const { recorded, prompt } = sentWithEdit();
 
-    appendArtifactVersion(db, {
+    appendSource(db, {
       artifactId: recorded.artifactId,
       source: "<p>endnu en rettelse</p>",
       authoredBy: "student",
@@ -463,7 +492,7 @@ describe("an edited prompt re-carrying what it replaces", () => {
     const { recorded, prompt } = sentWithEdit();
 
     // A second revision, sent and stamped on the branch this retry abandons.
-    appendArtifactVersion(db, {
+    appendSource(db, {
       artifactId: recorded.artifactId,
       source: "<p>anden rettelse</p>",
       authoredBy: "student",
@@ -486,7 +515,7 @@ describe("an edited prompt re-carrying what it replaces", () => {
   it("carries nothing once the model has written the newer revision", () => {
     const { recorded, prompt } = sentWithEdit();
 
-    appendArtifactVersion(db, {
+    appendSource(db, {
       artifactId: recorded.artifactId,
       source: "<p>modellens svar</p>",
       authoredBy: "model",
@@ -539,7 +568,7 @@ describe("the language a version was written under", () => {
 
   it("carries a pupil's edit under the tag their revision holds", () => {
     const [recorded] = assistantTurn("```html id=side\n<p>en</p>\n```");
-    appendArtifactVersion(db, {
+    appendSource(db, {
       artifactId: recorded.artifactId,
       source: "<p>min</p>",
       language: "html",
@@ -547,7 +576,7 @@ describe("the language a version was written under", () => {
     });
     // The model rewrites it as a component; the pupil's html edit is still html.
     assistantTurn("```svelte id=side\n<p>tre</p>\n```");
-    appendArtifactVersion(db, {
+    appendSource(db, {
       artifactId: recorded.artifactId,
       source: "<p>min igen</p>",
       language: "html",
