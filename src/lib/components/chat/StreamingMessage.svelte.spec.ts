@@ -119,6 +119,48 @@ describe("StreamingMessage", () => {
     await expect.element(page.getByText(m.chat_notice_interrupted())).toBeVisible();
   });
 
+  it("names the allowance that ran out mid-answer", async () => {
+    const turn = new StreamingTurn();
+    turn.begin("turn-1");
+    render(StreamingMessage, { turn });
+
+    turn.apply({ type: "text-delta", text: "halvvejs" }, 0);
+    turn.apply({ type: "done", reason: "student-allowance-exhausted" }, 1);
+
+    await expect.element(page.getByText(m.chat_notice_student_allowance_exhausted())).toBeVisible();
+    await expect.element(page.getByText("halvvejs")).toBeVisible();
+  });
+
+  it("names the class's cap when that is what ran out", async () => {
+    const turn = new StreamingTurn();
+    turn.begin("turn-1");
+    render(StreamingMessage, { turn });
+
+    turn.apply({ type: "done", reason: "classroom-cap-exhausted" }, 0);
+
+    await expect.element(page.getByText(m.chat_notice_classroom_cap_exhausted())).toBeVisible();
+  });
+
+  it("tells the student when the model hit its own length limit", async () => {
+    const turn = new StreamingTurn();
+    turn.begin("turn-1");
+    render(StreamingMessage, { turn });
+
+    turn.apply({ type: "done", reason: "truncated" }, 0);
+
+    await expect.element(page.getByText(m.chat_notice_truncated())).toBeVisible();
+  });
+
+  it("tells the student when a checkpoint went unanswered", async () => {
+    const turn = new StreamingTurn();
+    turn.begin("turn-1");
+    render(StreamingMessage, { turn });
+
+    turn.apply({ type: "done", reason: "budget" }, 0);
+
+    await expect.element(page.getByText(m.chat_notice_budget())).toBeVisible();
+  });
+
   it("shows a friendly notice on gateway failure, never a raw error", async () => {
     const turn = new StreamingTurn();
     turn.begin("turn-1");

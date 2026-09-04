@@ -99,75 +99,98 @@ const field = "h-9 rounded-md border border-input bg-background px-3 text-sm tex
     </button>
   </form>
 
-  <form
-    method="POST"
-    action="?/saveBudgets"
-    use:enhance
-    class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
-  >
-    <label class="flex flex-col gap-1">
-      <span class="text-xs text-muted-foreground">{m.educator_per_turn_steps_label()}</span>
-      <input name="perTurnStepCap" type="number" bind:value={$form.perTurnStepCap} class={field} />
-      <FieldError message={$errors.perTurnStepCap} />
-    </label>
+  <form method="POST" action="?/saveBudgets" use:enhance class="flex flex-col gap-4">
+    <!--
+      The two layers say different things, so they are two fieldsets rather than
+      one grid of five numbers. The first three pause and ask; the last two are
+      firm. A teacher who cannot tell them apart cannot set either well (§10).
+    -->
+    <fieldset class="flex flex-col gap-2">
+      <legend class="text-xs font-medium text-foreground">
+        {m.educator_budget_checkpoints_title()}
+      </legend>
+      <p class="text-xs text-muted-foreground">{m.educator_budget_checkpoints_help()}</p>
 
-    <label class="flex flex-col gap-1">
-      <span class="text-xs text-muted-foreground">{m.educator_per_turn_seconds_label()}</span>
-      <input
-        name="perTurnWallClockSeconds"
-        type="number"
-        bind:value={$form.perTurnWallClockSeconds}
-        class={field}
-      />
-      <FieldError message={$errors.perTurnWallClockSeconds} />
-    </label>
+      <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <label class="flex flex-col gap-1">
+          <span class="text-xs text-muted-foreground">{m.educator_per_turn_steps_label()}</span>
+          <input
+            name="perTurnStepCap"
+            type="number"
+            bind:value={$form.perTurnStepCap}
+            class={field}
+          />
+          <FieldError message={$errors.perTurnStepCap} />
+        </label>
 
-    <label class="flex flex-col gap-1">
-      <span class="text-xs text-muted-foreground">{m.educator_per_turn_tokens_label()}</span>
-      <input
-        name="perTurnTokenCap"
-        type="number"
-        bind:value={$form.perTurnTokenCap}
-        class={field}
-      />
-      <FieldError message={$errors.perTurnTokenCap} />
-    </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-xs text-muted-foreground">{m.educator_per_turn_seconds_label()}</span>
+          <input
+            name="perTurnWallClockSeconds"
+            type="number"
+            bind:value={$form.perTurnWallClockSeconds}
+            class={field}
+          />
+          <FieldError message={$errors.perTurnWallClockSeconds} />
+        </label>
 
-    <label class="flex flex-col gap-1">
-      <span class="text-xs text-muted-foreground">{m.educator_student_daily_label()}</span>
-      <input
-        name="perStudentDailyTokens"
-        type="number"
-        bind:value={$form.perStudentDailyTokens}
-        class={field}
-      />
-      <FieldError message={$errors.perStudentDailyTokens} />
-    </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-xs text-muted-foreground">{m.educator_per_turn_tokens_label()}</span>
+          <input
+            name="perTurnTokenCap"
+            type="number"
+            bind:value={$form.perTurnTokenCap}
+            class={field}
+          />
+          <FieldError message={$errors.perTurnTokenCap} />
+        </label>
+      </div>
+    </fieldset>
 
-    <label class="flex flex-col gap-1">
-      <span class="text-xs text-muted-foreground">{m.educator_classroom_daily_label()}</span>
-      <input
-        name="perClassroomDailyTokens"
-        type="number"
-        bind:value={$form.perClassroomDailyTokens}
-        class={field}
-      />
-      <FieldError message={$errors.perClassroomDailyTokens} />
-    </label>
+    <fieldset class="flex flex-col gap-2">
+      <legend class="text-xs font-medium text-foreground">
+        {m.educator_budget_daily_title()}
+      </legend>
+      <p class="text-xs text-muted-foreground">{m.educator_budget_daily_help()}</p>
 
-    <label class="flex flex-col gap-1">
-      <span class="text-xs text-muted-foreground">{m.educator_exchange_rate_label()}</span>
-      <input
-        name="costExchangeRate"
-        type="number"
-        step="0.01"
-        bind:value={$form.costExchangeRate}
-        class={field}
-      />
-      <FieldError message={$errors.costExchangeRate} />
-    </label>
+      <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <label class="flex flex-col gap-1">
+          <span class="text-xs text-muted-foreground">{m.educator_student_daily_label()}</span>
+          <input
+            name="perStudentDailyTokens"
+            type="number"
+            bind:value={$form.perStudentDailyTokens}
+            class={field}
+          />
+          <FieldError message={$errors.perStudentDailyTokens} />
+        </label>
 
-    <div class="sm:col-span-2 lg:col-span-3">
+        <label class="flex flex-col gap-1">
+          <span class="text-xs text-muted-foreground">{m.educator_classroom_daily_label()}</span>
+          <input
+            name="perClassroomDailyTokens"
+            type="number"
+            bind:value={$form.perClassroomDailyTokens}
+            class={field}
+          />
+          <FieldError message={$errors.perClassroomDailyTokens} />
+        </label>
+
+        <label class="flex flex-col gap-1">
+          <span class="text-xs text-muted-foreground">{m.educator_exchange_rate_label()}</span>
+          <input
+            name="costExchangeRate"
+            type="number"
+            step="0.01"
+            bind:value={$form.costExchangeRate}
+            class={field}
+          />
+          <FieldError message={$errors.costExchangeRate} />
+        </label>
+      </div>
+    </fieldset>
+
+    <div>
       <button
         type="submit"
         disabled={$submitting}

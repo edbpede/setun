@@ -1,5 +1,5 @@
 import type { MessagePart, TurnNotice as PersistedTurnNotice } from "$lib/server/db/schema";
-import type { ElicitationFieldSpec, GatewayEvent } from "$lib/server/gateway/events";
+import type { ContinueCause, ElicitationFieldSpec, GatewayEvent } from "$lib/server/gateway/events";
 
 /**
  * The in-flight turn, client side (PRD §10, §11).
@@ -46,6 +46,31 @@ export interface PendingElicitation {
   readonly fields: readonly ElicitationFieldSpec[];
 }
 
+/**
+ * The day's allowance is 70 % spent, shown while the answer keeps arriving (§10).
+ *
+ * `acknowledged` is set by the pupil pressing "Keep going", which answers the
+ * checkpoint early so the boundary does not stop to ask again.
+ */
+export interface BudgetWarning {
+  readonly requestId: string;
+  readonly fraction: number;
+  readonly usedTokens: number;
+  readonly limitTokens: number;
+  readonly acknowledged: boolean;
+}
+
+/** A checkpoint waiting on "keep going" or "stop here" (§10). */
+export interface PendingContinue {
+  readonly requestId: string;
+  readonly cause: ContinueCause;
+  readonly steps: number;
+  readonly tokens: number;
+  readonly elapsedMs: number;
+  readonly usedTokens: number;
+  readonly limitTokens: number;
+}
+
 export class StreamingTurn {
   /** The turn so far, in the order it happened. Plain text while streaming (§20). */
   parts = $state<MessagePart[]>([]);
@@ -56,6 +81,13 @@ export class StreamingTurn {
   /** At most one question is open at a time: the loop asks and then waits (§11). */
   permission = $state<PendingPermission | null>(null);
   elicitation = $state<PendingElicitation | null>(null);
+  /**
+   * Kept across `clear()` on purpose: the banner is about the pupil's day, not
+   * about this turn, and it should still be there once the streaming message has
+   * been replaced by the persisted one. Its buttons only appear while streaming.
+   */
+  budgetWarning = $state<BudgetWarning | null>(null);
+  continuePrompt = $state<PendingContinue | null>(null);
   #streaming = $state(false);
 
   get streaming(): boolean {
@@ -76,7 +108,12 @@ export class StreamingTurn {
 
   /** Whether anything is waiting on the student right now. */
   get waiting(): boolean {
-    return this.permission !== null || this.elicitation !== null;
+    return this.permission !== null || this.elicitation !== null || this.continuePrompt !== null;
+  }
+
+  /** The pupil pressed "Keep going" on the banner; the answer went to the server. */
+  acknowledgeWarning(): void {
+    if (this.budgetWarning) this.budgetWarning = { ...this.budgetWarning, acknowledged: true };
   }
 
   begin(turnId: string): void {
@@ -86,6 +123,8 @@ export class StreamingTurn {
     this.notice = null;
     this.permission = null;
     this.elicitation = null;
+    this.budgetWarning = null;
+    this.continuePrompt = null;
     this.#streaming = true;
   }
 
@@ -106,6 +145,11 @@ export class StreamingTurn {
   apply(event: GatewayEvent, seq: number): void {
     if (seq <= this.lastSeq) return;
     this.lastSeq = seq;
+
+    // A checkpoint is answered or superseded by the very next event: anything
+    // else arriving means the loop moved on, and a prompt still on screen would
+    // be answering a question nobody is waiting for.
+    if (event.type !== "continue-request") this.continuePrompt = null;
 
     switch (event.type) {
       case "text-delta":
@@ -183,6 +227,28 @@ export class StreamingTurn {
         break;
       }
 
+      case "budget-warning":
+        this.budgetWarning = {
+          requestId: event.requestId,
+          fraction: event.fraction,
+          usedTokens: event.usedTokens,
+          limitTokens: event.limitTokens,
+          acknowledged: false,
+        };
+        break;
+
+      case "continue-request":
+        this.continuePrompt = {
+          requestId: event.requestId,
+          cause: event.cause,
+          steps: event.turn.steps,
+          tokens: event.turn.tokens,
+          elapsedMs: event.turn.elapsedMs,
+          usedTokens: event.daily.usedTokens,
+          limitTokens: event.daily.limitTokens,
+        };
+        break;
+
       case "image-generated":
         this.parts = [
           ...this.parts,
@@ -198,6 +264,7 @@ export class StreamingTurn {
         this.#streaming = false;
         this.permission = null;
         this.elicitation = null;
+        this.continuePrompt = null;
         // `stop` is the model reaching its own end and announces nothing. Every
         // other reason cut the answer short, including a per-turn cap, which
         // stops at a clean boundary and keeps the partial answer on screen — a
@@ -215,6 +282,7 @@ export class StreamingTurn {
     this.#streaming = false;
     this.permission = null;
     this.elicitation = null;
+    this.continuePrompt = null;
   }
 
   clear(): void {
@@ -224,6 +292,9 @@ export class StreamingTurn {
     this.notice = null;
     this.permission = null;
     this.elicitation = null;
+    this.continuePrompt = null;
+    // The banner is deliberately not cleared: it is about the day's allowance,
+    // and a pupil whose turn has just been persisted should still see it.
     this.#streaming = false;
   }
 

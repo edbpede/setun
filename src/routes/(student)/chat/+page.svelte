@@ -8,8 +8,10 @@ import type { BuildStatus } from "$lib/artifacts/types";
 import { readEventStream } from "$lib/chat/sse-client";
 import { fitVisualViewport } from "$lib/chat/viewport";
 import ArtifactPanel from "$lib/components/artifacts/ArtifactPanel.svelte";
+import BudgetWarning from "$lib/components/chat/BudgetWarning.svelte";
 import ChatHeader from "$lib/components/chat/ChatHeader.svelte";
 import Composer from "$lib/components/chat/Composer.svelte";
+import ContinuePrompt from "$lib/components/chat/ContinuePrompt.svelte";
 import ConversationDrawer from "$lib/components/chat/ConversationDrawer.svelte";
 import ConversationStarters from "$lib/components/chat/ConversationStarters.svelte";
 import ElicitationForm from "$lib/components/chat/ElicitationForm.svelte";
@@ -553,6 +555,20 @@ function setStage(stage: WorkspaceStage): void {
   artifacts.setStage(stage);
 }
 
+/**
+ * "Keep going" on the warning banner (§10).
+ *
+ * Answers the checkpoint before the loop reaches it, so the turn runs on rather
+ * than pausing at the next boundary to ask what the pupil has already said.
+ */
+async function keepGoing(): Promise<void> {
+  const warning = conversation.turn.budgetWarning;
+  if (!warning) return;
+
+  conversation.turn.acknowledgeWarning();
+  await respond({ requestId: warning.requestId, kind: "continue", proceed: true });
+}
+
 async function abort(): Promise<void> {
   const turnId = conversation.turn.turnId;
 
@@ -716,6 +732,33 @@ async function abort(): Promise<void> {
                     })}
                 />
               {/key}
+            {/if}
+
+            {#if conversation.turn.continuePrompt}
+              {#key conversation.turn.continuePrompt.requestId}
+                <ContinuePrompt
+                  prompt={conversation.turn.continuePrompt}
+                  onrespond={(proceed) =>
+                    respond({
+                      requestId: conversation.turn.continuePrompt?.requestId,
+                      kind: "continue",
+                      proceed,
+                    })}
+                />
+              {/key}
+            {/if}
+
+            {#if conversation.turn.budgetWarning}
+              <!--
+                Shown while the answer keeps arriving: the allowance is the
+                pupil's day, and a response in flight is never cut for it (§10).
+              -->
+              <BudgetWarning
+                warning={conversation.turn.budgetWarning}
+                streaming={conversation.turn.streaming}
+                onkeepgoing={keepGoing}
+                onstop={abort}
+              />
             {/if}
 
             {#if generating}
