@@ -22,7 +22,8 @@ export interface FencedBlock {
   readonly endLine: number;
   /**
    * `key=value` pairs written after the language, lowercased keys, in either
-   * quote style or bare (§13). CommonMark says nothing about the info string
+   * quote style or bare, plus bare flags with an empty value (§13). CommonMark
+   * says nothing about the info string
    * past the language, and neither `marked` nor `hasOpenFence` reads it, so this
    * is Setun's own use of space the renderer already ignores.
    *
@@ -33,7 +34,15 @@ export interface FencedBlock {
 
 const OPENING = /^ {0,3}(`{3,}|~{3,})[ \t]*(.*)$/;
 
-const ATTRIBUTE = /([A-Za-z_][\w-]*)=(?:"([^"]*)"|'([^']*)'|(\S+))/g;
+/**
+ * `key=value`, or a bare flag standing on its own.
+ *
+ * The flag form is what `delete` and `entry` are: `\`\`\`css id=side path=old.css
+ * delete` reads better than `delete=true`, and it is the shape a model writes
+ * unprompted. A bare word becomes an attribute with an empty value, so a caller
+ * asks `"delete" in attributes` rather than comparing against a truthy string.
+ */
+const ATTRIBUTE = /([A-Za-z_][\w-]*)(?:=(?:"([^"]*)"|'([^']*)'|(\S+)))?/g;
 
 /** The `key=value` pairs of an info string, past its first word. */
 function attributesOf(info: string): Record<string, string> {
@@ -45,6 +54,7 @@ function attributesOf(info: string): Record<string, string> {
   for (const match of info.matchAll(new RegExp(ATTRIBUTE.source, "g"))) {
     const key = match[1].toLowerCase();
     if (key in attributes) continue;
+    // Undefined for a bare flag, which is stored as present-with-no-value.
     attributes[key] = match[2] ?? match[3] ?? match[4] ?? "";
   }
 

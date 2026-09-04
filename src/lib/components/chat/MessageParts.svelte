@@ -109,10 +109,14 @@ const aligned = $derived.by(() => {
   return parts.every((part, index) => {
     if (part.type !== "text") return true;
 
-    return artifactSegments(part.text, firstIndexOf.offsets.get(index) ?? 0).every(
-      (segment) =>
-        segment.kind !== "artifact" || refs[segment.index]?.language === segment.artifact.language,
-    );
+    return artifactSegments(part.text, firstIndexOf.offsets.get(index) ?? 0).every((segment) => {
+      if (segment.kind !== "artifact") return true;
+      // A write whose first fence is a plain file — a revision that changed only
+      // the stylesheet — states no language of its own, so there is nothing to
+      // compare and the ref's own tag stands (§13).
+      if (segment.artifact.language === null) return refs[segment.index] !== undefined;
+      return refs[segment.index]?.language === segment.artifact.language;
+    });
   });
 });
 
@@ -171,11 +175,18 @@ const failed = $derived(
         {#if segment.kind === "text"}
           <p class="whitespace-pre-wrap break-words">{segment.text}</p>
         {:else if segment.kind === "artifact"}
-          <ArtifactStubCard
-            language={segment.artifact.language}
-            artifactKey={segment.artifact.key}
-            title={segment.artifact.title}
-          />
+          <!--
+            A write whose first fence is a plain file — a revision that touched
+            only the stylesheet — has no language to show a trit for, so it stays
+            in the prose rather than becoming a card that names nothing (§13).
+          -->
+          {#if segment.artifact.language}
+            <ArtifactStubCard
+              language={segment.artifact.language}
+              artifactKey={segment.artifact.key}
+              title={segment.artifact.title}
+            />
+          {/if}
         {:else}
           <ArtifactStubCard
             language={segment.language}

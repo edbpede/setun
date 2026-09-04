@@ -80,6 +80,7 @@ describe("assembleContext", () => {
           authoredBy: "model" as const,
           buildStatus: "failed" as const,
           buildMessage: "SyntaxError",
+          files: [],
         },
       ],
       carried: [],
@@ -109,6 +110,7 @@ describe("assembleContext", () => {
           authoredBy: "model" as const,
           buildStatus: null,
           buildMessage: null,
+          files: [],
         },
       ],
       carried: [
@@ -117,7 +119,9 @@ describe("assembleContext", () => {
           language: "html" as const,
           title: "Min side",
           revision: 2,
-          source: "<p>to</p>",
+          entry: "index.html",
+          allPaths: ["index.html"],
+          missing: { "index.html": "<p>to</p>" },
         },
       ],
     };
@@ -147,6 +151,7 @@ describe("assembleContext", () => {
         authoredBy: "model" as const,
         buildStatus: null,
         buildMessage: null,
+        files: [],
       },
     ];
 

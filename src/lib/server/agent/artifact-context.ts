@@ -1,11 +1,7 @@
-import { artifactLanguage } from "../../artifacts/detect";
-import { fencedBlocks, fenceFor } from "../../artifacts/fences";
-import {
-  effectiveArtifactKey,
-  effectiveLanguage,
-  fenceInfo,
-  normaliseArtifactKey,
-} from "../../artifacts/identity";
+import { detectArtifacts } from "../../artifacts/detect";
+import { fenceFor } from "../../artifacts/fences";
+import { effectiveArtifactKey, effectiveLanguage, fenceInfo } from "../../artifacts/identity";
+import { kindOf, lineCount } from "../../artifacts/project";
 import type { ArtifactLanguage, BuildStatus, VersionAuthor } from "../../artifacts/types";
 import type { AppDatabase } from "../db/client";
 import { listConversationVersions, snapshotsOf } from "../db/queries/artifacts";
@@ -43,13 +39,23 @@ import type { Message, MessagePart } from "../db/schema";
  * both elided against a copy that is not its own and left uncarried because of it.
  */
 
-/** Where one stored source sits: which artifact, which revision, and whether current. */
+/** Where one stored source sits: which artifact, which file, and whether current. */
 export interface ArtifactSourceRef {
   readonly artifactId: string;
   readonly key: string;
   readonly language: ArtifactLanguage;
+  /** Which file of the project this text is, so elision is per file (§13). */
+  readonly path: string;
   readonly revision: number;
+  /** True when this text is what the artifact's newest revision holds at `path`. */
   readonly isCurrent: boolean;
+}
+
+/** One file of an artifact, as the state note lists it. */
+export interface ArtifactStateFile {
+  readonly path: string;
+  readonly lines: number;
+  readonly isEntry: boolean;
 }
 
 /** One line of the note: an artifact as it stands now. */
@@ -61,15 +67,27 @@ export interface ArtifactStateLine {
   readonly authoredBy: VersionAuthor;
   readonly buildStatus: BuildStatus | null;
   readonly buildMessage: string | null;
+  /**
+   * Every file the artifact holds, with its length (§13).
+   *
+   * The line counts are the one lever besides the prompt against a model
+   * writing everything into one file: a model that can see `src/App.tsx (410
+   * lines)` beside `styles.css (12 lines)` has been told where the weight is.
+   */
+  readonly files: readonly ArtifactStateFile[];
 }
 
-/** An artifact whose current source no message on the path holds. */
+/** An artifact whose current files the path does not hold in full. */
 export interface CarriedSource {
   readonly key: string;
   readonly language: ArtifactLanguage;
   readonly title: string | null;
   readonly revision: number;
-  readonly source: string;
+  readonly entry: string;
+  /** Every file the artifact currently holds, so the header can name them all. */
+  readonly allPaths: readonly string[];
+  /** Only the files the path lacks: path → source. */
+  readonly missing: Readonly<Record<string, string>>;
 }
 
 export interface ArtifactContext {
@@ -107,8 +125,6 @@ export function buildArtifactContext(
     db,
     rows.map((row) => row.version.id),
   );
-  const sourceOf = (version: (typeof rows)[number]["version"]) =>
-    snapshots.get(version.id)?.files[version.entryPath] ?? "";
 
   // Ordered by artifact and then revision, so the last row of each group is the
   // current one and one pass is enough.
@@ -117,40 +133,76 @@ export function buildArtifactContext(
 
   const index = new Map<string, ArtifactSourceRef[]>();
   for (const { artifact, version } of rows) {
-    const source = sourceOf(version);
-    const refs = index.get(source) ?? [];
-    refs.push({
-      artifactId: artifact.id,
-      key: effectiveArtifactKey(artifact),
-      // The tag this revision was written under, so a placeholder names what the
-      // block actually was rather than what the row has since become (§13).
-      language: effectiveLanguage(artifact, version),
-      revision: version.revision,
-      isCurrent: latest.get(artifact.id)?.version.id === version.id,
-    });
-    index.set(source, refs);
+    const snapshot = snapshots.get(version.id);
+    if (!snapshot) continue;
+
+    const current = latest.get(artifact.id)?.version.id === version.id;
+
+    // Per file, not per version: a revision that changed only the stylesheet
+    // leaves four of its five files at the exact text an earlier revision holds,
+    // and eliding those is the whole point of the index (§13).
+    for (const [path, source] of Object.entries(snapshot.files)) {
+      const refs = index.get(source) ?? [];
+      refs.push({
+        artifactId: artifact.id,
+        key: effectiveArtifactKey(artifact),
+        // The tag this revision was written under, so a placeholder names what
+        // the block actually was rather than what the row has since become (§13).
+        language: effectiveLanguage(artifact, version),
+        path,
+        revision: version.revision,
+        isCurrent: current,
+      });
+      index.set(source, refs);
+    }
   }
 
-  const state = [...latest.values()].map(({ artifact, version }) => ({
-    key: effectiveArtifactKey(artifact),
-    language: effectiveLanguage(artifact, version),
-    title: artifact.title,
-    revision: version.revision,
-    authoredBy: version.authoredBy,
-    buildStatus: version.buildStatus ?? null,
-    buildMessage: version.buildMessage ?? null,
-  }));
+  const state = [...latest.values()].map(({ artifact, version }) => {
+    const snapshot = snapshots.get(version.id);
 
-  const held = currentSourcesOnPath(input.path, index);
-  const carried = [...latest.values()]
-    .filter(({ artifact }) => !held.has(artifact.id))
-    .map(({ artifact, version }) => ({
+    return {
       key: effectiveArtifactKey(artifact),
       language: effectiveLanguage(artifact, version),
       title: artifact.title,
       revision: version.revision,
-      source: sourceOf(version),
-    }));
+      authoredBy: version.authoredBy,
+      buildStatus: version.buildStatus ?? null,
+      buildMessage: version.buildMessage ?? null,
+      files: Object.entries(snapshot?.files ?? {})
+        .map(([path, source]) => ({
+          path,
+          lines: lineCount(source),
+          isEntry: path === version.entryPath,
+        }))
+        .sort((a, b) => a.path.localeCompare(b.path)),
+    };
+  });
+
+  const held = currentSourcesOnPath(input.path, index);
+  const carried = [...latest.values()].flatMap(({ artifact, version }) => {
+    const snapshot = snapshots.get(version.id);
+    if (!snapshot) return [];
+
+    const missing: Record<string, string> = {};
+    for (const [path, source] of Object.entries(snapshot.files)) {
+      if (!held.has(fileKey(artifact.id, path))) missing[path] = source;
+    }
+
+    // Nothing to carry: the path already holds every file of this artifact.
+    if (Object.keys(missing).length === 0) return [];
+
+    return [
+      {
+        key: effectiveArtifactKey(artifact),
+        language: effectiveLanguage(artifact, version),
+        title: artifact.title,
+        revision: version.revision,
+        entry: version.entryPath,
+        allPaths: Object.keys(snapshot.files).sort(),
+        missing,
+      },
+    ];
+  });
 
   return { index, state, carried };
 }
@@ -186,12 +238,19 @@ export function formatArtifactState(state: readonly ArtifactStateLine[]): string
             ? "last run: ok"
             : "not run yet";
 
-    return `- id=${item.key} (${item.language})${title} — revision ${item.revision}, last written by ${author}, ${run}`;
+    const head = `- id=${item.key} (${item.language})${title} — revision ${item.revision}, last written by ${author}, ${run}`;
+    if (item.files.length === 0) return head;
+
+    const files = item.files
+      .map((file) => `${file.path} (${file.lines} lines${file.isEntry ? ", entry" : ""})`)
+      .join(", ");
+
+    return `${head}\n  files: ${files}`;
   });
 
   return [
-    "[The artifacts in this conversation. Reuse an id to change that artifact, writing the",
-    "complete file again; use a new id for a separate thing.",
+    "[The artifacts in this conversation. Reuse an id to change that artifact, writing only the",
+    "files you change, each with its path; use a new id for a separate thing.",
     ...lines,
     "]",
   ].join("\n");
@@ -225,24 +284,39 @@ export function formatCarriedSources(carried: readonly CarriedSource[]): string 
 
   for (const item of carried) {
     const title = item.title ? ` "${collapse(item.title)}"` : "";
-    const head = `The current version of id=${item.key} (${item.language})${title}, revision ${item.revision}, does not appear above.`;
+    const missing = Object.entries(item.missing);
+    const total = missing.reduce((sum, [, source]) => sum + source.length, 0);
+    // Named in full whatever is sent: a model told which files exist can ask for
+    // one it was not shown, where a model shown nothing rewrites the lot.
+    const head = `The current version of id=${item.key} (${item.language})${title}, revision ${item.revision}, holds ${item.allPaths.join(", ")}. Some of it does not appear above.`;
 
-    if (used + item.source.length > CARRIED_MAX_CHARS) {
-      blocks.push(`[${head} Source omitted for length.]`);
+    if (used + total > CARRIED_MAX_CHARS) {
+      blocks.push(`[${head} Sources omitted for length.]`);
       continue;
     }
-    used += item.source.length;
-
-    // Long enough for this source: an artifact holding a line of three backticks
-    // would otherwise close its own fence and send the rest of itself as prose.
-    const fence = fenceFor(item.source);
+    used += total;
 
     blocks.push(
       [
-        `[${head} This is its complete source; to change it, reuse id=${item.key} and write the complete file.]`,
-        `${fence}${fenceInfo(item.language, { key: item.key, title: item.title })}`,
-        item.source,
-        fence,
+        `[${head} These are the files missing from the conversation; to change them, reuse id=${item.key} with the same paths.]`,
+        ...missing.flatMap(([path, source]) => {
+          // Long enough for this source: an artifact holding a line of three
+          // backticks would otherwise close its own fence and send the rest of
+          // itself as prose.
+          const fence = fenceFor(source);
+          const tag = kindOf(path) ?? item.language;
+
+          return [
+            `${fence}${fenceInfo(tag, {
+              key: item.key,
+              path,
+              title: path === item.entry ? item.title : null,
+              entry: item.allPaths.length > 1 && path === item.entry,
+            })}`,
+            source,
+            fence,
+          ];
+        }),
       ].join("\n"),
     );
   }
@@ -271,12 +345,22 @@ export function currentSourcesOnPath(
   path.forEach((message, at) => {
     for (const block of blocksOf(message)) {
       for (const ref of placeBlock(index.get(block.source) ?? [], block.identity)) {
-        if (ref.isCurrent) currentAt.set(ref.artifactId, at);
+        if (ref.isCurrent) currentAt.set(fileKey(ref.artifactId, ref.path), at);
       }
     }
   });
 
   return currentAt;
+}
+
+/**
+ * One file of one artifact, as a map key.
+ *
+ * A null byte, because a path may hold every character an identifier may and the
+ * two halves must not be able to run together into a third meaning.
+ */
+export function fileKey(artifactId: string, path: string): string {
+  return `${artifactId}\u0000${path}`;
 }
 
 /**
@@ -310,12 +394,38 @@ export function elideSupersededArtifacts(
 ): Pick<Message, "role" | "parts">[] {
   if (index.size === 0) return [...path];
 
-  /** Artifact id → the last message index holding its current source. */
+  /** File → the last message index holding its current source. */
   const currentAt = currentSourcesOnPath(path, index);
 
+  /** Artifact → the last message index holding any current file of it. */
+  const artifactAt = new Map<string, number>();
+  for (const [key, at] of currentAt) {
+    const artifactId = key.split("\u0000")[0];
+    artifactAt.set(artifactId, Math.max(artifactAt.get(artifactId) ?? -1, at));
+  }
+
   return path.map((message, at) => {
-    /** Whether this ref's artifact has moved on further down the path. */
-    const movedOn = (ref: ArtifactSourceRef): boolean => (currentAt.get(ref.artifactId) ?? -1) > at;
+    /**
+     * Whether this block is an obsolete copy of something the model can still see.
+     *
+     * Two rules, because "obsolete" means two different things.
+     *
+     * A block that *is* the current file is obsolete only against a later copy
+     * of that same file — a model restating something it did not change, which
+     * collapses to one copy and a line saying the two were identical.
+     *
+     * A block that is not current is obsolete as soon as the artifact visibly
+     * moves on anywhere further down the path. Per artifact rather than per
+     * file, because a rewrite can drop a file entirely: a page reworked as a
+     * component leaves `index.html` with no successor at its own path, and it is
+     * still dead weight the model should not be reading (§13). The later current
+     * file is what guarantees the model is left with something rather than a
+     * placeholder and nothing.
+     */
+    const movedOn = (ref: ArtifactSourceRef): boolean =>
+      ref.isCurrent
+        ? (currentAt.get(fileKey(ref.artifactId, ref.path)) ?? -1) > at
+        : (artifactAt.get(ref.artifactId) ?? -1) > at;
 
     // The ref that decides this source's fate: the block's own artifact, if its
     // current version is further down the path.
@@ -325,13 +435,19 @@ export function elideSupersededArtifacts(
     let changed = false;
     const parts = message.parts.map((part): MessagePart => {
       if (part.type === "artifact-edit") {
-        const ref = superseded(part.source, { artifactId: part.artifactId });
-        if (!ref) return part;
+        // Every file the part carries has to be superseded before the part goes:
+        // a multi-file edit whose stylesheet the model has since rewritten still
+        // holds the pupil's own copy of the entry.
+        const carried = editFilesOf(part);
+        const refs = carried.map(({ path, source }) =>
+          superseded(source, { artifactId: part.artifactId, path }),
+        );
+        if (refs.length === 0 || refs.some((ref) => ref === null)) return part;
 
         changed = true;
         // An `artifact-edit` part is a whole block on its own, so the whole part
         // becomes the placeholder rather than being rewritten in place.
-        return { type: "text", text: placeholder(ref) };
+        return { type: "text", text: placeholder(refs[0] as ArtifactSourceRef) };
       }
 
       if (part.type !== "text") return part;
@@ -339,10 +455,8 @@ export function elideSupersededArtifacts(
       const lines = part.text.split("\n");
       let rewritten = false;
 
-      for (const block of [...fencedBlocks(part.text)].reverse()) {
-        if (!artifactLanguage(block.language)) continue;
-
-        const ref = superseded(block.source, { key: normaliseArtifactKey(block.attributes.id) });
+      for (const block of [...detectArtifacts(part.text)].reverse()) {
+        const ref = superseded(block.source, { key: block.key, path: block.path });
         if (!ref) continue;
 
         lines.splice(block.line, block.endLine - block.line + 1, placeholder(ref));
@@ -366,11 +480,18 @@ export function elideSupersededArtifacts(
  * is not an identity — an artifact's language follows its key and can change
  * under it, so a block's tag matches neither one artifact nor only one.
  */
-type BlockIdentity =
-  | { readonly artifactId: string; readonly key?: undefined }
-  | { readonly artifactId?: undefined; readonly key: string | null };
+type BlockIdentity = {
+  readonly artifactId?: string;
+  readonly key?: string | null;
+  /** The `path=` the block carried, when it carried one. */
+  readonly path?: string | null;
+};
 
 function owns(ref: ArtifactSourceRef, identity: BlockIdentity): boolean {
+  // A path narrows further, where the block stated one: an artifact holding the
+  // same text at two paths is otherwise ambiguous between them.
+  if (identity.path && ref.path !== identity.path) return false;
+
   return identity.artifactId !== undefined
     ? ref.artifactId === identity.artifactId
     : ref.key === identity.key;
@@ -389,7 +510,7 @@ function placeBlock(
 ): readonly ArtifactSourceRef[] {
   if (refs.length === 0) return [];
 
-  if (identity.artifactId !== undefined || identity.key !== null) {
+  if (identity.artifactId !== undefined || (identity.key ?? null) !== null) {
     return refs.filter((ref) => owns(ref, identity));
   }
 
@@ -397,20 +518,36 @@ function placeBlock(
   return artifactIds.size === 1 ? refs : [];
 }
 
+/**
+ * The files an `artifact-edit` part carries, path and all.
+ *
+ * A part written before projects carries only `source`, whose path is unknown —
+ * so it is placed by artifact alone, exactly as it was.
+ */
+function editFilesOf(
+  part: Extract<MessagePart, { type: "artifact-edit" }>,
+): { path: string | null; source: string }[] {
+  if (part.files) {
+    return Object.entries(part.files).map(([path, source]) => ({ path, source }));
+  }
+  return [{ path: null, source: part.source }];
+}
+
 /** Every artifact block a message holds, with what it says about its identity. */
 function blocksOf(message: Pick<Message, "parts">): { source: string; identity: BlockIdentity }[] {
-  return message.parts.flatMap((part) => {
+  return message.parts.flatMap((part): { source: string; identity: BlockIdentity }[] => {
     if (part.type === "artifact-edit") {
-      return [{ source: part.source, identity: { artifactId: part.artifactId } }];
+      return editFilesOf(part).map(({ path, source }) => ({
+        source,
+        identity: { artifactId: part.artifactId, path },
+      }));
     }
     if (part.type !== "text") return [];
 
-    return fencedBlocks(part.text)
-      .filter((block) => artifactLanguage(block.language))
-      .map((block) => ({
-        source: block.source,
-        identity: { key: normaliseArtifactKey(block.attributes.id) } as BlockIdentity,
-      }));
+    return detectArtifacts(part.text).map((block) => ({
+      source: block.source,
+      identity: { key: block.key, path: block.path },
+    }));
   });
 }
 

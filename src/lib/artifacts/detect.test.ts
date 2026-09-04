@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { continuityDecision } from "./continuity";
-import { artifactLanguage, detectArtifacts } from "./detect";
+import { artifactLanguage, detectArtifacts, groupProjectWrites } from "./detect";
 import { fencedBlocks, fenceFor, scanFences } from "./fences";
 import { tierOf } from "./types";
 
@@ -279,5 +279,146 @@ describe("continuityDecision", () => {
       kind: "new",
       key: null,
     });
+  });
+});
+
+/**
+ * Several fences under one id are one project (PRD §13, §22).
+ *
+ * The economy of the whole thing: a pupil asking for a different colour gets one
+ * `css` fence back rather than a thousand-line page rewritten whole.
+ */
+describe("project files", () => {
+  it("reads a ts fence carrying both an id and a path as a file", () => {
+    const [file] = detectArtifacts("```ts id=side path=src/data.ts\nexport const x = 1;\n```");
+
+    expect(file).toMatchObject({
+      kind: "ts",
+      language: null,
+      path: "src/data.ts",
+      key: "side",
+      deleted: false,
+      entry: false,
+    });
+  });
+
+  /** A pupil's snippet of example CSS must stay a code block (§13). */
+  it("leaves a ts or css fence alone without both halves of its address", () => {
+    expect(detectArtifacts("```ts\nexport const x = 1;\n```")).toEqual([]);
+    expect(detectArtifacts("```css id=side\nbody { color: red }\n```")).toEqual([]);
+    expect(detectArtifacts("```css path=styles.css\nbody { color: red }\n```")).toEqual([]);
+  });
+
+  it("ignores a path on a block that names no artifact", () => {
+    const [block] = detectArtifacts("```html path=src/page.html\n<p>hi</p>\n```");
+
+    expect(block.path).toBeNull();
+    expect(block.language).toBe("html");
+  });
+
+  /** A guessed path is a file the pupil cannot find (§13, §21). */
+  it("treats a path that escapes the project as absent, never repaired", () => {
+    const [block] = detectArtifacts("```html id=side path=../etc/passwd.html\n<p>hi</p>\n```");
+
+    expect(block.path).toBeNull();
+  });
+
+  it("reads the bare delete and entry flags", () => {
+    const blocks = detectArtifacts(
+      [
+        "```css id=side path=src/old.css delete",
+        "```",
+        "```tsx id=side path=src/App.tsx entry",
+        "export default function App() {}",
+        "```",
+      ].join("\n"),
+    );
+
+    expect(blocks[0]).toMatchObject({ path: "src/old.css", deleted: true });
+    expect(blocks[1]).toMatchObject({ path: "src/App.tsx", entry: true, deleted: false });
+  });
+
+  it("keeps an empty block out unless it is a deletion", () => {
+    expect(detectArtifacts("```html id=side\n\n```")).toEqual([]);
+    expect(detectArtifacts("```css id=side path=a.css delete\n```")).toHaveLength(1);
+  });
+});
+
+describe("groupProjectWrites", () => {
+  const project = [
+    "Her er den:",
+    '```tsx id=tid path=src/App.tsx title="Tidslinje" entry',
+    "app",
+    "```",
+    "```ts id=tid path=src/data.ts",
+    "data",
+    "```",
+    "```css id=tid path=src/styles.css",
+    "css",
+    "```",
+  ].join("\n");
+
+  it("merges every fence of one id into one write", () => {
+    const [write, ...rest] = groupProjectWrites(detectArtifacts(project));
+
+    expect(rest).toEqual([]);
+    expect(write.key).toBe("tid");
+    expect(write.title).toBe("Tidslinje");
+    expect(write.files).toEqual({
+      "src/App.tsx": "app",
+      "src/data.ts": "data",
+      "src/styles.css": "css",
+    });
+    expect(write.entryHint).toBe("src/App.tsx");
+    expect(write.writtenOrder).toEqual(["src/App.tsx", "src/data.ts", "src/styles.css"]);
+    expect(write.blocks).toHaveLength(3);
+  });
+
+  it("keeps two ids apart, in first-appearance order", () => {
+    const writes = groupProjectWrites(
+      detectArtifacts(
+        [
+          "```html id=en\n<p>en</p>\n```",
+          "```html id=to\n<p>to</p>\n```",
+          "```css id=en path=a.css\nx\n```",
+        ].join("\n"),
+      ),
+    );
+
+    expect(writes.map((write) => write.key)).toEqual(["en", "to"]);
+    expect(writes[0].blocks).toHaveLength(2);
+  });
+
+  /** The pre-project shape: one fence with no id is one artifact of one file. */
+  it("leaves a key-less block as a write of its own", () => {
+    const writes = groupProjectWrites(
+      detectArtifacts("```html\n<p>en</p>\n```\n```html\n<p>to</p>\n```"),
+    );
+
+    expect(writes).toHaveLength(2);
+    expect(writes.every((write) => write.single !== null)).toBe(true);
+  });
+
+  it("collects deletions apart from writes", () => {
+    const [write] = groupProjectWrites(
+      detectArtifacts(
+        ["```css id=tid path=old.css delete", "```", "```css id=tid path=new.css", "x", "```"].join(
+          "\n",
+        ),
+      ),
+    );
+
+    expect(write.deletes).toEqual(["old.css"]);
+    expect(write.files).toEqual({ "new.css": "x" });
+  });
+
+  it("keeps a keyed fence with no path apart, for the composer to place", () => {
+    const [write] = groupProjectWrites(
+      detectArtifacts("```html id=tid\n<p>hi</p>\n```\n```css id=tid path=a.css\nx\n```"),
+    );
+
+    expect(write.pathless).toHaveLength(1);
+    expect(write.pathless[0].language).toBe("html");
+    expect(write.files).toEqual({ "a.css": "x" });
   });
 });

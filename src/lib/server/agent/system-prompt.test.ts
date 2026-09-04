@@ -86,17 +86,47 @@ describe("the artifact layer", () => {
   it("tells the model what a fenced artifact block does and what replaces it", () => {
     // The failure this exists to stop: a fragment answering "add a quiz", which
     // became the whole new source and took the page with it (§13).
-    expect(ARTIFACT_INSTRUCTIONS).toContain("write the");
-    expect(ARTIFACT_INSTRUCTIONS).toContain("COMPLETE file again under the same id");
-    expect(ARTIFACT_INSTRUCTIONS).toContain("id=home-page");
+    expect(ARTIFACT_INSTRUCTIONS).toContain("re-emit only the files that change, each complete");
+    expect(ARTIFACT_INSTRUCTIONS).toContain("a file block replaces");
+    expect(ARTIFACT_INSTRUCTIONS).toContain("id=tidslinje");
+  });
+
+  /**
+   * The lever, besides the state note's line counts, against a model writing a
+   * thousand-line page: it has to be told that files are the shape of the thing
+   * and that short ones are what is wanted (§13).
+   */
+  it("asks for a project of short files rather than one long one", () => {
+    expect(ARTIFACT_INSTRUCTIONS).toContain(
+      "An artifact is a small project of files, not one file",
+    );
+    expect(ARTIFACT_INSTRUCTIONS).toContain("aim under 150 lines");
+    expect(ARTIFACT_INSTRUCTIONS).toContain("path=src/styles.css");
+    // Files it does not mention survive, which is the whole economy of it.
+    expect(ARTIFACT_INSTRUCTIONS).toContain("Files you do not mention are kept");
+  });
+
+  it("says which tags become project files and which stay code blocks", () => {
+    expect(ARTIFACT_INSTRUCTIONS).toContain("With an id and a path, ts, js, css, json and md");
+    expect(ARTIFACT_INSTRUCTIONS).toContain("stays an ordinary code block");
+  });
+
+  it("states the entry rule and how to delete a file", () => {
+    expect(ARTIFACT_INSTRUCTIONS).toContain("The entry is the file that runs");
+    expect(ARTIFACT_INSTRUCTIONS).toContain("with the delete flag");
+  });
+
+  it("bounds what an artifact may import", () => {
+    expect(ARTIFACT_INSTRUCTIONS).toContain("Imports are relative paths inside the project");
+    expect(ARTIFACT_INSTRUCTIONS).toContain("Importable: react, react-dom/client");
   });
 
   it("asks for a fix when the last run failed or threw", () => {
     // A page that mounted and then threw is on the pupil's screen: the model
     // has to be told to fix that error rather than to rewrite the file (§13).
     // Line-wrapped in the source, so the two halves are asserted apart.
-    expect(ARTIFACT_INSTRUCTIONS).toContain("If the last run failed or threw, fix that error");
-    expect(ARTIFACT_INSTRUCTIONS).toContain("in your next complete version of the same id.");
+    expect(ARTIFACT_INSTRUCTIONS).toContain("If the last run");
+    expect(ARTIFACT_INSTRUCTIONS).toContain("failed or threw, fix that error in the file it names");
   });
 
   it("does not ask a svelte artifact for a default export", () => {

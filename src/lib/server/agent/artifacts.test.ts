@@ -337,7 +337,7 @@ describe("the student's edit travelling back to the model", () => {
       assembleContext([{ role: "user", parts: [{ type: "text", text: "hjælp" }, part] }]).at(-1)
         ?.content,
     );
-    expect(sent).toContain('```html id=side title="Kort"');
+    expect(sent).toContain('```html id=side path=index.html title="Kort"');
     expect(sent).toContain("To change it, reuse id=side and write the complete file.");
   });
 
@@ -632,5 +632,155 @@ describe("an artifact whose newest revision is off the active path", () => {
     // Without this the model rewrote revision 2 from a copy it could not see.
     expect(sent).toContain("does not appear above");
     expect(sent).toContain("<p>to</p>");
+  });
+});
+
+/**
+ * A project of files, recorded out of several fences (PRD §13, §22).
+ */
+describe("recording a project", () => {
+  const project = [
+    "Her er den:",
+    '```tsx id=tid path=src/App.tsx title="Tidslinje" entry',
+    "app",
+    "```",
+    "```ts id=tid path=src/data.ts",
+    "data",
+    "```",
+    "```css id=tid path=src/styles.css",
+    "css",
+    "```",
+  ].join("\n");
+
+  function filesOf(versionId: string) {
+    return snapshotOf(db, versionId)?.files ?? {};
+  }
+
+  it("makes one revision of one artifact out of three fences", () => {
+    const recorded = assistantTurn(project);
+
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].fileCount).toBe(3);
+    expect(listStudentArtifacts(db, fixtures.student.id)).toHaveLength(1);
+    expect(filesOf(recorded[0].versionId)).toEqual({
+      "src/App.tsx": "app",
+      "src/data.ts": "data",
+      "src/styles.css": "css",
+    });
+
+    const [{ latest }] = listStudentArtifacts(db, fixtures.student.id);
+    expect(latest.entryPath).toBe("src/App.tsx");
+  });
+
+  /** The economy of the whole thing: one css fence, not a rewritten page. */
+  it("keeps the files a later write does not mention", () => {
+    assistantTurn(project);
+    const revised = assistantTurn("```css id=tid path=src/styles.css\nny css\n```");
+
+    expect(revised).toHaveLength(1);
+    expect(filesOf(revised[0].versionId)).toEqual({
+      "src/App.tsx": "app",
+      "src/data.ts": "data",
+      "src/styles.css": "ny css",
+    });
+    expect(revised[0].changes).toEqual([{ path: "src/styles.css", change: "modified" }]);
+  });
+
+  it("removes a file on a delete fence", () => {
+    assistantTurn(project);
+    const revised = assistantTurn("```ts id=tid path=src/data.ts delete\n```");
+
+    expect(Object.keys(filesOf(revised[0].versionId)).sort()).toEqual([
+      "src/App.tsx",
+      "src/styles.css",
+    ]);
+    expect(revised[0].changes).toEqual([{ path: "src/data.ts", change: "deleted" }]);
+  });
+
+  /** A project with nothing to render is not a project the pupil meant (§13). */
+  it("ignores a deletion that would leave nothing to run", () => {
+    assistantTurn("```html id=side\n<p>en</p>\n```");
+    const revised = assistantTurn("```html id=side path=index.html delete\n```");
+
+    expect(revised).toHaveLength(1);
+    expect(filesOf(revised[0].versionId)).toEqual({ "index.html": "<p>en</p>" });
+    expect(revised[0].unchanged).toBe(true);
+  });
+
+  it("puts a keyed fence with no path onto the project's current entry", () => {
+    assistantTurn(project);
+    const revised = assistantTurn("```tsx id=tid\nny app\n```");
+
+    expect(filesOf(revised[0].versionId)).toEqual({
+      "src/App.tsx": "ny app",
+      "src/data.ts": "data",
+      "src/styles.css": "css",
+    });
+  });
+
+  it("appends no revision when the whole project is restated unchanged", () => {
+    const first = assistantTurn(project);
+    const again = assistantTurn(project);
+
+    expect(again[0].unchanged).toBe(true);
+    expect(again[0].versionId).toBe(first[0].versionId);
+    expect(listArtifactVersions(db, first[0].artifactId)).toHaveLength(1);
+  });
+
+  it("records nothing at all for a project over the caps", () => {
+    const huge = ["```tsx id=stor path=src/App.tsx", "x".repeat(300_000), "```"].join("\n");
+
+    expect(assistantTurn(huge)).toEqual([]);
+    expect(listStudentArtifacts(db, fixtures.student.id)).toEqual([]);
+  });
+
+  /**
+   * `continuityDecision` resolves a written key across languages, so a write
+   * that states no runnable tag at all still lands on the artifact it names.
+   */
+  it("resolves a css-only write onto the artifact its id names", () => {
+    const first = assistantTurn("```html id=side\n<p>en</p>\n```");
+    const revised = assistantTurn("```css id=side path=styles.css\nbody{}\n```");
+
+    expect(revised[0].artifactId).toBe(first[0].artifactId);
+    expect(revised[0].language).toBe("html");
+    expect(Object.keys(filesOf(revised[0].versionId)).sort()).toEqual(["index.html", "styles.css"]);
+  });
+
+  it("carries only the files the student changed back to the model", () => {
+    const recorded = assistantTurn(project);
+    const [{ artifact }] = listStudentArtifacts(db, fixtures.student.id);
+
+    // The pupil edits one file of three.
+    appendSnapshot(db, {
+      artifactId: artifact.id,
+      entry: "src/App.tsx",
+      files: {
+        "src/App.tsx": "app",
+        "src/data.ts": "min data",
+        "src/styles.css": "css",
+      },
+      language: "tsx",
+      authoredBy: "student",
+    });
+
+    const [part] = pendingArtifactEditParts(db, {
+      conversationId,
+      studentId: fixtures.student.id,
+    });
+
+    expect(part.files).toEqual({ "src/data.ts": "min data" });
+    expect(part.entry).toBe("src/App.tsx");
+    expect(part.deleted).toEqual([]);
+    expect(recorded[0].fileCount).toBe(3);
+
+    const sent = String(
+      assembleContext([{ role: "user", parts: [{ type: "text", text: "hjælp" }, part] }]).at(-1)
+        ?.content,
+    );
+    expect(sent).toContain("```ts id=tid path=src/data.ts");
+    expect(sent).toContain("min data");
+    // The two files they did not touch stay out of the message entirely.
+    expect(sent).not.toContain("app");
   });
 });

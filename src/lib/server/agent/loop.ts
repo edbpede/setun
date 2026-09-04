@@ -1,6 +1,3 @@
-import { fenceFor } from "../../artifacts/fences";
-import { fenceInfo } from "../../artifacts/identity";
-import { isArtifactLanguage } from "../../artifacts/types";
 import type { Message, MessagePart, PermissionMode } from "../db/schema";
 import type { DialectName, GatewayAdapter } from "../gateway/adapter";
 import type { GatewayContentPart, GatewayMessage, GatewayToolCall } from "../gateway/dialect";
@@ -15,6 +12,7 @@ import {
   formatArtifactState,
   formatCarriedSources,
 } from "./artifact-context";
+import { encodeArtifactEdit } from "./artifact-edit";
 import {
   BUDGET_PRESETS,
   type BudgetSettings,
@@ -123,40 +121,6 @@ function textOf(message: Pick<Message, "parts">): string {
     )
     .map((part) => (part.type === "text" ? part.text : encodeArtifactEdit(part)))
     .join("");
-}
-
-/**
- * The marked block an edited artifact travels in (§13).
- *
- * The fence carries the artifact's own id, in the form the model is asked to
- * write, and the marker says outright what to do with it: a pupil's edited page
- * that comes back under `id=home-page` is answerable with a complete file under
- * the same id, which is the whole mechanism. A part stored before the id existed
- * has none, and encodes in the form it was written in.
- */
-function encodeArtifactEdit(part: Extract<MessagePart, { type: "artifact-edit" }>): string {
-  const named = part.title ? ` "${part.title}"` : "";
-  const key = part.key ?? null;
-  const info =
-    key && isArtifactLanguage(part.language)
-      ? fenceInfo(part.language, { key, title: part.title })
-      : part.language;
-
-  // Long enough for this source: a page that explains markdown holds a line of
-  // three backticks, which would close a three-backtick fence early and send the
-  // rest of the pupil's file to the model as prose.
-  const fence = fenceFor(part.source);
-
-  return [
-    "",
-    "",
-    `[The student's edited version of the ${part.language} artifact${named}.`,
-    "This is the current source, not the version you last wrote.",
-    ...(key ? [`To change it, reuse id=${key} and write the complete file.]`] : ["]"]),
-    `${fence}${info}`,
-    part.source,
-    fence,
-  ].join("\n");
 }
 
 /**

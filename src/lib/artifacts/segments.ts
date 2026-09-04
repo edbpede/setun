@@ -1,4 +1,9 @@
-import { artifactLanguage, type DetectedArtifact, detectArtifacts } from "./detect";
+import {
+  artifactLanguage,
+  type DetectedArtifact,
+  detectArtifacts,
+  groupProjectWrites,
+} from "./detect";
 import { CARRIED, type OpenFence, type ScannedFences, scanFences } from "./fences";
 import { normaliseArtifactKey } from "./identity";
 import type { ArtifactLanguage } from "./types";
@@ -33,6 +38,8 @@ export type ArtifactSegment =
       readonly artifact: DetectedArtifact;
       /** The block as written, fences included, for the fallback rendering. */
       readonly raw: string;
+      /** Every path this write states, so the card can say how many files (§13). */
+      readonly files: readonly string[];
     };
 
 /**
@@ -42,8 +49,8 @@ export type ArtifactSegment =
  * lines: the gap between a paragraph and the block below it is not a paragraph.
  */
 export function artifactSegments(markdown: string, firstIndex = 0): ArtifactSegment[] {
-  const found = detectArtifacts(markdown);
-  if (found.length === 0) {
+  const writes = groupProjectWrites(detectArtifacts(markdown));
+  if (writes.length === 0) {
     return markdown.trim() ? [{ kind: "text", text: markdown }] : [];
   }
 
@@ -51,18 +58,26 @@ export function artifactSegments(markdown: string, firstIndex = 0): ArtifactSegm
   const segments: ArtifactSegment[] = [];
   let at = 0;
 
-  found.forEach((artifact, offset) => {
-    const before = lines.slice(at, artifact.line).join("\n");
+  writes.forEach((write, offset) => {
+    const [first, ...rest] = write.blocks;
+    const before = lines.slice(at, first.line).join("\n");
     if (before.trim()) segments.push({ kind: "text", text: before });
 
+    // One card per *write*, not per fence: three fences under one id are one
+    // revision of one project, and three cards would say the model built three
+    // things (§13).
     segments.push({
       kind: "artifact",
       index: firstIndex + offset,
-      artifact,
-      raw: lines.slice(artifact.line, artifact.endLine + 1).join("\n"),
+      artifact: first,
+      raw: lines.slice(first.line, first.endLine + 1).join("\n"),
+      files: write.blocks.flatMap((block) => (block.path ? [block.path] : [])),
     });
 
-    at = artifact.endLine + 1;
+    // The prose between a write's own fences is dropped, along with the fences
+    // after the first: they belong to the card, and rendering them would put a
+    // wall of markup under it.
+    at = (rest.at(-1) ?? first).endLine + 1;
   });
 
   const after = lines.slice(at).join("\n");
@@ -270,11 +285,15 @@ function nameStub(segments: StreamingSegment[], open: OpenFence, source: string)
     kind: "artifact",
     artifact: {
       language,
+      kind: language,
       source,
       line: open.line,
       endLine: CARRIED,
       key: normaliseArtifactKey(open.attributes.id),
       title: open.attributes.title?.trim() || null,
+      path: null,
+      deleted: false,
+      entry: false,
     },
   };
 }
@@ -342,11 +361,15 @@ function segmentsOf(
       kind: "artifact",
       artifact: {
         language,
+        kind: language,
         source: block.source,
         line: block.line,
         endLine: block.endLine,
         key: normaliseArtifactKey(block.attributes.id),
         title: block.attributes.title?.trim() || null,
+        path: null,
+        deleted: false,
+        entry: false,
       },
     });
   }
@@ -369,5 +392,8 @@ function segmentsOf(
 
 /** How many artifacts a piece of prose holds — the running count between parts. */
 export function artifactSegmentCount(markdown: string): number {
-  return detectArtifacts(markdown).length;
+  // Writes, not fences: three fences under one id are one card and one recorded
+  // revision, and counting them separately would put the transcript's cards out
+  // of step with what the server stored (§13).
+  return groupProjectWrites(detectArtifacts(markdown)).length;
 }

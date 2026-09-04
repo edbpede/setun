@@ -44,6 +44,13 @@ export interface ArtifactEditPart {
   readonly versionId: string;
   readonly language: string;
   readonly title: string | null;
+  /**
+   * The entry file's source.
+   *
+   * Kept for parts written before an artifact was a project, which carried only
+   * this. A part that also carries `files` states its whole change there, and
+   * this is the entry's copy of it.
+   */
   readonly source: string;
   /**
    * The id the artifact answers to, so the block carries the identity the model
@@ -53,6 +60,17 @@ export interface ArtifactEditPart {
    * those still encode, in the form they were written in.
    */
   readonly key?: string | null;
+  /** Which file of the project runs, so the block can mark it (§13). */
+  readonly entry?: string | null;
+  /**
+   * The files the student changed, path → source.
+   *
+   * Only the changed ones: a project of ten files edited in one place travels
+   * as one fence, not ten. Absent on a part written before projects.
+   */
+  readonly files?: Readonly<Record<string, string>>;
+  /** Paths the student removed, which travel as empty `delete` fences. */
+  readonly deleted?: readonly string[];
 }
 
 /**
