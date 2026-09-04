@@ -9,6 +9,7 @@
   "artifact_build_unseen": "Updated",
   "artifact_card_building": "Building {title}…",
   "artifact_card_label": "Built: {title}",
+  "artifact_card_lines": "{lines} lines so far",
   "artifact_console_label": "Console ({count})",
   "artifact_console_truncated": "Only the newest lines are kept.",
   "artifact_delete": "Delete",

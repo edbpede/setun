@@ -74,6 +74,11 @@ export interface PendingContinue {
 export class StreamingTurn {
   /** The turn so far, in the order it happened. Plain text while streaming (§20). */
   parts = $state<MessagePart[]>([]);
+  /** When this turn began, so the placeholder can say how long it has been (§20). */
+  startedAt = $state<number | null>(null);
+  /** When reasoning first arrived, and when the first visible output replaced it. */
+  thinkingStartedAt = $state<number | null>(null);
+  thinkingSettledAt = $state<number | null>(null);
   turnId = $state<string | null>(null);
   /** Last sequence number applied — the cursor a resume continues from (§10). */
   lastSeq = $state(-1);
@@ -89,9 +94,33 @@ export class StreamingTurn {
   budgetWarning = $state<BudgetWarning | null>(null);
   continuePrompt = $state<PendingContinue | null>(null);
   #streaming = $state(false);
+  /** Injectable, so the elapsed figures are testable without waiting (§22). */
+  readonly #now: () => number;
+
+  constructor(now: () => number = Date.now) {
+    this.#now = now;
+  }
 
   get streaming(): boolean {
     return this.#streaming;
+  }
+
+  /** The reasoning so far, as one string. Empty when there is none (§20). */
+  get thinking(): string {
+    return this.parts
+      .filter((part) => part.type === "thinking")
+      .map((part) => part.text)
+      .join("");
+  }
+
+  /**
+   * Whether anything the pupil reads as the *answer* has arrived.
+   *
+   * Thinking does not count: the placeholder should keep running while the model
+   * reasons, because the answer has not begun.
+   */
+  get hasVisibleOutput(): boolean {
+    return this.parts.some((part) => part.type !== "thinking");
   }
 
   /** The prose so far, for the plain-text render while the turn streams (§20). */
@@ -125,6 +154,9 @@ export class StreamingTurn {
     this.elicitation = null;
     this.budgetWarning = null;
     this.continuePrompt = null;
+    this.startedAt = this.#now();
+    this.thinkingStartedAt = null;
+    this.thinkingSettledAt = null;
     this.#streaming = true;
   }
 
@@ -133,6 +165,7 @@ export class StreamingTurn {
     this.turnId = turnId;
     this.lastSeq = afterSeq;
     this.notice = null;
+    this.startedAt ??= this.#now();
     this.#streaming = true;
   }
 
@@ -151,9 +184,21 @@ export class StreamingTurn {
     // be answering a question nobody is waiting for.
     if (event.type !== "continue-request") this.continuePrompt = null;
 
+    // The first thing a pupil reads as the answer settles the reasoning: the
+    // block collapses from "Thinking…" to "Thoughts" at that moment, not when
+    // the turn ends.
+    if (event.type !== "thinking-delta" && !this.hasVisibleOutput && this.thinkingStartedAt) {
+      this.thinkingSettledAt ??= this.#now();
+    }
+
     switch (event.type) {
       case "text-delta":
         this.#appendText(event.text);
+        break;
+
+      case "thinking-delta":
+        this.thinkingStartedAt ??= this.#now();
+        this.#appendThinking(event.text);
         break;
 
       case "permission-request":
@@ -265,6 +310,7 @@ export class StreamingTurn {
         this.permission = null;
         this.elicitation = null;
         this.continuePrompt = null;
+        this.thinkingSettledAt ??= this.thinkingStartedAt === null ? null : this.#now();
         // `stop` is the model reaching its own end and announces nothing. Every
         // other reason cut the answer short, including a per-turn cap, which
         // stops at a clean boundary and keeps the partial answer on screen — a
@@ -289,6 +335,9 @@ export class StreamingTurn {
     this.parts = [];
     this.turnId = null;
     this.lastSeq = -1;
+    this.startedAt = null;
+    this.thinkingStartedAt = null;
+    this.thinkingSettledAt = null;
     this.notice = null;
     this.permission = null;
     this.elicitation = null;
@@ -311,6 +360,17 @@ export class StreamingTurn {
       this.parts = [...this.parts.slice(0, -1), { type: "text", text: last.text + text }];
     } else {
       this.parts = [...this.parts, { type: "text", text }];
+    }
+  }
+
+  /** The same growth for the reasoning, which arrives in the same many fragments. */
+  #appendThinking(text: string): void {
+    const last = this.parts.at(-1);
+
+    if (last?.type === "thinking") {
+      this.parts = [...this.parts.slice(0, -1), { type: "thinking", text: last.text + text }];
+    } else {
+      this.parts = [...this.parts, { type: "thinking", text }];
     }
   }
 }

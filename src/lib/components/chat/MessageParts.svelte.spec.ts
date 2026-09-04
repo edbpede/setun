@@ -156,3 +156,30 @@ describe("MessageParts artifact cards", () => {
     await expect.element(page.getByText("<p>hi</p>")).toBeVisible();
   });
 });
+
+/**
+ * The reasoning in a settled message (PRD §20, §22).
+ *
+ * A part that is not rendered is skipped, not deleted: the summary stays on the
+ * message, and turning the switch back on shows it again.
+ */
+describe("MessageParts — thinking", () => {
+  const parts = [
+    { type: "thinking" as const, text: "Overvejer opgaven" },
+    { type: "text" as const, text: "Et loop gentager noget." },
+  ];
+
+  it("renders the reasoning as a collapsed block beside the answer", async () => {
+    render(MessageParts, { parts });
+
+    await expect.element(page.getByText(m.chat_thoughts())).toBeVisible();
+    await expect.element(page.getByText("Et loop gentager noget.")).toBeVisible();
+  });
+
+  it("skips it where the classroom or the pupil has it off", async () => {
+    render(MessageParts, { parts, showThinking: false });
+
+    await expect.element(page.getByText(m.chat_thoughts())).not.toBeInTheDocument();
+    await expect.element(page.getByText("Et loop gentager noget.")).toBeVisible();
+  });
+});

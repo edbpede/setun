@@ -1,4 +1,9 @@
 <script lang="ts">
+import {
+  PLACEHOLDER_INTERVAL_MS,
+  PLACEHOLDER_STATUSES,
+  placeholderIndex,
+} from "$lib/chat/thinking-status";
 import { turnNoticeText } from "$lib/chat/turn-notices";
 import * as m from "$lib/paraglide/messages";
 import type { StreamingTurn } from "$lib/state/streaming-turn.svelte";
@@ -22,11 +27,51 @@ import MessageParts from "./MessageParts.svelte";
  */
 interface Props {
   turn: StreamingTurn;
+  /** Whether the model's reasoning is rendered, once policy and preference agree (§20). */
+  showThinking?: boolean;
+  /** Injectable clock, so the elapsed figure is testable without waiting (§22). */
+  now?: () => number;
 }
 
-let { turn }: Props = $props();
+let { turn, showThinking = true, now = Date.now }: Props = $props();
 
 const noticeText = $derived(turn.notice ? turnNoticeText(turn.notice) : null);
+
+/**
+ * Whether the placeholder is what the pupil is looking at.
+ *
+ * A reasoning model can spend forty seconds before its first word. With the
+ * thinking block shown that wait is filled by the reasoning itself; with it
+ * hidden — or before the first summary arrives — there is nothing on screen at
+ * all, and the placeholder is the whole of the feedback (§20).
+ */
+const waiting = $derived(
+  turn.streaming && !turn.hasVisibleOutput && !(showThinking && turn.thinking.length > 0),
+);
+
+// The clock is read once to seed the tick; the interval below is what
+// keeps it moving, so the "referenced locally" note does not apply.
+// svelte-ignore state_referenced_locally
+let tick = $state(now());
+
+/**
+ * One tick every few seconds, and only while the placeholder is on screen.
+ *
+ * A timer that keeps running under a settled answer is work a dual-core
+ * Chromebook does for nothing (§20).
+ */
+$effect(() => {
+  if (!waiting) return;
+
+  const timer = setInterval(() => {
+    tick = now();
+  }, 1_000);
+  return () => clearInterval(timer);
+});
+
+const elapsedMs = $derived(turn.startedAt === null ? 0 : Math.max(0, tick - turn.startedAt));
+const status = $derived(PLACEHOLDER_STATUSES[placeholderIndex(elapsedMs, PLACEHOLDER_INTERVAL_MS)]);
+const seconds = $derived(Math.round(elapsedMs / 1000));
 </script>
 
 {#if turn.streaming || !turn.isEmpty || noticeText}
@@ -36,15 +81,36 @@ const noticeText = $derived(turn.notice ? turnNoticeText(turn.notice) : null);
     data-streaming={turn.streaming}
   >
     <div class="w-full text-[0.9375rem] leading-[1.65] text-foreground">
-      {#if turn.isEmpty && turn.streaming}
-        <p class="flex items-center gap-2 text-muted-foreground" aria-live="polite">
-          <span class="thinking-pulse size-1.5 rounded-full bg-primary" aria-hidden="true"></span>
-          {m.chat_thinking()}
-        </p>
-      {:else}
+      {#if !turn.isEmpty}
         <div class={turn.streaming ? "streaming-caret" : ""}>
-          <MessageParts parts={turn.parts} streaming />
+          <MessageParts
+            parts={turn.parts}
+            streaming
+            {showThinking}
+            thinkingStartedAt={turn.thinkingStartedAt}
+            thinkingSettledAt={turn.thinkingSettledAt}
+          />
         </div>
+      {/if}
+
+      {#if waiting}
+        <!--
+          One static label for assistive technology and a rotating line for the
+          eye. A status that rewrites itself every four seconds under a screen
+          reader is a stream of interruptions; a line that never changes for
+          forty seconds reads as a stall.
+        -->
+        <p class="flex items-center gap-2 text-muted-foreground">
+          <span class="thinking-pulse size-1.5 shrink-0 rounded-full bg-primary" aria-hidden="true"
+          ></span>
+          <span class="sr-only" role="status">{m.chat_thinking()}</span>
+          <span aria-hidden="true">{status()}</span>
+          {#if seconds >= PLACEHOLDER_INTERVAL_MS / 1000}
+            <span class="text-xs opacity-70" aria-hidden="true">
+              {m.chat_status_elapsed({ seconds })}
+            </span>
+          {/if}
+        </p>
       {/if}
 
       {#if noticeText}

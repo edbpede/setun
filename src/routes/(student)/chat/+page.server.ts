@@ -148,6 +148,14 @@ export const load: PageServerLoad = ({ locals, url }) => {
     // hiding a control is never access control (§8, §10, §21).
     attachmentsEnabled: student.attachmentsEnabled ?? classroom?.attachmentsEnabled ?? false,
     imageModeAvailable: generationAliases(db, student.classroomId).length > 0,
+    /**
+     * Whether this classroom lets the pupil see the model reason (§20).
+     *
+     * Presentation only: `hidden` is enforced in the runner, which drops the
+     * events before the turn is buffered, so a pupil cannot reach the reasoning
+     * by any route whatever this value says (§21).
+     */
+    thinkingVisibility: classroom?.thinkingVisibility ?? "student",
     // Uploads the pupil made before this reload; the composer shows them again.
     pendingAttachments: active
       ? listPendingAttachments(db, { studentId: student.id, conversationId: active.id }).map(

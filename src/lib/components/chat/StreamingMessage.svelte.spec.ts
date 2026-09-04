@@ -22,7 +22,70 @@ describe("StreamingMessage", () => {
     turn.begin("turn-1");
     render(StreamingMessage, { turn });
 
-    await expect.element(page.getByText(m.chat_thinking())).toBeVisible();
+    // The static label is what assistive technology reads; the rotating line
+    // beside it is `aria-hidden`, so it never interrupts (§20).
+    await expect.element(page.getByRole("status")).toHaveTextContent(m.chat_thinking());
+    await expect.element(page.getByText(m.chat_status_reading())).toBeVisible();
+  });
+
+  /**
+   * A reasoning model can spend forty seconds before its first word, and a line
+   * that never changes for forty seconds reads as a stall (§20).
+   */
+  it("moves through the statuses as the wait goes on, and stops on the last", async () => {
+    let clock = 1_000;
+    const turn = new StreamingTurn(() => clock);
+    turn.begin("turn-1");
+    render(StreamingMessage, { turn, now: () => clock });
+
+    await expect.element(page.getByText(m.chat_status_reading())).toBeVisible();
+
+    clock = 1_000 + 5_000;
+    await expect.element(page.getByText(m.chat_status_planning())).toBeVisible();
+
+    clock = 1_000 + 13_000;
+    await expect.element(page.getByText(m.chat_status_writing())).toBeVisible();
+
+    // Clamped, never cycling: going back to "Reading your message…" after
+    // sixteen seconds would say the model had started over.
+    clock = 1_000 + 60_000;
+    await expect.element(page.getByText(m.chat_status_writing())).toBeVisible();
+  });
+
+  it("gives way the moment the reasoning itself is on screen", async () => {
+    const turn = new StreamingTurn();
+    turn.begin("turn-1");
+    render(StreamingMessage, { turn });
+
+    turn.apply({ type: "thinking-delta", text: "Overvejer opgaven" }, 0);
+
+    // The block is collapsed, so its summary is what shows; the placeholder has
+    // nothing left to say once the model is visibly reasoning.
+    await expect.element(page.getByText(m.chat_status_reading())).not.toBeInTheDocument();
+    expect(document.querySelector("summary")?.textContent).toContain("Overvejer opgaven");
+  });
+
+  it("keeps the placeholder when the classroom or the pupil hides the reasoning", async () => {
+    const turn = new StreamingTurn();
+    turn.begin("turn-1");
+    render(StreamingMessage, { turn, showThinking: false });
+
+    turn.apply({ type: "thinking-delta", text: "Overvejer opgaven" }, 0);
+
+    await expect.element(page.getByText("Overvejer opgaven")).not.toBeInTheDocument();
+    await expect.element(page.getByText(m.chat_status_reading())).toBeVisible();
+  });
+
+  it("drops the placeholder as soon as the answer begins", async () => {
+    const turn = new StreamingTurn();
+    turn.begin("turn-1");
+    render(StreamingMessage, { turn });
+
+    turn.apply({ type: "thinking-delta", text: "Overvejer" }, 0);
+    turn.apply({ type: "text-delta", text: "Et loop" }, 1);
+
+    await expect.element(page.getByText("Et loop")).toBeVisible();
+    await expect.element(page.getByRole("status")).not.toBeInTheDocument();
   });
 
   it("accumulates deltas into the streamed text", async () => {
@@ -34,7 +97,7 @@ describe("StreamingMessage", () => {
     turn.apply({ type: "text-delta", text: "loop" }, 1);
 
     await expect.element(page.getByText("Et loop")).toBeVisible();
-    await expect.element(page.getByText(m.chat_thinking())).not.toBeInTheDocument();
+    await expect.element(page.getByRole("status")).not.toBeInTheDocument();
   });
 
   it("renders streamed markdown as plain text, not as HTML", async () => {

@@ -95,10 +95,36 @@ export type StreamingSegment =
       readonly language: ArtifactLanguage;
       readonly key: string | null;
       readonly title: string | null;
+      /**
+       * How many lines of the file have arrived so far (§20).
+       *
+       * A long artifact can take a minute to write, and a stub that says only
+       * "building" for the whole of it looks stuck. A count that climbs is the
+       * cheapest honest sign that something is happening.
+       */
+      readonly lines: number;
     };
 
 /** Anything that is not whitespace, tested without allocating a trimmed copy. */
 const NON_BLANK = /\S/;
+
+/**
+ * How many lines a fence body holds, given the rows it was split into.
+ *
+ * A body ending in a newline has finished its last line; one ending mid-line is
+ * still on it, and that line counts — the pupil can see it being typed.
+ */
+function bodyLines(rows: readonly string[]): number {
+  if (rows.length === 0) return 0;
+  return rows.length - 1 + (rows.at(-1) === "" ? 0 : 1);
+}
+
+/** Newlines in a piece, counted without allocating a split of it. */
+function countNewlines(piece: string): number {
+  let count = 0;
+  for (let at = piece.indexOf("\n"); at !== -1; at = piece.indexOf("\n", at + 1)) count++;
+  return count;
+}
 
 export function streamingSegments(markdown: string): StreamingSegment[] {
   // The scanner's own line array, not a second split of the same string: this
@@ -144,7 +170,21 @@ export function streamingMessageSegments(texts: readonly string[]): StreamingSeg
    * would make a long artifact cost more with every part it crosses. They are
    * joined once, when the fence closes and a card needs its source.
    */
-  let stub: { at: number; open: OpenFence; source: string[]; bodied: boolean } | null = null;
+  let stub: {
+    at: number;
+    open: OpenFence;
+    source: string[];
+    bodied: boolean;
+    /**
+     * The running line count, kept incrementally for the same reason `bodied`
+     * is: this walk runs again on every delta, and re-joining the source to
+     * count its lines would make a long artifact cost more with every part it
+     * crosses.
+     */
+    newlines: number;
+    endsWithNewline: boolean;
+    nonEmpty: boolean;
+  } | null = null;
 
   texts.forEach((text, at) => {
     const scanned = scanFences(text, carried);
@@ -170,6 +210,12 @@ export function streamingMessageSegments(texts: readonly string[]): StreamingSeg
       // Still open, so the whole of this part is inside it.
       stub.source.push(text);
       stub.bodied = bodied;
+      stub.newlines += countNewlines(text);
+      if (text.length > 0) {
+        stub.nonEmpty = true;
+        stub.endsWithNewline = text.endsWith("\n");
+      }
+      growStub(scans[stub.at], stub.newlines + (stub.nonEmpty && !stub.endsWithNewline ? 1 : 0));
     }
 
     const open = scanned.open;
@@ -183,11 +229,29 @@ export function streamingMessageSegments(texts: readonly string[]): StreamingSeg
       return;
     }
 
-    const head = scanned.lines.slice(open.line + 1).join("\n");
-    stub = { at, open, source: [head], bodied: NON_BLANK.test(head) };
+    const rows = scanned.lines.slice(open.line + 1);
+    const head = rows.join("\n");
+    stub = {
+      at,
+      open,
+      source: [head],
+      bodied: NON_BLANK.test(head),
+      newlines: Math.max(0, rows.length - 1),
+      endsWithNewline: rows.at(-1) === "",
+      nonEmpty: head.length > 0,
+    };
   });
 
   return scans;
+}
+
+/** Update the line count on a stub whose fence later parts are still filling. */
+function growStub(segments: StreamingSegment[], lines: number): void {
+  const at = segments.findIndex((segment) => segment.kind === "pending");
+  const pending = at === -1 ? null : segments[at];
+  if (pending?.kind !== "pending") return;
+
+  segments[at] = { ...pending, lines };
 }
 
 /**
@@ -296,6 +360,7 @@ function segmentsOf(
       language: pendingLanguage,
       key: normaliseArtifactKey(open.attributes.id),
       title: open.attributes.title?.trim() || null,
+      lines: bodyLines(lines.slice(open.line + 1)),
     });
   }
 

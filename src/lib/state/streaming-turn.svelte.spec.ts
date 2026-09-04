@@ -162,3 +162,76 @@ describe("StreamingTurn — the checkpoint prompt", () => {
     expect(turn.notice).toBe("student-allowance-exhausted");
   });
 });
+
+/**
+ * The reasoning, folded into the turn (PRD §20, §22).
+ *
+ * It grows into one trailing part the way text does, and it is not "visible
+ * output": the placeholder keeps running while the model reasons, because the
+ * answer has not begun.
+ */
+describe("StreamingTurn — thinking", () => {
+  it("grows into one trailing part rather than one per delta", () => {
+    const turn = new StreamingTurn();
+    turn.begin("turn-1");
+
+    turn.apply({ type: "thinking-delta", text: "Overvejer " }, 0);
+    turn.apply({ type: "thinking-delta", text: "opgaven" }, 1);
+
+    expect(turn.parts).toEqual([{ type: "thinking", text: "Overvejer opgaven" }]);
+    expect(turn.thinking).toBe("Overvejer opgaven");
+  });
+
+  it("does not count as the answer having begun", () => {
+    const turn = new StreamingTurn();
+    turn.begin("turn-1");
+    turn.apply({ type: "thinking-delta", text: "Overvejer" }, 0);
+
+    expect(turn.hasVisibleOutput).toBe(false);
+
+    turn.apply({ type: "text-delta", text: "Et loop" }, 1);
+    expect(turn.hasVisibleOutput).toBe(true);
+  });
+
+  it("settles the moment the first visible output arrives, not when the turn ends", () => {
+    let clock = 1_000;
+    const turn = new StreamingTurn(() => clock);
+    turn.begin("turn-1");
+
+    clock = 3_000;
+    turn.apply({ type: "thinking-delta", text: "Overvejer" }, 0);
+    expect(turn.thinkingStartedAt).toBe(3_000);
+    expect(turn.thinkingSettledAt).toBeNull();
+
+    clock = 9_000;
+    turn.apply({ type: "text-delta", text: "Et loop" }, 1);
+    expect(turn.thinkingSettledAt).toBe(9_000);
+
+    // The answer streaming on does not move it again.
+    clock = 20_000;
+    turn.apply({ type: "text-delta", text: " gentager" }, 2);
+    expect(turn.thinkingSettledAt).toBe(9_000);
+  });
+
+  it("settles at the end for a turn that reasoned and then said nothing", () => {
+    let clock = 1_000;
+    const turn = new StreamingTurn(() => clock);
+    turn.begin("turn-1");
+    turn.apply({ type: "thinking-delta", text: "Overvejer" }, 0);
+
+    clock = 12_000;
+    turn.apply({ type: "done", reason: "stop" }, 1);
+
+    expect(turn.thinkingSettledAt).toBe(12_000);
+  });
+
+  it("leaves the settle time alone for a turn that never reasoned", () => {
+    const turn = new StreamingTurn();
+    turn.begin("turn-1");
+    turn.apply({ type: "text-delta", text: "Et loop" }, 0);
+    turn.apply({ type: "done", reason: "stop" }, 1);
+
+    expect(turn.thinkingStartedAt).toBeNull();
+    expect(turn.thinkingSettledAt).toBeNull();
+  });
+});

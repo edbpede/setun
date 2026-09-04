@@ -4,6 +4,7 @@
 import "virtual:uno.css";
 import "../app.css";
 import { provideTheme } from "$lib/state/theme.svelte";
+import { provideThinking } from "$lib/state/thinking.svelte";
 
 let { children } = $props();
 
@@ -19,6 +20,18 @@ const theme = provideTheme();
 
 $effect(() => theme.start());
 $effect(() => theme.apply());
+
+/**
+ * Whether the pupil wants to see the model reason (§20).
+ *
+ * Beside the theme, for the same reasons — a device setting, held in context
+ * rather than as a module singleton. There is no boot script for this one:
+ * thinking does not affect first paint, so reading it in an effect is soon
+ * enough, and the classroom's policy is enforced on the server regardless.
+ */
+const thinking = provideThinking();
+
+$effect(() => thinking.start());
 </script>
 
 {@render children()}

@@ -90,7 +90,7 @@ describe("streamingSegments", () => {
     // The pupil watched `<!doctype html>` scroll past before this (§13, §20).
     expect(segments).toEqual([
       { kind: "text", text: "Her er siden:" },
-      { kind: "pending", language: "html", key: "side", title: "Min side" },
+      { kind: "pending", language: "html", key: "side", title: "Min side", lines: 2 },
     ]);
   });
 
@@ -108,7 +108,13 @@ describe("streamingSegments", () => {
 
     expect(segments.map((segment) => segment.kind)).toEqual(["artifact", "text", "pending"]);
     expect(segments[0].kind === "artifact" && segments[0].artifact.key).toBe("en");
-    expect(segments[2]).toEqual({ kind: "pending", language: "svg", key: "to", title: null });
+    expect(segments[2]).toEqual({
+      kind: "pending",
+      language: "svg",
+      key: "to",
+      title: null,
+      lines: 1,
+    });
   });
 
   it("does not read a backtick inside an info string as a fence", () => {
@@ -125,7 +131,7 @@ describe("streamingSegments", () => {
     // A tilde fence's info string may hold one, so the same info string that is
     // not a fence above opens one here.
     expect(streamingSegments("~~~html id=side title=`x`\n<p>hi")).toEqual([
-      { kind: "pending", language: "html", key: "side", title: "`x`" },
+      { kind: "pending", language: "html", key: "side", title: "`x`", lines: 1 },
     ]);
   });
 
@@ -134,7 +140,26 @@ describe("streamingSegments", () => {
 
     // The backtick is what makes this a tilde fence's case: the same info string
     // after three backticks is not a fence at all.
-    expect(segments).toEqual([{ kind: "pending", language: "html", key: "side", title: "`x`" }]);
+    expect(segments).toEqual([
+      { kind: "pending", language: "html", key: "side", title: "`x`", lines: 1 },
+    ]);
+  });
+
+  /**
+   * A long file takes a minute to write, and a stub that says only "building"
+   * for the whole of it looks stuck (§20).
+   */
+  it("counts the lines of the file that have arrived", () => {
+    const stubOf = (markdown: string) => {
+      const segment = streamingSegments(markdown).at(-1);
+      if (segment?.kind !== "pending") throw new Error("expected a pending stub");
+      return segment.lines;
+    };
+
+    expect(stubOf("```html id=side\n")).toBe(0);
+    expect(stubOf("```html id=side\n<h1>")).toBe(1);
+    expect(stubOf("```html id=side\n<h1>Hej</h1>\n")).toBe(1);
+    expect(stubOf("```html id=side\n<h1>Hej</h1>\n<p>Og</p>")).toBe(2);
   });
 
   it("scans a long buffer without parsing it", () => {
@@ -176,6 +201,19 @@ describe("streamingMessageSegments", () => {
     expect(after).toEqual([{ kind: "text", text: "Færdig." }]);
   });
 
+  it("keeps counting the lines while later parts fill the same fence", () => {
+    const linesOf = (scans: ReturnType<typeof streamingMessageSegments>) => {
+      const segment = scans[0].find((entry) => entry.kind === "pending");
+      if (segment?.kind !== "pending") throw new Error("expected a pending stub");
+      return segment.lines;
+    };
+
+    // The pieces join with nothing, because `StreamingTurn` concatenates deltas
+    // — so a boundary that fell mid-line is one line again here.
+    expect(linesOf(streamingMessageSegments(["```html id=side\n<h1>He", "j</h1>"]))).toBe(1);
+    expect(linesOf(streamingMessageSegments(["```html id=side\n<h1>He", "j</h1>\n<p>Og"]))).toBe(2);
+  });
+
   it("renders nothing for a part wholly inside a carried fence", () => {
     const scans = streamingMessageSegments([
       "```html id=side\n<h1>Hej",
@@ -204,7 +242,9 @@ describe("streamingMessageSegments", () => {
   it("keeps the stub pending while the fence it opened is still open", () => {
     const scans = streamingMessageSegments(["```html id=side\n<h1>Hej", "<p>mere</p>"]);
 
-    expect(scans[0]).toEqual([{ kind: "pending", language: "html", key: "side", title: null }]);
+    expect(scans[0]).toEqual([
+      { kind: "pending", language: "html", key: "side", title: null, lines: 1 },
+    ]);
     expect(scans[1]).toEqual([]);
   });
 
@@ -236,7 +276,7 @@ describe("streamingMessageSegments", () => {
     expect(scans[0].map((segment) => segment.kind)).toEqual(["artifact"]);
     expect(scans[1]).toEqual([
       { kind: "text", text: "Og nu:" },
-      { kind: "pending", language: "svg", key: "to", title: null },
+      { kind: "pending", language: "svg", key: "to", title: null, lines: 1 },
     ]);
   });
 
