@@ -108,6 +108,50 @@ export const ARTIFACT_LONG_REPLY = [
   "Færdig med den lange side.",
 ].join("\n");
 
+/**
+ * A prompt containing this asks the stub for a reply with reasoning (§20).
+ *
+ * Only the Responses transport carries reasoning at all, so this marker is also
+ * what proves the application is speaking it.
+ */
+export const THINKING_MARKER = "TAENKNING";
+
+/** The summary the stub streams before its answer, one delta per word. */
+export const THINKING_REPLY = "Jeg overvejer opgaven og finder et svar.";
+
+/**
+ * A model that has no `/v1/responses` at all.
+ *
+ * The gateway answers 404 for it, which is the fallback the dialect memoises —
+ * so a turn on this alias streams over chat completions and carries no thinking.
+ */
+export const LEGACY_MODEL = "stub-model-legacy";
+
+/** A prompt containing this asks for an artifact written as several files (§13). */
+export const ARTIFACT_PROJECT_MARKER = "ARTEFAKT-PROJEKT";
+
+export const ARTIFACT_PROJECT_REPLY = [
+  "Her er projektet:",
+  '```html id=projektet path=index.html title="Projektet" entry',
+  '<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head>',
+  '<body><p id="hilsen">Hej fra projektet</p></body></html>',
+  "```",
+  "```css id=projektet path=styles.css",
+  "#hilsen { color: rgb(0, 128, 128) }",
+  "```",
+  "Prøv det.",
+].join("\n");
+
+/** And this asks for a revision of it that touches only the stylesheet. */
+export const ARTIFACT_PROJECT_REVISION_MARKER = "ARTEFAKT-PROJEKT-FARVE";
+
+export const ARTIFACT_PROJECT_REVISION_REPLY = [
+  "Jeg har skiftet farven:",
+  "```css id=projektet path=styles.css",
+  "#hilsen { color: rgb(128, 0, 128) }",
+  "```",
+].join("\n");
+
 const SLOW_WORD_DELAY_MS = 400;
 
 /**
@@ -141,6 +185,55 @@ function lastUserContent(payload: string): string {
   }
 }
 
+/** Which prepared reply a prompt asks for. Matched against the newest user message. */
+function replyFor(ask: string, fallback: string): string {
+  if (ask.includes(ARTIFACT_LONG_MARKER)) return ARTIFACT_LONG_REPLY;
+  if (ask.includes(ARTIFACT_PROJECT_REVISION_MARKER)) return ARTIFACT_PROJECT_REVISION_REPLY;
+  if (ask.includes(ARTIFACT_PROJECT_MARKER)) return ARTIFACT_PROJECT_REPLY;
+  if (ask.includes(ARTIFACT_REVISION_MARKER)) return ARTIFACT_REVISION_REPLY;
+  if (ask.includes(ARTIFACT_SECOND_MARKER)) return ARTIFACT_SECOND_REPLY;
+  if (ask.includes(ARTIFACT_MARKER)) return ARTIFACT_REPLY;
+  if (ask.includes(LONG_MARKER)) return LONG_REPLY;
+  return fallback;
+}
+
+/**
+ * The newest user message of a Responses request.
+ *
+ * A different shape from chat completions: the conversation is `input`, a user
+ * message's prose sits in `input_text` parts, and a tool's answer is an item of
+ * its own rather than a role.
+ */
+function lastResponsesInput(payload: string): string {
+  try {
+    const parsed = JSON.parse(payload) as {
+      input?: { role?: string; content?: { type?: string; text?: string }[] }[];
+    };
+    const last = parsed.input?.findLast((item) => item.role === "user");
+    if (!last) return payload;
+
+    return (last.content ?? [])
+      .map((part) => (part.type === "input_text" ? (part.text ?? "") : ""))
+      .join(" ");
+  } catch {
+    return payload;
+  }
+}
+
+/** The model a Responses request names, so the legacy alias can be refused. */
+function requestedModel(payload: string): string {
+  try {
+    return String((JSON.parse(payload) as { model?: unknown }).model ?? "");
+  } catch {
+    return "";
+  }
+}
+
+/** One Responses SSE record, framed as the upstream frames it. */
+function responseEvent(type: string, payload: Record<string, unknown> = {}): string {
+  return `event: ${type}\ndata: ${JSON.stringify({ type, ...payload })}\n\n`;
+}
+
 export async function startStubGateway(
   options: { reply?: string; delayMs?: number; port?: number } = {},
 ): Promise<StubGateway> {
@@ -149,7 +242,62 @@ export async function startStubGateway(
   const server: Server = createServer(async (request, response) => {
     if (request.url?.startsWith("/v1/models")) {
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ data: [{ id: "stub-model" }] }));
+      response.end(JSON.stringify({ data: [{ id: "stub-model" }, { id: LEGACY_MODEL }] }));
+      return;
+    }
+
+    /**
+     * The transport the application prefers, and the only one that carries the
+     * model's reasoning (§20).
+     *
+     * `LEGACY_MODEL` answers 404 here, which is the fallback the dialect
+     * memoises: a turn on that alias arrives at chat completions below and
+     * streams with no thinking at all.
+     */
+    if (request.url?.startsWith("/v1/responses")) {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(chunk as Buffer);
+      const payload = Buffer.concat(chunks).toString();
+
+      if (requestedModel(payload) === LEGACY_MODEL) {
+        response.writeHead(404, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: { message: "unknown url: /v1/responses" } }));
+        return;
+      }
+
+      const ask = lastResponsesInput(payload);
+      const body = replyFor(ask, reply);
+      const slow = ask.includes(SLOW_MARKER);
+      const perWordDelay = slow ? SLOW_WORD_DELAY_MS : options.delayMs;
+
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+      });
+      response.write(responseEvent("response.created"));
+
+      // Reasoning first, as a real one does: the summary is what the pupil sees
+      // in the collapsed block before a word of the answer arrives.
+      if (ask.includes(THINKING_MARKER)) {
+        response.write(responseEvent("response.reasoning_summary_part.added", { summary_index: 0 }));
+        for (const word of THINKING_REPLY.split(" ")) {
+          response.write(
+            responseEvent("response.reasoning_summary_text.delta", { delta: `${word} ` }),
+          );
+        }
+      }
+
+      for (const word of body.split(" ")) {
+        response.write(responseEvent("response.output_text.delta", { delta: `${word} ` }));
+        if (perWordDelay) await new Promise((r) => setTimeout(r, perWordDelay));
+      }
+
+      response.write(
+        responseEvent("response.completed", {
+          response: { status: "completed", usage: { input_tokens: 18, output_tokens: 6 } },
+        }),
+      );
+      response.end();
       return;
     }
 
@@ -182,17 +330,7 @@ export async function startStubGateway(
      */
     const slow = ask.includes(SLOW_MARKER);
     const perWordDelay = slow ? SLOW_WORD_DELAY_MS : options.delayMs;
-    const body = ask.includes(ARTIFACT_LONG_MARKER)
-      ? ARTIFACT_LONG_REPLY
-      : ask.includes(ARTIFACT_REVISION_MARKER)
-      ? ARTIFACT_REVISION_REPLY
-      : ask.includes(ARTIFACT_SECOND_MARKER)
-        ? ARTIFACT_SECOND_REPLY
-        : ask.includes(ARTIFACT_MARKER)
-          ? ARTIFACT_REPLY
-          : ask.includes(LONG_MARKER)
-            ? LONG_REPLY
-            : reply;
+    const body = replyFor(ask, reply);
 
     response.writeHead(200, {
       "content-type": "text/event-stream",

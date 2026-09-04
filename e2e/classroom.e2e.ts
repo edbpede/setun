@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { expect, test, type Page } from "@playwright/test";
 import * as m from "../src/lib/paraglide/messages";
-import { SLOW_MARKER } from "./support/stub-gateway";
+import { LONG_MARKER, SLOW_MARKER } from "./support/stub-gateway";
 import {
   APP_ORIGIN,
   E2E_DATABASE_PATH,
@@ -414,4 +414,44 @@ test("the educator login refuses a wrong password the way it refuses an unknown 
 
   // The same sentence for both: nothing here answers "does this account exist?"
   await expect(page.getByText(m.educator_login_failed())).toBeVisible();
+});
+
+/**
+ * The allowance warns, then binds, mid-turn (PRD §10, §22).
+ *
+ * The per-turn caps became checkpoints that ask, so the daily allowance is the
+ * only thing that still stops a stream — and it now does so *during* a turn
+ * rather than only at its start. Both halves are asserted where the pupil meets
+ * them: the banner on screen, and the notice the turn ends with.
+ */
+test("warns at 70 % of the allowance, and stops when it empties mid-turn", async ({ page }) => {
+  test.setTimeout(120_000);
+  const { code } = await provisionStudent();
+  await control("open");
+  await control("low-allowance");
+
+  try {
+    await signIn(page, code);
+
+    // A long answer, so the running estimate crosses the warning line and then
+    // the ceiling *while the answer is still arriving* — which is the whole of
+    // what those two events are for (§10).
+    await page
+      .getByRole("textbox", { name: m.chat_composer_label() })
+      .fill(`Forklar loops ${LONG_MARKER}`);
+    await page.getByRole("button", { name: m.chat_send() }).click();
+
+    // Shown while the answer is still arriving: a response in flight is never
+    // cut at 70 %, so the pupil gets the figure and a real choice (§10).
+    await expect(page.getByText(/% af dagens tildeling er brugt|% of today/)).toBeVisible({
+      timeout: 30_000,
+    });
+
+    // And the ceiling itself, which is what actually ends the turn.
+    await expect(page.getByText(m.chat_notice_student_allowance_exhausted())).toBeVisible({
+      timeout: 60_000,
+    });
+  } finally {
+    await control("restore-allowance");
+  }
 });

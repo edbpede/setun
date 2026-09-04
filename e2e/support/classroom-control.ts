@@ -139,6 +139,41 @@ switch (command) {
     });
     break;
 
+  /**
+   * A day's allowance the very next turn passes 70 % of, and then empties (§10).
+   *
+   * Small enough that the stub's own reply crosses the warning line mid-stream
+   * and the ceiling shortly after, which is the pair of events the pupil sees.
+   */
+  case "low-allowance":
+    updateClassroomSettings(db, {
+      classroomId: classroom.id,
+      settings: { perStudentDailyTokens: 30 },
+    });
+    break;
+
+  /** The classroom's thinking policy (§20). */
+  case "hide-thinking":
+    updateClassroomSettings(db, {
+      classroomId: classroom.id,
+      settings: { thinkingVisibility: "hidden" },
+    });
+    break;
+
+  case "show-thinking":
+    updateClassroomSettings(db, {
+      classroomId: classroom.id,
+      settings: { thinkingVisibility: "shown" },
+    });
+    break;
+
+  case "student-thinking":
+    updateClassroomSettings(db, {
+      classroomId: classroom.id,
+      settings: { thinkingVisibility: "student" },
+    });
+    break;
+
   case "restore-allowance":
     updateClassroomSettings(db, {
       classroomId: classroom.id,

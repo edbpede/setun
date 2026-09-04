@@ -5,6 +5,8 @@ import * as m from "../src/lib/paraglide/messages";
 import { E2E_DATABASE_PATH, E2E_PEPPER, E2E_STORAGE_PATH } from "../playwright.config";
 import {
   ARTIFACT_MARKER,
+  ARTIFACT_PROJECT_MARKER,
+  ARTIFACT_PROJECT_REVISION_MARKER,
   ARTIFACT_REVISION_MARKER,
   ARTIFACT_SECOND_MARKER,
 } from "./support/stub-gateway";
@@ -435,4 +437,113 @@ test("a build outcome cannot be written to somebody else's artifact", async ({ b
   await ownerContext.close();
   await intruderContext.close();
   await unauthenticated.close();
+});
+
+/**
+ * An artifact built from several fences, revised one file at a time (PRD §13).
+ *
+ * The whole economy of a project: the model writes an entry and a stylesheet,
+ * the pupil edits one file, and the next turn re-emits only the stylesheet —
+ * with the page it did not mention carried through untouched.
+ */
+test("is built from several fences, edited one file at a time, and revised by one", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  const { code } = await provisionStudent();
+
+  await signIn(page, code);
+  await startConversation(page);
+  await ask(page, `${ARTIFACT_PROJECT_MARKER} lav et projekt`, 1);
+
+  // The card in the transcript says it is a project, not a file. Scoped to the
+  // transcript: the panel's own header says the same thing beside it.
+  await expect(
+    page.locator("[data-artifact-card]").getByText(m.artifact_files_count({ count: 2 })),
+  ).toBeVisible({ timeout: 20_000 });
+
+  // The frame runs the entry with its stylesheet inlined: there is no network in
+  // there, so an untouched `<link href>` would silently do nothing (§13).
+  const stage = page
+    .frameLocator('iframe[title="' + m.artifact_frame_title() + '"]')
+    .frameLocator("#stage");
+  await expect(stage.locator("#hilsen")).toHaveText("Hej fra projektet", { timeout: 20_000 });
+  await expect(stage.locator("#hilsen")).toHaveCSS("color", "rgb(0, 128, 128)");
+
+  // The tree lists both files and the editor opens on the entry.
+  await page.getByRole("tab", { name: m.artifact_tab_code() }).click();
+  await expect(page.getByRole("tree", { name: m.artifact_file_tree_label() })).toBeVisible({
+    timeout: 20_000,
+  });
+  await expect(page.getByRole("treeitem", { name: /index\.html/ })).toBeVisible();
+
+  // Edit the stylesheet, which is not the entry: the file the pupil picks is
+  // the file the editor holds.
+  await page.getByRole("treeitem", { name: /styles\.css/ }).click();
+  const editor = page.locator(".cm-content");
+  await expect(editor).toBeVisible({ timeout: 20_000 });
+
+  await editor.click();
+  await page.keyboard.press("ControlOrMeta+a");
+  await page.keyboard.type("#hilsen { color: rgb(255, 0, 0) }");
+  await page.getByRole("button", { name: m.artifact_run() }).click();
+
+  await expect(stage.locator("#hilsen")).toHaveCSS("color", "rgb(255, 0, 0)", { timeout: 20_000 });
+
+  const artifactId = await page
+    .locator("[data-artifact-id]")
+    .first()
+    .getAttribute("data-artifact-id");
+
+  // The pupil's revision holds both files: only the stylesheet was posted, and
+  // the page it did not mention was carried through (§13).
+  const stored = await (await page.request.get(`/api/artifacts/${artifactId}`)).json();
+  expect(stored.versions).toHaveLength(2);
+  expect(stored.versions[1].authoredBy).toBe("student");
+  expect(
+    stored.versions[1].files.map((file: { path: string }) => file.path).sort(),
+  ).toEqual(["index.html", "styles.css"]);
+  // And the history says what it actually changed, which is one file of two.
+  expect(
+    stored.versions[1].files.filter(
+      (file: { change: string }) => file.change !== "unchanged",
+    ),
+  ).toHaveLength(1);
+
+  const edited = await (
+    await page.request.get(`/api/artifacts/${artifactId}/versions/${stored.versions[1].id}`)
+  ).json();
+  expect(edited.files["index.html"]).toContain("Hej fra projektet");
+  expect(edited.files["styles.css"]).toContain("rgb(255, 0, 0)");
+
+  // A second turn that re-emits only the stylesheet: the page survives it.
+  //
+  // Waited for by the revision rather than by the build count, which is already
+  // one and would let the assertions run before the turn had landed.
+  await showChatOnly(page);
+  await page
+    .getByRole("textbox", { name: m.chat_composer_label() })
+    .fill(`${ARTIFACT_PROJECT_REVISION_MARKER} skift farven`);
+  await page.getByRole("button", { name: m.chat_send() }).click();
+
+  await expect
+    .poll(
+      async () =>
+        (await (await page.request.get(`/api/artifacts/${artifactId}`)).json()).versions.length,
+      { timeout: 30_000 },
+    )
+    .toBe(3);
+
+  const revised = await (await page.request.get(`/api/artifacts/${artifactId}`)).json();
+  expect(revised.versions[2].authoredBy).toBe("model");
+  // One file of two, which is the whole economy of it.
+  expect(
+    revised.versions[2].files.filter((file: { change: string }) => file.change !== "unchanged"),
+  ).toHaveLength(1);
+
+  const latest = await (
+    await page.request.get(`/api/artifacts/${artifactId}/versions/${revised.versions[2].id}`)
+  ).json();
+  expect(latest.files["index.html"]).toContain("Hej fra projektet");
+  expect(latest.files["styles.css"]).toContain("rgb(128, 0, 128)");
 });
