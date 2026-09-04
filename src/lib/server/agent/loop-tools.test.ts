@@ -609,6 +609,84 @@ describe("loop termination with tools (§10, §22)", () => {
     expect(events.at(-1)).toEqual({ type: "done", reason: "student-allowance-exhausted" });
   });
 
+  /**
+   * A step the provider cut at its own output ceiling (§10).
+   *
+   * The arguments the model was writing are half-finished, so acting on them
+   * would mean running a call it never finished asking for. The pupil is told
+   * the answer was cut short instead.
+   */
+  it("runs no tools from a step the provider truncated", async () => {
+    const db = createTestDatabase();
+    const fixtures = seedTestFixtures(db);
+    seedAllowedTool(db, fixtures.classroom.id);
+
+    const gateway = stubFetch(() =>
+      streamingResponse([
+        JSON.stringify({
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call-1",
+                    function: { name: "docs__search", arguments: '{"q":"lo' },
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+        JSON.stringify({ choices: [{ delta: {}, finish_reason: "length" }] }),
+        JSON.stringify({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 4 } }),
+        "[DONE]",
+      ]),
+    );
+    const mcp = mcpServer([{ content: [{ type: "text", text: "aldrig" }] }]);
+
+    const adapter = new GatewayAdapter({
+      baseUrl: "http://cpa:8317",
+      listenerKey: "k",
+      fetch: gateway.fetch,
+    });
+    const context: ToolContext = {
+      db,
+      adapter,
+      files: new FileStore("/tmp/setun-test-unused"),
+      mcp: new McpClient([SERVER_CONFIG], { fetch: mcp.fetch }),
+      classroom: fixtures.classroom,
+      studentId: fixtures.student.id,
+      conversationId: crypto.randomUUID(),
+      skills: resolveSkills(db, {
+        classroomId: fixtures.classroom.id,
+        studentId: fixtures.student.id,
+        authoringPolicy: "immediate",
+      }),
+    };
+
+    const events: GatewayEvent[] = [];
+    for await (const event of runTurn({
+      adapter,
+      dialect: "openai",
+      model: "test-model",
+      path: PATH,
+      tooling: {
+        tools: buildToolSet(context),
+        context,
+        mode: "open",
+        turnId: crypto.randomUUID(),
+        interactions: new TurnInteractionRegistry(),
+      },
+    })) {
+      events.push(event);
+    }
+
+    expect(mcp.calls.some((call) => call.method === "tools/call")).toBe(false);
+    expect(events.some((event) => event.type === "tool-call-started")).toBe(false);
+    expect(events.at(-1)).toEqual({ type: "done", reason: "truncated" });
+  });
+
   it("cancels a running tool call when the turn is aborted (§10)", async () => {
     const db = createTestDatabase();
     const fixtures = seedTestFixtures(db);

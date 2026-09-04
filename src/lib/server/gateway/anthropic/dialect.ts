@@ -11,7 +11,7 @@ import type {
   ImageRequest,
 } from "../dialect";
 import { GatewayError } from "../errors";
-import type { GatewayEvent } from "../events";
+import type { FinishReason, GatewayEvent } from "../events";
 import { promptTextOf } from "../messages";
 import { resolveUsage } from "../usage";
 
@@ -36,8 +36,16 @@ interface MessageStreamEvent {
   error?: { message?: string };
 }
 
-/** Anthropic requires an explicit output ceiling; CPA forwards it unchanged. */
-const DEFAULT_MAX_TOKENS = 4096;
+/**
+ * Anthropic requires an explicit output ceiling; CPA forwards it unchanged.
+ *
+ * 4 096 was the old Claude 3 ceiling and it cut long answers in half: a pupil
+ * asking for a timeline artifact got a file that stopped mid-element, reported
+ * as a clean stop. Every current model accepts far more, so the ceiling is set
+ * where it stops a runaway rather than where it truncates ordinary work. Drop
+ * it back to 8 192 if a Claude 3.x alias ever appears.
+ */
+const DEFAULT_MAX_TOKENS = 32_000;
 
 export class AnthropicDialect implements GatewayDialectAdapter {
   readonly name = "anthropic" as const;
@@ -71,6 +79,7 @@ export class AnthropicDialect implements GatewayDialectAdapter {
     let completion = "";
     let inputTokens: number | undefined;
     let outputTokens: number | undefined;
+    let finishReason: FinishReason | undefined;
     /** Tool blocks stream their input as JSON fragments, keyed by block index. */
     const toolBlocks = new Map<number, { id: string; name: string; arguments: string }>();
 
@@ -145,6 +154,9 @@ export class AnthropicDialect implements GatewayDialectAdapter {
           }
           case "message_delta": {
             outputTokens = payload.usage?.output_tokens ?? outputTokens;
+            if (payload.delta?.stop_reason) {
+              finishReason = mapStopReason(payload.delta.stop_reason);
+            }
             break;
           }
           case "error": {
@@ -186,6 +198,7 @@ export class AnthropicDialect implements GatewayDialectAdapter {
       reported: { inputTokens, outputTokens },
       promptText: promptTextOf(request.messages),
       completionText: completion,
+      finishReason,
     });
   }
 
@@ -211,6 +224,18 @@ export class AnthropicDialect implements GatewayDialectAdapter {
       new GatewayError("rejected", "the Anthropic dialect exposes no image generation endpoint"),
     );
   }
+}
+
+/**
+ * Normalise `stop_reason` (§10).
+ *
+ * `max_tokens` is this dialect's name for "I stopped at the output ceiling",
+ * which the loop turns into a truncation notice rather than a clean stop.
+ */
+function mapStopReason(raw: string): FinishReason {
+  if (raw === "max_tokens") return "length";
+  if (raw === "tool_use") return "tool-calls";
+  return "stop";
 }
 
 function encodeTool(tool: GatewayToolDefinition) {

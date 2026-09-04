@@ -239,6 +239,50 @@ describe("the 70 % warning (§10)", () => {
   });
 });
 
+/**
+ * A provider that stopped at its own output ceiling (§10).
+ *
+ * The answer is cut mid-sentence, and until the dialects read `finish_reason`
+ * it looked exactly like a model finishing its thought.
+ */
+describe("a truncated response (§10)", () => {
+  const TRUNCATED_STREAM = [
+    JSON.stringify({ choices: [{ delta: { content: "Halvvejs igennem" } }] }),
+    JSON.stringify({ choices: [{ delta: {}, finish_reason: "length" }] }),
+    JSON.stringify({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 4 } }),
+    "[DONE]",
+  ];
+
+  it("ends the turn as truncated, keeping what arrived", async () => {
+    const events = await collect(
+      runTurn({
+        adapter: adapterOver(TRUNCATED_STREAM),
+        dialect: "openai",
+        model: "m",
+        path,
+        budgets: BUDGETS,
+      }),
+    );
+
+    expect(doneOf(events)).toEqual({ type: "done", reason: "truncated" });
+    expect(textOf(events)).toBe("Halvvejs igennem");
+  });
+
+  it("leaves a clean stop alone", async () => {
+    const events = await collect(
+      runTurn({
+        adapter: adapterOver(LONG_STREAM),
+        dialect: "openai",
+        model: "m",
+        path,
+        budgets: BUDGETS,
+      }),
+    );
+
+    expect(doneOf(events)).toEqual({ type: "done", reason: "stop" });
+  });
+});
+
 describe("a turn inside its caps is unaffected", () => {
   it("completes normally and keeps the gateway's reported usage", async () => {
     const events = await collect(

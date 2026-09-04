@@ -129,7 +129,7 @@ export interface UsageEventPayload {
   readonly outputTokens: number;
   /** True when Setun estimated the figures; usage is never counted as zero (§10). */
   readonly estimated: boolean;
-  /** Absent on an estimate — an estimate has no provider verdict to report. */
+  /** Absent when the provider never said — an abort, or a stream cut short. */
   readonly finishReason?: FinishReason;
 }
 

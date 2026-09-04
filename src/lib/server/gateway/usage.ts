@@ -1,4 +1,4 @@
-import type { UsageEventPayload } from "./events";
+import type { FinishReason, UsageEventPayload } from "./events";
 
 /**
  * Token accounting for responses the gateway did not report usage for (PRD §10).
@@ -34,7 +34,17 @@ export function resolveUsage(input: {
   reported?: { inputTokens?: number; outputTokens?: number };
   promptText: string;
   completionText: string;
+  /**
+   * Why the provider stopped, when it said (§10).
+   *
+   * Copied through rather than derived: a response cut at the provider's own
+   * output ceiling looks exactly like a finished sentence from here, and only
+   * the dialect saw the difference.
+   */
+  finishReason?: FinishReason;
 }): UsageEventPayload {
+  const finish = input.finishReason ? { finishReason: input.finishReason } : {};
+
   const reportedInput = input.reported?.inputTokens;
   const reportedOutput = input.reported?.outputTokens;
 
@@ -49,6 +59,7 @@ export function resolveUsage(input: {
       inputTokens: reportedInput,
       outputTokens: reportedOutput ?? 0,
       estimated: false,
+      ...finish,
     };
   }
 
@@ -57,5 +68,6 @@ export function resolveUsage(input: {
     inputTokens: inputKnown ? reportedInput : estimateTokens(input.promptText),
     outputTokens: outputKnown ? reportedOutput : estimateTokens(input.completionText),
     estimated: true,
+    ...finish,
   };
 }

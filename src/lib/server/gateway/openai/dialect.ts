@@ -11,7 +11,7 @@ import type {
   ImageRequest,
 } from "../dialect";
 import { GatewayError } from "../errors";
-import type { GatewayEvent } from "../events";
+import type { FinishReason, GatewayEvent } from "../events";
 import { promptTextOf } from "../messages";
 import { resolveUsage } from "../usage";
 
@@ -64,6 +64,7 @@ export class OpenAiDialect implements GatewayDialectAdapter {
 
     let completion = "";
     let reported: { inputTokens?: number; outputTokens?: number } | undefined;
+    let finishReason: FinishReason | undefined;
     /** Tool calls arrive in fragments across chunks, keyed by their index. */
     const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
 
@@ -100,7 +101,10 @@ export class OpenAiDialect implements GatewayDialectAdapter {
           };
         }
 
-        const delta = chunk.choices?.[0]?.delta;
+        const choice = chunk.choices?.[0];
+        if (choice?.finish_reason) finishReason = mapFinishReason(choice.finish_reason);
+
+        const delta = choice?.delta;
 
         if (delta?.content) {
           completion += delta.content;
@@ -146,6 +150,7 @@ export class OpenAiDialect implements GatewayDialectAdapter {
       reported,
       promptText: promptTextOf(request.messages),
       completionText: completion,
+      finishReason,
     });
   }
 
@@ -192,6 +197,20 @@ export class OpenAiDialect implements GatewayDialectAdapter {
 
     throw new GatewayError("unavailable", "image response carried no image");
   }
+}
+
+/**
+ * Normalise `finish_reason` (§10).
+ *
+ * `length` is the one that matters: the provider stopped at its own output
+ * ceiling, and without this the loop cannot tell a cut-off answer from a
+ * finished one. Anything unfamiliar reads as a clean stop rather than as an
+ * invented ceiling.
+ */
+function mapFinishReason(raw: string): FinishReason {
+  if (raw === "length") return "length";
+  if (raw === "tool_calls" || raw === "function_call") return "tool-calls";
+  return "stop";
 }
 
 function encodeTool(tool: GatewayToolDefinition) {

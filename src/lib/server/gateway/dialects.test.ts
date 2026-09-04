@@ -185,7 +185,55 @@ describe("openai dialect", () => {
       inputTokens: 25,
       outputTokens: 7,
       estimated: false,
+      finishReason: "stop",
     });
+  });
+
+  /**
+   * Without this a response cut at the provider's own output ceiling looks
+   * exactly like one that finished its sentence, and the pupil is shown a
+   * half-written answer with nothing to say so (§10).
+   */
+  it("reports a length stop, so the loop can call the answer truncated", async () => {
+    const { adapter } = adapterOver(() =>
+      streamingResponse([
+        JSON.stringify({ choices: [{ delta: { content: "Halv" } }] }),
+        JSON.stringify({ choices: [{ delta: {}, finish_reason: "length" }] }),
+        JSON.stringify({ choices: [], usage: { prompt_tokens: 3, completion_tokens: 1 } }),
+        "[DONE]",
+      ]),
+    );
+    const events = await collect(adapter.streamChat("openai", request));
+
+    expect(events.at(-1)).toMatchObject({ type: "usage", finishReason: "length" });
+  });
+
+  it("reports a tool-call stop under one name, whichever the provider used", async () => {
+    for (const raw of ["tool_calls", "function_call"]) {
+      const { adapter } = adapterOver(() =>
+        streamingResponse([
+          JSON.stringify({ choices: [{ delta: {}, finish_reason: raw }] }),
+          JSON.stringify({ choices: [], usage: { prompt_tokens: 3, completion_tokens: 1 } }),
+          "[DONE]",
+        ]),
+      );
+      const events = await collect(adapter.streamChat("openai", request));
+
+      expect(events.at(-1)).toMatchObject({ type: "usage", finishReason: "tool-calls" });
+    }
+  });
+
+  it("reads an unfamiliar finish reason as a clean stop, never as a ceiling", async () => {
+    const { adapter } = adapterOver(() =>
+      streamingResponse([
+        JSON.stringify({ choices: [{ delta: {}, finish_reason: "content_filter" }] }),
+        JSON.stringify({ choices: [], usage: { prompt_tokens: 3, completion_tokens: 1 } }),
+        "[DONE]",
+      ]),
+    );
+    const events = await collect(adapter.streamChat("openai", request));
+
+    expect(events.at(-1)).toMatchObject({ type: "usage", finishReason: "stop" });
   });
 
   it("lists models", async () => {
@@ -218,6 +266,51 @@ describe("anthropic dialect", () => {
       outputTokens: 9,
       estimated: false,
     });
+  });
+
+  /**
+   * The old ceiling was 4 096 tokens, which cut a long artifact in half and
+   * reported it as a clean stop (§10).
+   */
+  it("asks for a ceiling high enough not to truncate ordinary work", async () => {
+    const { adapter, stub } = adapterOver(() => streamingResponse(ANTHROPIC_STREAM));
+    await collect(adapter.streamChat("anthropic", request));
+
+    expect(stub.calls[0].body).toMatchObject({ max_tokens: 32_000 });
+  });
+
+  it("honours an explicit ceiling over the default", async () => {
+    const { adapter, stub } = adapterOver(() => streamingResponse(ANTHROPIC_STREAM));
+    await collect(adapter.streamChat("anthropic", { ...request, maxOutputTokens: 1_024 }));
+
+    expect(stub.calls[0].body).toMatchObject({ max_tokens: 1_024 });
+  });
+
+  it("maps stop_reason onto the same finish reasons the other dialect reports", async () => {
+    const cases = [
+      ["max_tokens", "length"],
+      ["tool_use", "tool-calls"],
+      ["end_turn", "stop"],
+    ] as const;
+
+    for (const [raw, expected] of cases) {
+      const { adapter } = adapterOver(() =>
+        streamingResponse([
+          ANTHROPIC_MESSAGE_START,
+          {
+            event: "message_delta",
+            data: JSON.stringify({
+              type: "message_delta",
+              delta: { stop_reason: raw },
+              usage: { output_tokens: 9 },
+            }),
+          },
+        ]),
+      );
+      const events = await collect(adapter.streamChat("anthropic", request));
+
+      expect(events.at(-1)).toMatchObject({ type: "usage", finishReason: expected });
+    }
   });
 
   it("maps an upstream error event to a gateway failure", async () => {
