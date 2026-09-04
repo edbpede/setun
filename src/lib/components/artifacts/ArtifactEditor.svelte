@@ -1,6 +1,7 @@
 <script lang="ts">
 import type { EditorView } from "@codemirror/view";
 import type { Attachment } from "svelte/attachments";
+import type { ProjectFileKind } from "$lib/artifacts/project";
 import type { ArtifactLanguage } from "$lib/artifacts/types";
 import * as m from "$lib/paraglide/messages";
 
@@ -19,18 +20,41 @@ import * as m from "$lib/paraglide/messages";
 interface Props {
   value: string;
   language: ArtifactLanguage;
+  /**
+   * The file's own kind, where it differs from the artifact's language (§13).
+   *
+   * A project's stylesheet and its data module are `css` and `ts`, and
+   * highlighting either as the artifact's `tsx` gets the whole file wrong. Null
+   * for a file with no kind of its own, which falls back to the language.
+   */
+  kind?: ProjectFileKind | null;
   onchange: (source: string) => void;
 }
 
-let { value, language, onchange }: Props = $props();
+let { value, language, kind = null, onchange }: Props = $props();
 
 let view = $state<EditorView | null>(null);
 
-/** The grammar CodeMirror highlights with; markup languages share the HTML mode. */
-async function languageSupport(kind: ArtifactLanguage) {
-  if (kind === "jsx" || kind === "tsx") {
+/**
+ * The grammar CodeMirror highlights with; markup languages share the HTML mode.
+ *
+ * Loaded on demand, one grammar per file kind: a pupil who never opens a
+ * stylesheet never fetches the CSS mode (§20).
+ */
+async function languageSupport(file: ProjectFileKind) {
+  if (file === "css") {
+    const { css } = await import("@codemirror/lang-css");
+    return css();
+  }
+
+  if (file === "json") {
+    const { json } = await import("@codemirror/lang-json");
+    return json();
+  }
+
+  if (file === "jsx" || file === "tsx" || file === "ts" || file === "js") {
     const { javascript } = await import("@codemirror/lang-javascript");
-    return javascript({ jsx: true, typescript: kind === "tsx" });
+    return javascript({ jsx: file === "jsx" || file === "tsx", typescript: file.startsWith("ts") });
   }
 
   const { html } = await import("@codemirror/lang-html");
@@ -52,7 +76,7 @@ const editor: Attachment<HTMLDivElement> = (node) => {
       import("@codemirror/state"),
       import("@codemirror/commands"),
       import("./editor-theme"),
-      languageSupport(language),
+      languageSupport(kind ?? language),
     ]);
 
     if (disposed) return;

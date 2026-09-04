@@ -193,6 +193,7 @@ const failed = $derived(
             artifactKey={segment.key}
             title={segment.title}
             lines={segment.lines}
+            path={segment.path}
             pending
           />
         {/if}

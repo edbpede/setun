@@ -90,7 +90,7 @@ describe("streamingSegments", () => {
     // The pupil watched `<!doctype html>` scroll past before this (§13, §20).
     expect(segments).toEqual([
       { kind: "text", text: "Her er siden:" },
-      { kind: "pending", language: "html", key: "side", title: "Min side", lines: 2 },
+      { kind: "pending", language: "html", key: "side", title: "Min side", lines: 2, path: null },
     ]);
   });
 
@@ -114,6 +114,7 @@ describe("streamingSegments", () => {
       key: "to",
       title: null,
       lines: 1,
+      path: null,
     });
   });
 
@@ -131,7 +132,7 @@ describe("streamingSegments", () => {
     // A tilde fence's info string may hold one, so the same info string that is
     // not a fence above opens one here.
     expect(streamingSegments("~~~html id=side title=`x`\n<p>hi")).toEqual([
-      { kind: "pending", language: "html", key: "side", title: "`x`", lines: 1 },
+      { kind: "pending", language: "html", key: "side", title: "`x`", lines: 1, path: null },
     ]);
   });
 
@@ -141,7 +142,7 @@ describe("streamingSegments", () => {
     // The backtick is what makes this a tilde fence's case: the same info string
     // after three backticks is not a fence at all.
     expect(segments).toEqual([
-      { kind: "pending", language: "html", key: "side", title: "`x`", lines: 1 },
+      { kind: "pending", language: "html", key: "side", title: "`x`", lines: 1, path: null },
     ]);
   });
 
@@ -251,7 +252,7 @@ describe("streamingMessageSegments", () => {
     const scans = streamingMessageSegments(["```html id=side\n<h1>Hej", "<p>mere</p>"]);
 
     expect(scans[0]).toEqual([
-      { kind: "pending", language: "html", key: "side", title: null, lines: 1 },
+      { kind: "pending", language: "html", key: "side", title: null, lines: 1, path: null },
     ]);
     expect(scans[1]).toEqual([]);
   });
@@ -284,7 +285,7 @@ describe("streamingMessageSegments", () => {
     expect(scans[0].map((segment) => segment.kind)).toEqual(["artifact"]);
     expect(scans[1]).toEqual([
       { kind: "text", text: "Og nu:" },
-      { kind: "pending", language: "svg", key: "to", title: null, lines: 1 },
+      { kind: "pending", language: "svg", key: "to", title: null, lines: 1, path: null },
     ]);
   });
 

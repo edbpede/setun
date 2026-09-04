@@ -37,6 +37,13 @@ export interface MessageArtifactRef {
   readonly language: ArtifactLanguage;
   readonly title: string | null;
   readonly buildStatus?: BuildStatus | null;
+  /** Which file of the project runs (§13). */
+  readonly entry?: string;
+  /** How many files the project held at this revision. */
+  readonly fileCount?: number;
+  /** What this revision added and changed, for the card's one-line summary. */
+  readonly added?: number;
+  readonly modified?: number;
 }
 
 export interface ChatMessage {

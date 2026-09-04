@@ -1,6 +1,13 @@
 import { type BuildOutcome, type BuildReport, buildReportFor } from "$lib/artifacts/build-report";
 import { followModelWrite } from "$lib/artifacts/follow";
 import { effectiveLanguage } from "$lib/artifacts/identity";
+import {
+  type FileChangeKind,
+  type ProjectFiles,
+  type ProjectSnapshot,
+  runnableLanguageOf,
+  sameFiles,
+} from "$lib/artifacts/project";
 import type { ConsoleLine } from "$lib/artifacts/protocol";
 import type { ArtifactLanguage, BuildStatus, VersionAuthor } from "$lib/artifacts/types";
 
@@ -15,6 +22,31 @@ import type { ArtifactLanguage, BuildStatus, VersionAuthor } from "$lib/artifact
  * idle, never per keystroke" (§13), so the frame follows `running`, which only
  * advances at a commit point, while the editor moves with every keystroke.
  */
+
+/**
+ * One revision in the history list, without its content (§13).
+ *
+ * A version list is cheap and its sources are not: a project of a hundred
+ * kilobytes revised twenty times would otherwise arrive whole every time the
+ * pupil opened the History tab. The files carry their size and what the revision
+ * did to them, which is everything the list itself shows; the content is fetched
+ * for the one revision the pupil selects.
+ */
+export interface ArtifactVersionSummary {
+  readonly id: string;
+  readonly revision: number;
+  readonly entry: string;
+  readonly files: readonly {
+    readonly path: string;
+    readonly bytes: number;
+    readonly change: FileChangeKind;
+  }[];
+  readonly language?: ArtifactLanguage | null;
+  readonly authoredBy: VersionAuthor;
+  readonly buildStatus?: BuildStatus | null;
+  readonly buildMessage?: string | null;
+  readonly createdAt: string;
+}
 
 /** The revision the panel is showing, as the server describes it. */
 export interface ArtifactVersionView {
@@ -98,8 +130,24 @@ export class ArtifactWorkspace {
     this.fraction = Math.min(MAX_FRACTION, Math.max(MIN_FRACTION, fraction));
   }
 
-  /** What the editor holds. Null while the student has not typed anything. */
-  draft = $state<string | null>(null);
+  /**
+   * What the editor holds, per file. Empty while the student has typed nothing.
+   *
+   * An overlay rather than a copy of the project: a pupil editing the stylesheet
+   * of a five-file artifact has one entry here, and the four files they have not
+   * touched stay the stored ones — so a revision landing on another file does
+   * not have to be merged into a draft of the whole thing.
+   */
+  drafts = $state<Record<string, string>>({});
+  /**
+   * A Restore, which replaces the whole file list rather than one file of it.
+   *
+   * A stored revision can hold files the current one does not and lack files it
+   * does, so putting one back is not an edit to any single file.
+   */
+  draftReplace = $state<ProjectSnapshot | null>(null);
+  /** Which file the editor is showing. Null follows the entry. */
+  activePath = $state<string | null>(null);
   /**
    * The tag the draft is written under, when it is not the artifact's own.
    *
@@ -109,7 +157,7 @@ export class ArtifactWorkspace {
    */
   draftLanguage = $state<ArtifactLanguage | null>(null);
   /** What the frame is running. Advances only at a commit point (§13). */
-  running = $state<string | null>(null);
+  running = $state<ProjectSnapshot | null>(null);
   /** And under which tag, snapshotted at the same commit point. */
   runningLanguage = $state<ArtifactLanguage | null>(null);
 
@@ -181,19 +229,66 @@ export class ArtifactWorkspace {
     return this.items.find((item) => item.id === this.openId) ?? null;
   }
 
-  /** The current source: the student's edit if there is one, else the stored revision. */
-  get source(): string {
-    return this.draft ?? this.open?.latest.source ?? "";
+  /** The stored project, before any of the pupil's edits. */
+  get stored(): ProjectSnapshot | null {
+    const open = this.open;
+    return open ? { entry: open.latest.entry, files: open.latest.files } : null;
   }
 
-  /** And the tag it is written under, which a Restore can move off the row's own. */
+  /** The project as it stands: the stored one, or a Restore, with the drafts over it. */
+  get files(): ProjectFiles {
+    const base = this.draftReplace?.files ?? this.open?.latest.files ?? {};
+    return { ...base, ...this.drafts };
+  }
+
+  /** Which file runs. A Restore can move it; a draft never does. */
+  get entry(): string {
+    return this.draftReplace?.entry ?? this.open?.latest.entry ?? "";
+  }
+
+  get paths(): string[] {
+    return Object.keys(this.files).sort();
+  }
+
+  /** The file the editor is showing: the pupil's choice, else the entry. */
+  get path(): string {
+    const files = this.files;
+    if (this.activePath && this.activePath in files) return this.activePath;
+    return this.entry in files ? this.entry : (this.paths[0] ?? "");
+  }
+
+  /** The source of the file on screen, which is what the editor binds to. */
+  get source(): string {
+    return this.files[this.path] ?? "";
+  }
+
+  /** And the tag the *entry* is written under, which a Restore can move. */
   get language(): ArtifactLanguage | null {
     const open = this.open;
-    return this.draftLanguage ?? (open ? effectiveLanguage(open, open.latest) : null);
+    if (this.draftLanguage) return this.draftLanguage;
+    if (this.draftReplace) return runnableLanguageOf(this.draftReplace.entry);
+    return open ? effectiveLanguage(open, open.latest) : null;
+  }
+
+  /** Which files differ from what is stored, for the tree's changed marks. */
+  get changedPaths(): string[] {
+    const stored = this.stored?.files ?? {};
+    const files = this.files;
+
+    return [...new Set([...Object.keys(stored), ...Object.keys(files)])]
+      .filter((path) => stored[path] !== files[path])
+      .sort();
   }
 
   get dirty(): boolean {
-    return this.draft !== null && this.draft !== this.open?.latest.source;
+    const stored = this.stored;
+    if (!stored) return false;
+
+    return (
+      !sameFiles(stored.files, this.files) ||
+      stored.entry !== this.entry ||
+      this.language !== effectiveLanguage(this.open ?? { language: "html" }, this.open?.latest)
+    );
   }
 
   /** True once the student's own edit is the newest revision (§13). */
@@ -269,7 +364,7 @@ export class ArtifactWorkspace {
       // supersedes, the status of the run that produced the old one, and what
       // that run printed all go together.
       this.resetRun();
-      this.running = this.open.latest.source;
+      this.running = this.stored;
       this.runningLanguage = effectiveLanguage(this.open, this.open.latest);
     }
 
@@ -314,14 +409,16 @@ export class ArtifactWorkspace {
     this.openId = artifactId;
     this.tab = "preview";
     this.resetRun();
-    this.running = this.open?.latest.source ?? null;
+    this.running = this.stored;
     this.runningLanguage = this.language;
     if (this.unseen === artifactId) this.unseen = null;
   }
 
   /** Everything about the current run, cleared. */
   private resetRun(): void {
-    this.draft = null;
+    this.drafts = {};
+    this.draftReplace = null;
+    this.activePath = null;
     this.draftLanguage = null;
     this.status = "idle";
     this.error = null;
@@ -336,7 +433,7 @@ export class ArtifactWorkspace {
   /** What the frame reported, against the source and tag it was actually running (§13). */
   recordOutcome(status: BuildStatus, message: string | null): void {
     this.outcome = {
-      source: this.running ?? "",
+      files: this.running?.files ?? {},
       language: this.runningLanguage,
       status,
       message,
@@ -405,9 +502,17 @@ export class ArtifactWorkspace {
     this.stage = "chat";
   }
 
-  /** A keystroke. Nothing compiles here — that is the point (§13, §20). */
+  /** A keystroke, against the file on screen. Nothing compiles here (§13, §20). */
   edit(source: string): void {
-    this.draft = source;
+    const path = this.path;
+    if (!path) return;
+
+    this.drafts = { ...this.drafts, [path]: source };
+  }
+
+  /** The pupil picking a file out of the tree. */
+  selectFile(path: string): void {
+    if (path in this.files) this.activePath = path;
   }
 
   /**
@@ -420,17 +525,30 @@ export class ArtifactWorkspace {
     const open = this.open;
     if (!open) return;
 
-    this.draft = version.source;
+    // The whole file list, not one file: a stored revision can hold files the
+    // current one does not and lack files it does.
+    this.drafts = {};
+    this.draftReplace = { entry: version.entry, files: version.files };
     this.draftLanguage = effectiveLanguage(open, version);
+    this.activePath = null;
   }
 
   /** A commit point: Run, or the heavily debounced idle behind it (§13). */
   commit(): void {
-    // Both, because a restore can bring back a source the artifact already holds
-    // under a different tag — same text, different pipeline.
-    if (this.source === this.running && this.language === this.runningLanguage) return;
+    const next = { entry: this.entry, files: this.files };
 
-    this.running = this.source;
+    // All three, because a restore can bring back files the artifact already
+    // holds under a different tag — same text, different pipeline.
+    if (
+      this.running &&
+      this.running.entry === next.entry &&
+      sameFiles(this.running.files, next.files) &&
+      this.language === this.runningLanguage
+    ) {
+      return;
+    }
+
+    this.running = next;
     this.runningLanguage = this.language;
     this.status = "compiling";
     this.error = null;
@@ -445,8 +563,11 @@ export class ArtifactWorkspace {
       item.id === artifactId ? { ...item, latest: version } : item,
     );
 
-    if (this.openId === artifactId && this.draft === version.source) {
-      this.draft = null;
+    // The edit the server just stored is no longer an edit: an overlay that
+    // matches the revision beneath it would keep the file marked as changed.
+    if (this.openId === artifactId && sameFiles(this.files, version.files)) {
+      this.drafts = {};
+      this.draftReplace = null;
       this.draftLanguage = null;
     }
     this.saveFailed = false;

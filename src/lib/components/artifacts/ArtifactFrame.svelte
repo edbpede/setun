@@ -234,7 +234,10 @@ $effect(() => {
     artifactId,
     language: kind,
     entry: start,
-    files: running,
+    // Snapshotted: `postMessage` structured-clones its payload, and a `$state`
+    // proxy is not cloneable — the render would fail with a DataCloneError and
+    // the panel would sit waiting on a build that never started.
+    files: $state.snapshot(running),
   });
 });
 </script>

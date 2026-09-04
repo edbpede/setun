@@ -148,7 +148,17 @@ test("a student builds an artifact, edits it, and the edit travels back", async 
   expect(body.versions).toHaveLength(2);
   expect(body.versions[0].authoredBy).toBe("model");
   expect(body.versions[1].authoredBy).toBe("student");
-  expect(body.versions[1].source).toContain("Min knap");
+  // The list carries paths and sizes; the content is its own request, because a
+  // project of a hundred kilobytes revised twenty times would otherwise arrive
+  // whole every time the History tab opened (§13).
+  expect(body.versions[1].files.map((file: { path: string }) => file.path)).toEqual([
+    "index.html",
+  ]);
+
+  const edited = await (
+    await page.request.get(`/api/artifacts/${artifactId}/versions/${body.versions[1].id}`)
+  ).json();
+  expect(edited.files["index.html"]).toContain("Min knap");
   // Each revision carries the tag it was written under, so restoring one later
   // does not run it through the pipeline the row has since moved to (§13).
   expect(body.versions[0].language).toBe("html");
@@ -179,16 +189,27 @@ test("a student builds an artifact, edits it, and the edit travels back", async 
   // and doing it earlier would have made *that* the edit carried above rather
   // than the one the pupil typed into CodeMirror.
   const posted = await page.request.post(`/api/artifacts/${artifactId}/versions`, {
-    data: { source: "<p>en komponent</p>", language: "svelte" },
+    data: {
+      files: { "App.svelte": "<p>en komponent</p>" },
+      deletes: ["index.html"],
+      entry: "App.svelte",
+      language: "svelte",
+    },
   });
   expect(posted.status()).toBe(201);
   expect((await posted.json()).language).toBe("svelte");
 
   // And a tag Setun does not recognise is refused before it reaches the database.
   const refused = await page.request.post(`/api/artifacts/${artifactId}/versions`, {
-    data: { source: "<p>nej</p>", language: "cobol" },
+    data: { files: { "index.html": "<p>nej</p>" }, language: "cobol" },
   });
   expect(refused.status()).toBe(400);
+
+  // As is a path that would leave the project (§21).
+  const escaped = await page.request.post(`/api/artifacts/${artifactId}/versions`, {
+    data: { files: { "../stjaalet.html": "<p>nej</p>" } },
+  });
+  expect(escaped.status()).toBe(400);
 });
 
 test("the creations gallery holds what the student made", async ({ page }) => {
@@ -237,7 +258,7 @@ test("a student cannot reach another student's artifact", async ({ browser }) =>
   expect(read.status()).toBe(404);
 
   const write = await intruderPage.request.post(`/api/artifacts/${target}/versions`, {
-    data: { source: "<p>stjålet</p>" },
+    data: { files: { "index.html": "<p>stjålet</p>" } },
   });
   expect(write.status()).toBe(404);
 
@@ -289,7 +310,11 @@ test("a second turn revises the same artifact rather than replacing it", async (
   expect(stored.key).toBe("klikkeren");
   expect(stored.versions).toHaveLength(2);
   expect(stored.versions[1].authoredBy).toBe("model");
-  expect(stored.versions[1].source).toContain("quiz");
+
+  const revised = await (
+    await page.request.get(`/api/artifacts/${artifactId}/versions/${stored.versions[1].id}`)
+  ).json();
+  expect(revised.files[revised.entry]).toContain("quiz");
 
   // A different id is a different thing, not a revision of this one.
   await ask(page, `${ARTIFACT_SECOND_MARKER} lav et logo`, 2);

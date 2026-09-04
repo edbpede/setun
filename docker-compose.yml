@@ -36,6 +36,12 @@ services:
       # adapter assumes https and rejects every form POST that arrives over a
       # different scheme than it guessed. Always the application origin.
       ORIGIN: ${SETUN_APP_ORIGIN:?set in .env}
+      # An artifact is a small project of files now, and its whole file list is
+      # posted when a pupil edits or restores one. adapter-node refuses a body
+      # over 512 KB by default, which a project of a few large files reaches —
+      # so the ceiling is set just above the project cap in
+      # src/lib/artifacts/project.ts (1 MB) rather than left to the default.
+      BODY_SIZE_LIMIT: ${SETUN_BODY_SIZE_LIMIT:-2M}
       # Every request arrives through Caddy, so the socket's peer address is
       # Caddy's and identical for all of them. Left unset, the per-IP axis of the
       # rate limiters degrades to a single global bucket that one busy classroom

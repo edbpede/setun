@@ -20,22 +20,26 @@ import ArtifactPanel from "./ArtifactPanel.svelte";
 
 const SANDBOX = "about:blank";
 
+const BASE_VERSION = {
+  id: "version-1",
+  revision: 1,
+  source: "<button>Klik</button>",
+  entry: "index.html",
+  files: { "index.html": "<button>Klik</button>" },
+  authoredBy: "model" as const,
+  createdAt: new Date(0).toISOString(),
+};
+
 function artifact(overrides: Partial<ArtifactView> = {}): ArtifactView {
   return {
     id: "artifact-1",
     language: "html",
     title: "Klikkeren",
-    latest: {
-      id: "version-1",
-      revision: 1,
-      source: "<button>Klik</button>",
-      entry: "index.html",
-      files: { "index.html": "<button>Klik</button>" },
-      authoredBy: "model",
-      createdAt: new Date(0).toISOString(),
-      ...overrides.latest,
-    },
     ...overrides,
+    // Merged after the spread, not before it: an override that names `latest`
+    // states only the fields it cares about, and replacing the whole of it would
+    // leave the artifact without the files every reader now expects.
+    latest: { ...BASE_VERSION, ...overrides.latest },
   };
 }
 
@@ -138,22 +142,26 @@ describe("ArtifactPanel", () => {
 
     // "Compilation is triggered by an explicit Run action or a heavily debounced
     // idle, never per keystroke" (§13) — so the running source has not moved.
-    expect(workspace.running).toBe("<button>Klik</button>");
+    expect(workspace.running?.files).toEqual({ "index.html": "<button>Klik</button>" });
     await expect.element(page.getByText(m.artifact_status_unsaved())).toBeVisible();
   });
 
   it("runs and stores the edit when Run is pressed", async () => {
     const workspace = openWorkspace();
-    const fetched = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          id: "version-2",
-          revision: 2,
-          source: "<button>Min knap</button>",
-          authoredBy: "student",
-          createdAt: new Date(1).toISOString(),
-        }),
-        { status: 201, headers: { "content-type": "application/json" } },
+    const fetched = vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            id: "version-2",
+            revision: 2,
+            entry: "index.html",
+            files: { "index.html": "<button>Min knap</button>" },
+            source: "<button>Min knap</button>",
+            authoredBy: "student",
+            createdAt: new Date(1).toISOString(),
+          }),
+          { status: 201, headers: { "content-type": "application/json" } },
+        ),
       ),
     );
 
@@ -163,7 +171,7 @@ describe("ArtifactPanel", () => {
 
       await page.getByRole("button", { name: m.artifact_run() }).click();
 
-      expect(workspace.running).toBe("<button>Min knap</button>");
+      expect(workspace.running?.files).toEqual({ "index.html": "<button>Min knap</button>" });
       // Local: a version, not a model request (§13).
       expect(fetched).toHaveBeenCalledWith(
         "/api/artifacts/artifact-1/versions",
@@ -273,26 +281,46 @@ describe("ArtifactPanel", () => {
 
   it("marks a version that ran and then stopped in the history list", async () => {
     const workspace = openWorkspace();
-    const fetched = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          id: "artifact-1",
-          language: "html",
-          title: "Klikkeren",
-          key: "klikkeren",
-          versions: [
-            {
-              id: "version-1",
-              revision: 1,
-              source: "<button>Klik</button>",
-              authoredBy: "model",
-              buildStatus: "threw",
-              buildMessage: "TypeError",
-              createdAt: new Date(0).toISOString(),
-            },
-          ],
-        }),
-        { status: 200, headers: { "content-type": "application/json" } },
+    const fetched = vi.spyOn(globalThis, "fetch").mockImplementation((input) =>
+      Promise.resolve(
+        // The revision's own files, fetched once the pupil's selection lands on
+        // it: the history list carries paths and sizes and nothing more.
+        String(input).includes("/versions/")
+          ? new Response(
+              JSON.stringify({
+                id: "version-1",
+                revision: 1,
+                entry: "index.html",
+                files: { "index.html": "<button>Klik</button>" },
+                source: "<button>Klik</button>",
+                authoredBy: "model",
+                buildStatus: "threw",
+                buildMessage: "TypeError",
+                createdAt: new Date(0).toISOString(),
+              }),
+              { status: 200, headers: { "content-type": "application/json" } },
+            )
+          : new Response(
+              JSON.stringify({
+                id: "artifact-1",
+                language: "html",
+                title: "Klikkeren",
+                key: "klikkeren",
+                versions: [
+                  {
+                    id: "version-1",
+                    revision: 1,
+                    entry: "index.html",
+                    files: [{ path: "index.html", bytes: 1, change: "added" }],
+                    authoredBy: "model",
+                    buildStatus: "threw",
+                    buildMessage: "TypeError",
+                    createdAt: new Date(0).toISOString(),
+                  },
+                ],
+              }),
+              { status: 200, headers: { "content-type": "application/json" } },
+            ),
       ),
     );
 
@@ -325,26 +353,46 @@ describe("ArtifactPanel", () => {
 
   it("marks a version that did not run in the history list", async () => {
     const workspace = openWorkspace();
-    const fetched = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          id: "artifact-1",
-          language: "html",
-          title: "Klikkeren",
-          key: "klikkeren",
-          versions: [
-            {
-              id: "version-1",
-              revision: 1,
-              source: "<button>Klik</button>",
-              authoredBy: "model",
-              buildStatus: "failed",
-              buildMessage: "boom",
-              createdAt: new Date(0).toISOString(),
-            },
-          ],
-        }),
-        { status: 200, headers: { "content-type": "application/json" } },
+    const fetched = vi.spyOn(globalThis, "fetch").mockImplementation((input) =>
+      Promise.resolve(
+        // The revision's own files, fetched once the pupil's selection lands on
+        // it: the history list carries paths and sizes and nothing more.
+        String(input).includes("/versions/")
+          ? new Response(
+              JSON.stringify({
+                id: "version-1",
+                revision: 1,
+                entry: "index.html",
+                files: { "index.html": "<button>Klik</button>" },
+                source: "<button>Klik</button>",
+                authoredBy: "model",
+                buildStatus: "failed",
+                buildMessage: "boom",
+                createdAt: new Date(0).toISOString(),
+              }),
+              { status: 200, headers: { "content-type": "application/json" } },
+            )
+          : new Response(
+              JSON.stringify({
+                id: "artifact-1",
+                language: "html",
+                title: "Klikkeren",
+                key: "klikkeren",
+                versions: [
+                  {
+                    id: "version-1",
+                    revision: 1,
+                    entry: "index.html",
+                    files: [{ path: "index.html", bytes: 1, change: "added" }],
+                    authoredBy: "model",
+                    buildStatus: "failed",
+                    buildMessage: "boom",
+                    createdAt: new Date(0).toISOString(),
+                  },
+                ],
+              }),
+              { status: 200, headers: { "content-type": "application/json" } },
+            ),
       ),
     );
 
@@ -465,7 +513,7 @@ describe("ArtifactPanel", () => {
 
       // A pupil running something no version holds: stamping the stored revision
       // with that result would tell the model a lie about its own code (§13).
-      workspace.running = "<p>udkast</p>";
+      workspace.running = { entry: "index.html", files: { "index.html": "<p>udkast</p>" } };
       workspace.recordOutcome("failed", "boom");
 
       expect(workspace.pendingBuildReport).toBeNull();
@@ -545,6 +593,8 @@ describe("restoring a revision written under another language", () => {
   const older = {
     id: "version-1",
     revision: 1,
+    entry: "index.html",
+    files: [{ path: "index.html", bytes: 1, change: "added" }],
     source: "<button>Klik</button>",
     language: "html" as const,
     authoredBy: "model" as const,
@@ -563,32 +613,89 @@ describe("restoring a revision written under another language", () => {
 
   it("stores the tag the restored revision was written under", async () => {
     const workspace = openWorkspace([rewritten()]);
-    const fetched = vi.spyOn(globalThis, "fetch").mockImplementation((input) =>
-      Promise.resolve(
-        String(input).endsWith("/versions")
-          ? new Response(
-              JSON.stringify({
-                id: "version-3",
-                revision: 3,
-                source: older.source,
-                language: "html",
-                authoredBy: "student",
-                createdAt: new Date(2).toISOString(),
-              }),
-              { status: 201, headers: { "content-type": "application/json" } },
-            )
-          : new Response(
-              JSON.stringify({
-                id: "artifact-1",
+    const fetched = vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+      const url = String(input);
+
+      // The revision the pupil selects, fetched for its files: the history list
+      // carries paths and sizes and reaches for content only when it needs it.
+      if (url.endsWith("/versions/version-1")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: "version-1",
+              revision: 1,
+              entry: "index.html",
+              files: { "index.html": older.source },
+              source: older.source,
+              language: "html",
+              authoredBy: "model",
+              createdAt: new Date(0).toISOString(),
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
+        );
+      }
+
+      if (url.endsWith("/versions/version-2")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: "version-2",
+              revision: 2,
+              entry: "index.html",
+              files: { "index.html": "<p>komponent</p>" },
+              source: "<p>komponent</p>",
+              language: "svelte",
+              authoredBy: "model",
+              createdAt: new Date(1).toISOString(),
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
+        );
+      }
+
+      if (url.endsWith("/versions")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: "version-3",
+              revision: 3,
+              entry: "index.html",
+              files: { "index.html": older.source },
+              source: older.source,
+              language: "html",
+              authoredBy: "student",
+              createdAt: new Date(2).toISOString(),
+            }),
+            { status: 201, headers: { "content-type": "application/json" } },
+          ),
+        );
+      }
+
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            id: "artifact-1",
+            language: "svelte",
+            title: "Klikkeren",
+            key: "klikkeren",
+            versions: [
+              older,
+              {
+                id: "version-2",
+                revision: 2,
+                entry: "index.html",
+                files: [{ path: "index.html", bytes: 1, change: "modified" }],
                 language: "svelte",
-                title: "Klikkeren",
-                key: "klikkeren",
-                versions: [older, rewritten().latest],
-              }),
-              { status: 200, headers: { "content-type": "application/json" } },
-            ),
-      ),
-    );
+                authoredBy: "model",
+                createdAt: new Date(1).toISOString(),
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
+    });
 
     try {
       render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX });
@@ -598,9 +705,16 @@ describe("restoring a revision written under another language", () => {
       await page.getByText(m.artifact_version_label({ revision: 1 })).click();
       await page.getByRole("button", { name: m.artifact_restore() }).click();
 
-      const posted = fetched.mock.calls.find(([url]) => String(url).endsWith("/versions"));
+      const posted = fetched.mock.calls.find(
+        ([url, init]) => String(url).endsWith("/versions") && init?.method === "POST",
+      );
+      // A Restore states the whole project: the revision it brings back may lack
+      // files the current one holds (§13).
       expect(JSON.parse(String(posted?.[1]?.body))).toEqual({
-        source: older.source,
+        files: { "index.html": older.source },
+        deletes: [],
+        replace: true,
+        entry: "index.html",
         language: "html",
       });
 

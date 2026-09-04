@@ -101,5 +101,6 @@ function encodeDeletion(
   const tag = kindOf(path) ?? part.language;
   const info = fenceInfo(tag, { key: part.key ?? null, path, entry: false });
 
-  return ["```" + `${info} delete`, "```"];
+  const fence = "```";
+  return [`${fence}${info} delete`, fence];
 }

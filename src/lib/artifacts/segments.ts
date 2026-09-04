@@ -6,6 +6,7 @@ import {
 } from "./detect";
 import { CARRIED, type OpenFence, type ScannedFences, scanFences } from "./fences";
 import { normaliseArtifactKey } from "./identity";
+import { normaliseProjectPath } from "./project";
 import type { ArtifactLanguage } from "./types";
 
 /**
@@ -118,6 +119,8 @@ export type StreamingSegment =
        * cheapest honest sign that something is happening.
        */
       readonly lines: number;
+      /** Which file of the project is arriving, when the fence named one. */
+      readonly path: string | null;
     };
 
 /** Anything that is not whitespace, tested without allocating a trimmed copy. */
@@ -384,6 +387,7 @@ function segmentsOf(
       key: normaliseArtifactKey(open.attributes.id),
       title: open.attributes.title?.trim() || null,
       lines: bodyLines(lines.slice(open.line + 1)),
+      path: normaliseProjectPath(open.attributes.path),
     });
   }
 

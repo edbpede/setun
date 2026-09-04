@@ -1,11 +1,12 @@
 import { error, json } from "@sveltejs/kit";
 import { effectiveArtifactKey } from "$lib/artifacts/identity";
+import { diffFileLists } from "$lib/artifacts/project";
 import { requireStudentApi } from "$lib/server/auth/guards";
 import { getDb } from "$lib/server/boot";
 import {
   getOwnedArtifact,
   listArtifactVersions,
-  snapshotsOf,
+  listVersionFiles,
 } from "$lib/server/db/queries/artifacts";
 import type { RequestHandler } from "./$types";
 
@@ -28,10 +29,21 @@ export const GET: RequestHandler = ({ params, locals }) => {
   if (!record) error(404, "Not found");
 
   const versions = listArtifactVersions(db, record.id);
-  const snapshots = snapshotsOf(
+  /**
+   * The files of every revision, without their content (§13).
+   *
+   * A version list is cheap and its sources are not — a project revised twenty
+   * times would otherwise arrive whole every time the History tab opened. What
+   * each revision *did* is computed here from the hashes, which is what the list
+   * shows; the content is fetched for the one revision the pupil selects.
+   */
+  const byVersion = new Map<string, { path: string; hash: string; bytes: number }[]>();
+  for (const file of listVersionFiles(
     db,
     versions.map((version) => version.id),
-  );
+  )) {
+    byVersion.set(file.versionId, [...(byVersion.get(file.versionId) ?? []), file]);
+  }
 
   return json({
     id: record.id,
@@ -40,18 +52,30 @@ export const GET: RequestHandler = ({ params, locals }) => {
     // The id the model reuses to change it — derived when the row stores none,
     // so every artifact answers to a key whether or not it was given one (§13).
     key: effectiveArtifactKey(record),
-    versions: versions.map((version) => ({
-      id: version.id,
-      revision: version.revision,
-      entry: version.entryPath,
-      source: snapshots.get(version.id)?.files[version.entryPath] ?? "",
-      // Null for a revision written before the column, which reads as "whatever
-      // the artifact says" — `effectiveLanguage` is the one that resolves it.
-      language: version.language,
-      authoredBy: version.authoredBy,
-      buildStatus: version.buildStatus,
-      buildMessage: version.buildMessage,
-      createdAt: version.createdAt.toISOString(),
-    })),
+    versions: versions.map((version, at) => {
+      const files = byVersion.get(version.id) ?? [];
+      const previous = at === 0 ? [] : (byVersion.get(versions[at - 1].id) ?? []);
+      const changes = new Map(
+        diffFileLists(previous, files).map((change) => [change.path, change.change]),
+      );
+
+      return {
+        id: version.id,
+        revision: version.revision,
+        entry: version.entryPath,
+        files: files.map((file) => ({
+          path: file.path,
+          bytes: file.bytes,
+          change: changes.get(file.path) ?? "unchanged",
+        })),
+        // Null for a revision written before the column, which reads as "whatever
+        // the artifact says" — `effectiveLanguage` is the one that resolves it.
+        language: version.language,
+        authoredBy: version.authoredBy,
+        buildStatus: version.buildStatus,
+        buildMessage: version.buildMessage,
+        createdAt: version.createdAt.toISOString(),
+      };
+    }),
   });
 };
