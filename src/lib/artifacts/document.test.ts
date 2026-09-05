@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import {
   artifactTitle,
   compiledDocument,
@@ -54,6 +54,38 @@ const SVELTE: RuntimeSources = {
 const RUNTIMES = REACT;
 
 describe("staticDocument", () => {
+  it("does not repeatedly search all open scopes for unmatched closing tags", () => {
+    const source = "<template>".repeat(2_000) + "</div>".repeat(2_000);
+    const original = Array.prototype.lastIndexOf;
+    let unsuccessfulSearchWork = 0;
+    const searches = spyOn(Array.prototype, "lastIndexOf").mockImplementation(function (
+      this: unknown[],
+      value: unknown,
+      from?: number,
+    ) {
+      const found = original.call(this, value, from ?? this.length - 1);
+      if (found === -1) unsuccessfulSearchWork += this.length;
+      return found;
+    });
+    try {
+      const html = staticDocument({ language: "html", source, runtimes: RUNTIMES, runId: "run-1" });
+      expect(html.indexOf("connect-src 'none'")).toBeLessThan(html.indexOf(source));
+    } finally {
+      searches.mockRestore();
+    }
+    // Count searched elements, not milliseconds: the old stack scan examined
+    // eight million elements for this 32 KB source across the two passes.
+    expect(unsuccessfulSearchWork).toBeLessThan(source.length);
+  });
+
+  it("unwinds nested scope kinds and repeated names when the outer scope closes", () => {
+    const source =
+      "<template><template><svg><math></template></svg></math><head>still inert</head></template><head>live</head>";
+    const html = staticDocument({ language: "html", source, runtimes: RUNTIMES, runId: "run-1" });
+    const setup = html.indexOf("connect-src 'none'");
+    expect(setup).toBeGreaterThan(html.indexOf("still inert"));
+    expect(setup).toBeLessThan(html.indexOf("live"));
+  });
   it("puts its preamble before structural-looking tags in inert or foreign subtrees", () => {
     for (const source of [
       "<template><head></head></template><p>live</p>",

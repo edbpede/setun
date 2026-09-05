@@ -426,6 +426,7 @@ function* markupStartTags(
 ): Generator<{ name: string; start: number; end: number }> {
   let at = 0;
   const excluded: string[] = [];
+  const scopeCounts = new Map<string, number>();
 
   while (at < source.length) {
     const open = source.indexOf("<", at);
@@ -461,13 +462,21 @@ function* markupStartTags(
       // Template contents and foreign elements cannot own the document's head.
       // Nesting matters; raw-text bodies below must not affect this stack.
       if (closesTag) {
-        const scope = excluded.lastIndexOf(tagName);
-        if (scope !== -1) excluded.splice(scope);
+        // An unmatched end tag must not search the whole stack. Each matched
+        // scope is popped only once, keeping total work linear in the input.
+        if ((scopeCounts.get(tagName) ?? 0) > 0) {
+          while (excluded.length > 0) {
+            const scope = excluded.pop() as string;
+            scopeCounts.set(scope, (scopeCounts.get(scope) ?? 0) - 1);
+            if (scope === tagName) break;
+          }
+        }
       } else if (
         tagName === "template" ||
         ((tagName === "svg" || tagName === "math") && !/\/\s*>$/.test(source.slice(open, end)))
       ) {
         excluded.push(tagName);
+        scopeCounts.set(tagName, (scopeCounts.get(tagName) ?? 0) + 1);
       }
     }
     if (!closesTag && excluded.length === 0) yield { name: tagName, start: open, end };
