@@ -412,16 +412,16 @@ const IMPLIED_EXTENSIONS = [".tsx", ".ts", ".jsx", ".js", ".svelte", ".json", ".
  * the project does have.
  */
 export function findProjectFile(files: ProjectFiles, path: string): string | null {
-  if (path in files) return path;
+  if (Object.hasOwn(files, path)) return path;
 
   for (const extension of IMPLIED_EXTENSIONS) {
     const candidate = `${path}${extension}`;
-    if (candidate in files) return candidate;
+    if (Object.hasOwn(files, candidate)) return candidate;
   }
 
   for (const extension of IMPLIED_EXTENSIONS) {
     const candidate = `${path}/index${extension}`;
-    if (candidate in files) return candidate;
+    if (Object.hasOwn(files, candidate)) return candidate;
   }
 
   return null;

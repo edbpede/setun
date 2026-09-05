@@ -257,6 +257,14 @@ describe("resolveRelative", () => {
 });
 
 describe("findProjectFile", () => {
+  it("ignores inherited names in ordinary and inherited file maps", () => {
+    expect(findProjectFile({}, "constructor")).toBeNull();
+    expect(findProjectFile({}, "toString")).toBeNull();
+    expect(findProjectFile(Object.create({ "missing.js": "inherited" }), "missing")).toBeNull();
+    expect(findProjectFile({ "constructor.js": "export {}" }, "constructor")).toBe(
+      "constructor.js",
+    );
+  });
   const files = {
     "src/data.ts": "a",
     "src/ui/index.tsx": "b",

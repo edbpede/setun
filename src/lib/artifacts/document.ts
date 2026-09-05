@@ -286,9 +286,8 @@ function escapeStyle(css: string): string {
   return css.replace(/<\/(style)/gi, "<\\3c /$1");
 }
 
-/** `<link rel=stylesheet href=…>` and `<script src=…></script>` in the entry's markup. */
-const STYLESHEET_LINK = /<link\b[^>]*?href\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>/gi;
-const SCRIPT_SRC = /<script\b[^>]*?src\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>\s*<\/script>/gi;
+/** Attribute tokens, read only after the markup scanner identifies a real start tag. */
+const HTML_ATTRIBUTE = /([^\s=/>]+)(?:\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
 
 /**
  * Inline the project files an html entry references (§13).
@@ -302,40 +301,66 @@ const SCRIPT_SRC = /<script\b[^>]*?src\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))[^>]
 export function inlineStaticSiblings(source: string, entry: string, files: ProjectFiles): string {
   const resolve = (raw: string | undefined): string | null => {
     if (!raw) return null;
-    const specifier = raw.trim();
+    const specifier = raw.trim().split(/[?#]/, 1)[0];
     // Anything that is not a plain relative path is somebody else's to resolve.
     if (specifier === "" || /^[a-z][a-z0-9+.-]*:/i.test(specifier) || specifier.startsWith("//")) {
       return null;
     }
 
-    const resolved = resolveRelative(entry, specifier.replace(/^\//, "./"));
+    const resolved = resolveRelative(specifier.startsWith("/") ? "index.html" : entry, specifier);
     return resolved ? findProjectFile(files, resolved) : null;
   };
 
-  const withLinks = source.replace(STYLESHEET_LINK, (whole, _quoted, dq, sq, bare) => {
-    if (!/rel\s*=\s*["']?stylesheet["']?/i.test(whole)) return whole;
+  const replacements: { start: number; end: number; html: string }[] = [];
+  for (const tag of markupStartTags(source)) {
+    if (tag.name !== "link" && tag.name !== "script") continue;
+    const attributes = source.slice(tag.start + tag.name.length + 1, tag.end - 1);
+    const tokens = [...attributes.matchAll(HTML_ATTRIBUTE)];
+    const values = new Map<string, string>();
+    for (const token of tokens) {
+      const name = token[1].toLowerCase();
+      if (!values.has(name)) values.set(name, token[3] ?? token[4] ?? token[5] ?? "");
+    }
+    const without = (...names: string[]) =>
+      tokens
+        .filter((token) => !names.includes(token[1].toLowerCase()))
+        .map((token) => ` ${token[0]}`)
+        .join("");
 
-    const path = resolve(dq ?? sq ?? bare);
-    if (path === null || kindOf(path) !== "css") return whole;
+    if (tag.name === "link") {
+      // Alternate/disabled links have state a plain style cannot represent.
+      if (values.get("rel")?.toLowerCase() !== "stylesheet" || values.has("disabled")) continue;
+      const path = resolve(values.get("href"));
+      if (path === null || kindOf(path) !== "css") continue;
+      replacements.push({
+        start: tag.start,
+        end: tag.end,
+        html: `<style${without("rel", "href")}>${escapeStyle(files[path])}</style>`,
+      });
+      continue;
+    }
 
-    return `<style>${escapeStyle(files[path])}</style>`;
-  });
-
-  return withLinks.replace(SCRIPT_SRC, (whole, _quoted, dq, sq, bare) => {
-    const path = resolve(dq ?? sq ?? bare);
+    const close = /^\s*<\/script\s*>/i.exec(source.slice(tag.end));
+    if (!close) continue;
+    const path = resolve(values.get("src"));
     const kind = path === null ? null : kindOf(path);
-    if (path === null || (kind !== "js" && kind !== "json")) return whole;
+    if (path === null || (kind !== "js" && kind !== "json")) continue;
+    const kept = without("src");
+    // Parser-inserted blob scripts keep native defer/async ordering and load
+    // events. These attributes do nothing on an inline classic script.
+    const scheduled = values.has("defer") || values.has("async");
+    const html = scheduled
+      ? `<script>${escapeScript(`document.write(${JSON.stringify(`<script${kept} src="`)} + URL.createObjectURL(new Blob([${JSON.stringify(files[path])}], {type:"text/javascript"})) + ${JSON.stringify('"></script>')});`)}</script>`
+      : `<script${kept}>${escapeScript(files[path])}</script>`;
+    replacements.push({ start: tag.start, end: tag.end + close[0].length, html });
+  }
 
-    // The attributes are kept — `type=module`, `defer` — because they change how
-    // the browser runs it and the pupil wrote them on purpose.
-    const attributes = whole
-      .slice("<script".length, whole.indexOf(">"))
-      .replace(SCRIPT_SRC_ATTRIBUTE, "");
-    return `<script${attributes}>${escapeScript(files[path])}</script>`;
-  });
+  let result = source;
+  for (const replacement of replacements.reverse()) {
+    result = result.slice(0, replacement.start) + replacement.html + result.slice(replacement.end);
+  }
+  return result;
 }
-
-const SCRIPT_SRC_ATTRIBUTE = /\ssrc\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i;
 
 /**
  * Elements the parser does not read as markup: only their own end tag closes
@@ -389,11 +414,18 @@ function tagEnd(source: string, from: number): number {
  * every context in which `<` opens nothing.
  */
 function structuralTagEnd(source: string, name: "head" | "html"): number {
+  for (const tag of markupStartTags(source)) {
+    if (tag.name === name) return tag.end;
+  }
+  return -1;
+}
+
+function* markupStartTags(source: string): Generator<{ name: string; start: number; end: number }> {
   let at = 0;
 
   while (at < source.length) {
     const open = source.indexOf("<", at);
-    if (open < 0) return -1;
+    if (open < 0) return;
 
     if (source.startsWith("<!--", open)) {
       const close = source.indexOf("-->", open + 4);
@@ -419,15 +451,15 @@ function structuralTagEnd(source: string, name: "head" | "html"): number {
     const end = tagEnd(source, open + tag[0].length);
 
     // An unclosed tag swallows the rest of the input, so nothing follows it.
-    if (end < 0) return -1;
+    if (end < 0) return;
 
-    if (!closesTag && tagName === name) return end;
+    if (!closesTag) yield { name: tagName, start: open, end };
 
     // `<plaintext>` has no end tag — the parser stays in that mode to the end of
     // input, so a `</plaintext>` in the source closes nothing and no structural
     // tag can follow. Listing it beside the raw-text elements would look right
     // and hand back the same diversion, one string away.
-    if (!closesTag && tagName === "plaintext") return -1;
+    if (!closesTag && tagName === "plaintext") return;
 
     if (!closesTag && RAW_TEXT.has(tagName)) {
       // Resume at the end tag itself, which the loop then steps over normally.
@@ -438,8 +470,6 @@ function structuralTagEnd(source: string, name: "head" | "html"): number {
 
     at = end;
   }
-
-  return -1;
 }
 
 /**

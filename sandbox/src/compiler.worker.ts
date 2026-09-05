@@ -150,10 +150,14 @@ const RUNTIME_MODULES = [
   "react-dom",
   "react-dom/client",
   "svelte",
+  "svelte/internal/client",
+  "svelte/internal/disclose-version",
+  "svelte/internal/flags/legacy",
+  "svelte/internal/flags/async",
 ];
 
 function isRuntimeModule(specifier: string): boolean {
-  return RUNTIME_MODULES.includes(specifier) || specifier.startsWith("svelte/internal");
+  return RUNTIME_MODULES.includes(specifier);
 }
 
 /** The esbuild loader for a project file, by extension. */

@@ -546,15 +546,57 @@ describe("inlineStaticSiblings", () => {
     expect(inlineStaticSiblings(icon, "index.html", files)).toBe(icon);
   });
 
-  /** A reference inside a comment is still a reference to the parser's eye. */
-  it("does not pretend a commented-out reference is invisible", () => {
-    const html = inlineStaticSiblings(
+  it("leaves literal tags in comments, raw text, and attributes unchanged", () => {
+    for (const source of [
       '<!-- <link rel="stylesheet" href="styles.css"> -->',
-      "index.html",
-      files,
-    );
+      '<script>const example = \'<link rel="stylesheet" href="styles.css">\';</script>',
+      '<style>p::after { content: \'<link rel="stylesheet" href="styles.css">\' }</style>',
+      '<textarea><script src="main.js"></script></textarea>',
+      '<div title=\'<link rel="stylesheet" href="styles.css">\'></div>',
+    ]) {
+      expect(inlineStaticSiblings(source, "index.html", files)).toBe(source);
+    }
+  });
 
-    expect(html).toContain("<style>body { color: teal }</style>");
+  it("preserves stylesheet media and leaves unsupported alternate or disabled state alone", () => {
+    expect(
+      inlineStaticSiblings(
+        '<link rel="stylesheet" href="styles.css" media="print">',
+        "index.html",
+        files,
+      ),
+    ).toBe('<style media="print">body { color: teal }</style>');
+    for (const source of [
+      '<link rel="alternate stylesheet" title="Other" href="styles.css">',
+      '<link rel="stylesheet" disabled href="styles.css">',
+    ])
+      expect(inlineStaticSiblings(source, "index.html", files)).toBe(source);
+  });
+
+  it("resolves root-relative and cache-busted references from a nested entry", () => {
+    expect(
+      inlineStaticSiblings(
+        '<link rel="stylesheet" href="/styles.css?v=2#theme">',
+        "src/page.html",
+        files,
+      ),
+    ).toBe("<style>body { color: teal }</style>");
+    expect(
+      inlineStaticSiblings('<script src="../main.js?v=2#run"></script>', "src/page.html", files),
+    ).toBe("<script>console.log(1)</script>");
+  });
+
+  it("keeps defer and async scripts external to preserve native parser scheduling", () => {
+    for (const attribute of ["defer", "async"]) {
+      const html = inlineStaticSiblings(
+        `<script ${attribute} src="main.js"></script>`,
+        "index.html",
+        files,
+      );
+      expect(html).toContain("document.write(");
+      expect(html).toContain("URL.createObjectURL(new Blob(");
+      expect(html).toContain(`<script ${attribute} src=`);
+    }
   });
 
   it("escapes a closing script tag inside an inlined script (§21)", () => {
