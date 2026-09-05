@@ -13,13 +13,15 @@ import type { PermissionMode } from "../db/schema";
 import { createTestDatabase, seedTestFixtures } from "../db/testing";
 import { GatewayAdapter } from "../gateway/adapter";
 import type { GatewayEvent } from "../gateway/events";
+import { promptTextOf } from "../gateway/messages";
 import { streamingResponse, stubFetch } from "../gateway/testing";
+import { estimateTokens } from "../gateway/usage";
 import { McpClient } from "../mcp/client";
 import type { McpServerConfig } from "../mcp/config";
 import { resolveSkills } from "../skills/registry";
 import { FileStore } from "../storage/files";
 import { TurnInteractionRegistry } from "./interactions";
-import { runTurn } from "./loop";
+import { assembleContext, runTurn } from "./loop";
 import { buildToolSet, type ToolContext } from "./tools";
 
 /**
@@ -435,6 +437,7 @@ describe("loop termination with tools (§10, §22)", () => {
     perStudentDailyTokens: 250_000,
     perClassroomDailyTokens: 2_500_000,
   };
+  const WARNING_ALLOWANCE = estimateTokens(promptTextOf(assembleContext(PATH))) + 100;
 
   /**
    * Drive a loop over a gateway that asks for the same tool every time, with a
@@ -584,7 +587,7 @@ describe("loop termination with tools (§10, §22)", () => {
    */
   it("asks at the boundary when the warning was not acknowledged", async () => {
     const { events } = await runCheckpointed({
-      budgets: { ...CHECKPOINT_BUDGETS, perStudentDailyTokens: 100 },
+      budgets: { ...CHECKPOINT_BUDGETS, perStudentDailyTokens: WARNING_ALLOWANCE },
       consumed: { studentTokens: 70, classroomTokens: 0 },
     });
 
@@ -598,7 +601,11 @@ describe("loop termination with tools (§10, §22)", () => {
 
   it("does not ask again when the pupil already pressed Keep going", async () => {
     const { events } = await runCheckpointed({
-      budgets: { ...CHECKPOINT_BUDGETS, perTurnStepCap: 100, perStudentDailyTokens: 100 },
+      budgets: {
+        ...CHECKPOINT_BUDGETS,
+        perTurnStepCap: 100,
+        perStudentDailyTokens: WARNING_ALLOWANCE,
+      },
       consumed: { studentTokens: 70, classroomTokens: 0 },
       answerWarning: true,
     });
@@ -607,6 +614,22 @@ describe("loop termination with tools (§10, §22)", () => {
     expect(events.some((event) => event.type === "continue-request")).toBe(false);
     // It ran on until the allowance itself ran out — the hard ceiling (§10).
     expect(events.at(-1)).toEqual({ type: "done", reason: "student-allowance-exhausted" });
+  });
+
+  it("honours an early stop even when the boundary also reaches a step checkpoint", async () => {
+    const { events, gateway } = await runCheckpointed({
+      budgets: {
+        ...CHECKPOINT_BUDGETS,
+        perTurnStepCap: 1,
+        perStudentDailyTokens: WARNING_ALLOWANCE,
+      },
+      consumed: { studentTokens: 70, classroomTokens: 0 },
+      answerWarning: false,
+      answers: [true],
+    });
+    expect(gateway.calls).toHaveLength(1);
+    expect(events.some((event) => event.type === "continue-request")).toBe(false);
+    expect(events.at(-1)).toEqual({ type: "done", reason: "aborted" });
   });
 
   /**

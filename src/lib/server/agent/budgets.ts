@@ -141,6 +141,14 @@ export interface DailyConsumption {
   readonly classroomTokens: number;
 }
 
+/** A turn's claims on the shared day, reconciled after each provider request. */
+export interface DailyBudgetLease {
+  consumed(): DailyConsumption;
+  reserve(promptTokens: number): { outputTokens: number; limit: DailyStop } | { stop: DailyStop };
+  settle(tokens: number): void;
+  release(): void;
+}
+
 /**
  * Decide whether a turn may start (§10).
  *
@@ -211,7 +219,7 @@ export const DAILY_WARNING_REQUEST_ID = "daily-warning";
 export class TurnBudget {
   readonly #budgets: BudgetSettings;
   readonly #startedAt: number;
-  readonly #consumed: DailyConsumption;
+  readonly #consumed: DailyConsumption | (() => DailyConsumption);
   #steps = 0;
   #tokens = 0;
   /**
@@ -246,7 +254,10 @@ export class TurnBudget {
   constructor(
     budgets: BudgetSettings,
     startedAt: number = Date.now(),
-    consumed: DailyConsumption = { studentTokens: 0, classroomTokens: 0 },
+    consumed: DailyConsumption | (() => DailyConsumption) = {
+      studentTokens: 0,
+      classroomTokens: 0,
+    },
   ) {
     this.#budgets = budgets;
     this.#startedAt = startedAt;
@@ -335,9 +346,10 @@ export class TurnBudget {
 
   /** What the day has cost so far, this turn included, per layer (§10). */
   dailyUsed(): DailyConsumption {
+    const consumed = typeof this.#consumed === "function" ? this.#consumed() : this.#consumed;
     return {
-      studentTokens: this.#consumed.studentTokens + this.tokens,
-      classroomTokens: this.#consumed.classroomTokens + this.tokens,
+      studentTokens: consumed.studentTokens + this.tokens,
+      classroomTokens: consumed.classroomTokens + this.tokens,
     };
   }
 

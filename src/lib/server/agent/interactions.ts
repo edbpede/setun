@@ -95,6 +95,7 @@ export class TurnInteractionRegistry {
         clearTimeout(timer);
         input.signal?.removeEventListener("abort", onAbort);
         this.#pending.delete(key);
+        this.#expected.get(input.turnId)?.delete(input.requestId);
         resolve(answer);
       };
 
@@ -118,6 +119,7 @@ export class TurnInteractionRegistry {
     if (!answer) return null;
 
     this.#early.delete(key);
+    this.#expected.get(input.turnId)?.delete(input.requestId);
     return answer;
   }
 
@@ -134,6 +136,7 @@ export class TurnInteractionRegistry {
 
     if (!pending) {
       if (!this.#expected.get(input.turnId)?.has(input.requestId)) return false;
+      if (this.#early.has(key)) return false;
       this.#early.set(key, input.answer);
       return true;
     }

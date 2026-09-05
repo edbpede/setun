@@ -142,13 +142,13 @@ switch (command) {
   /**
    * A day's allowance the very next turn passes 70 % of, and then empties (§10).
    *
-   * Small enough that the stub's own reply crosses the warning line mid-stream
-   * and the ceiling shortly after, which is the pair of events the pupil sees.
+   * Above the roughly 1 050-token prompt reservation, but below prompt plus
+   * the roughly 2 040-token LONG_REPLY, so both boundaries happen mid-stream.
    */
   case "low-allowance":
     updateClassroomSettings(db, {
       classroomId: classroom.id,
-      settings: { perStudentDailyTokens: 30 },
+      settings: { perStudentDailyTokens: 2_000 },
     });
     break;
 

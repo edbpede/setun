@@ -1,7 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import { GatewayAdapter } from "../gateway/adapter";
 import type { GatewayEvent } from "../gateway/events";
+import { promptTextOf } from "../gateway/messages";
 import { streamingResponse, stubFetch } from "../gateway/testing";
+import { estimateTokens } from "../gateway/usage";
 import { assembleContext, runTurn } from "./loop";
 import { FIXED_SYSTEM_PROMPT } from "./system-prompt";
 
@@ -550,7 +552,7 @@ describe("thinking passes through the loop", () => {
           perTurnWallClockSeconds: 300,
           perTurnTokenCap: 100_000,
           // Small enough that a summary counted as output would empty it.
-          perStudentDailyTokens: 20,
+          perStudentDailyTokens: estimateTokens(promptTextOf(assembleContext(path))) + 20,
           perClassroomDailyTokens: 2_500_000,
         },
       }),

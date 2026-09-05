@@ -752,12 +752,14 @@ async function abort(): Promise<void> {
               {#key conversation.turn.continuePrompt.requestId}
                 <ContinuePrompt
                   prompt={conversation.turn.continuePrompt}
-                  onrespond={(proceed) =>
-                    respond({
+                  onrespond={(proceed) => {
+                    if (proceed) conversation.turn.acknowledgeWarning();
+                    void respond({
                       requestId: conversation.turn.continuePrompt?.requestId,
                       kind: "continue",
                       proceed,
-                    })}
+                    });
+                  }}
                 />
               {/key}
             {/if}
@@ -769,7 +771,7 @@ async function abort(): Promise<void> {
               -->
               <BudgetWarning
                 warning={conversation.turn.budgetWarning}
-                streaming={conversation.turn.streaming}
+                streaming={conversation.turn.streaming && !conversation.turn.continuePrompt}
                 onkeepgoing={keepGoing}
                 onstop={abort}
               />

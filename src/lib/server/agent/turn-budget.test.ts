@@ -1,9 +1,13 @@
 import { describe, expect, it } from "bun:test";
+import { createTestDatabase, seedTestFixtures } from "../db/testing";
 import { GatewayAdapter } from "../gateway/adapter";
 import type { GatewayEvent } from "../gateway/events";
+import { promptTextOf } from "../gateway/messages";
 import { streamingResponse, stubFetch } from "../gateway/testing";
-import { type BudgetSettings, DAILY_WARNING_REQUEST_ID } from "./budgets";
-import { runTurn } from "./loop";
+import { estimateTokens } from "../gateway/usage";
+import { type BudgetSettings, budgetDayRange, DAILY_WARNING_REQUEST_ID } from "./budgets";
+import { claimDailyBudget } from "./daily-budget";
+import { assembleContext, runTurn } from "./loop";
 
 /**
  * Per-turn caps inside the loop (plan 2.7, PRD §10, §22).
@@ -29,6 +33,7 @@ const BUDGETS: BudgetSettings = {
 };
 
 const path = [{ role: "user" as const, parts: [{ type: "text" as const, text: "Forklar loops" }] }];
+const PROMPT_TOKENS = estimateTokens(promptTextOf(assembleContext(path)));
 
 function adapterOver(records: string[]) {
   const stub = stubFetch(() => streamingResponse(records));
@@ -110,7 +115,82 @@ describe("a per-turn cap no longer cuts a response in flight (§10)", () => {
  * only at its start (§10).
  */
 describe("a daily ceiling binds mid-stream (§10)", () => {
-  const tiny = { ...BUDGETS, perStudentDailyTokens: 250, perClassroomDailyTokens: 2_500_000 };
+  const tiny = {
+    ...BUDGETS,
+    perStudentDailyTokens: PROMPT_TOKENS + 250,
+    perClassroomDailyTokens: 2_500_000,
+  };
+
+  it("does not start another pupil's stream against tokens already reserved upstream", async () => {
+    const db = createTestDatabase();
+    const fixtures = seedTestFixtures(db);
+    const budgets = { ...BUDGETS, perClassroomDailyTokens: PROMPT_TOKENS + 500 };
+    const shared = {
+      db,
+      classroomId: fixtures.classroom.id,
+      budgets,
+      range: budgetDayRange("UTC"),
+    };
+    const firstLease = claimDailyBudget({ ...shared, studentId: fixtures.student.id });
+    const secondLease = claimDailyBudget({ ...shared, studentId: "another-pupil" });
+    const first = runTurn({
+      adapter: adapterOver(LONG_STREAM),
+      dialect: "openai",
+      model: "m",
+      path,
+      budgets,
+      dailyBudget: firstLease,
+    });
+    const otherGateway = stubFetch(() => streamingResponse(LONG_STREAM));
+    try {
+      expect((await first.next()).value).toMatchObject({ type: "text-delta" });
+      const second = await collect(
+        runTurn({
+          adapter: new GatewayAdapter({
+            baseUrl: "http://cpa:8317",
+            listenerKey: "k",
+            fetch: otherGateway.fetch,
+          }),
+          dialect: "openai",
+          model: "m",
+          path,
+          budgets,
+          dailyBudget: secondLease,
+        }),
+      );
+      expect(otherGateway.calls).toHaveLength(0);
+      expect(doneOf(second)).toEqual({ type: "done", reason: "classroom-cap-exhausted" });
+      expect(doneOf(await collect(first))).toEqual({
+        type: "done",
+        reason: "classroom-cap-exhausted",
+      });
+    } finally {
+      await first.return(undefined);
+      firstLease.release();
+      secondLease.release();
+    }
+  });
+
+  it("does not send a prompt that already consumes the remaining day", async () => {
+    const stub = stubFetch(() => streamingResponse(LONG_STREAM));
+    const adapter = new GatewayAdapter({
+      baseUrl: "http://cpa:8317",
+      listenerKey: "k",
+      fetch: stub.fetch,
+    });
+    const events = await collect(
+      runTurn({
+        adapter,
+        dialect: "openai",
+        model: "m",
+        path,
+        budgets: { ...BUDGETS, perStudentDailyTokens: PROMPT_TOKENS },
+      }),
+    );
+    expect(stub.calls).toHaveLength(0);
+    expect(usageOf(events)).toBeUndefined();
+    expect(doneOf(events)).toEqual({ type: "done", reason: "student-allowance-exhausted" });
+  });
 
   it("stops the turn and names the student's allowance", async () => {
     const events = await collect(
@@ -135,7 +215,7 @@ describe("a daily ceiling binds mid-stream (§10)", () => {
         dialect: "openai",
         model: "m",
         path,
-        budgets: { ...BUDGETS, perClassroomDailyTokens: 250 },
+        budgets: { ...BUDGETS, perClassroomDailyTokens: PROMPT_TOKENS + 250 },
         consumed: { studentTokens: 0, classroomTokens: 0 },
       }),
     );
@@ -205,7 +285,7 @@ describe("the 70 % warning (§10)", () => {
         dialect: "openai",
         model: "m",
         path,
-        budgets: { ...BUDGETS, perStudentDailyTokens: 1_000 },
+        budgets: { ...BUDGETS, perStudentDailyTokens: PROMPT_TOKENS + 1_000 },
       }),
     );
 
@@ -216,7 +296,7 @@ describe("the 70 % warning (§10)", () => {
     if (warning.type !== "budget-warning") throw new Error("expected a budget warning");
     expect(warning.requestId).toBe(DAILY_WARNING_REQUEST_ID);
     expect(warning.fraction).toBeGreaterThanOrEqual(0.7);
-    expect(warning.limitTokens).toBe(1_000);
+    expect(warning.limitTokens).toBe(PROMPT_TOKENS + 1_000);
     expect(warning.usedTokens).toBeGreaterThanOrEqual(700);
 
     // The answer in flight is never cut for a warning.

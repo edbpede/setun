@@ -1,5 +1,6 @@
 import { classroomStateChannel } from "../classroom/state-channel";
 import type { AppDatabase } from "../db/client";
+import { getClassroom } from "../db/queries/classrooms";
 import { setActiveLeaf } from "../db/queries/conversations";
 import { attachImageToMessage } from "../db/queries/images";
 import { appendMessage, recordMessageUsage } from "../db/queries/messages";
@@ -19,7 +20,14 @@ import { describeCause, log } from "../logging";
 import type { AttachmentPayload } from "../storage/attachments";
 import type { ArtifactContext } from "./artifact-context";
 import { recordTurnArtifacts } from "./artifacts";
-import type { BudgetSettings, DailyConsumption } from "./budgets";
+import {
+  BUDGET_PRESETS,
+  type BudgetSettings,
+  budgetDayRange,
+  type DailyBudgetLease,
+  type DailyConsumption,
+} from "./budgets";
+import { claimDailyBudget } from "./daily-budget";
 import { turnInteractions } from "./interactions";
 import { liveTurns } from "./live-turns";
 import { runTurn } from "./loop";
@@ -91,6 +99,7 @@ export async function executeTurn(input: ExecuteTurnInput): Promise<void> {
   const signal = liveTurns.register(turnId);
   const buffer = new TurnBuffer(db, turnId);
   const startedAt = performance.now();
+  let dailyBudget: DailyBudgetLease | undefined;
 
   const parts: MessagePart[] = [];
   const imageIds: string[] = [];
@@ -100,6 +109,14 @@ export async function executeTurn(input: ExecuteTurnInput): Promise<void> {
   const asked = new Map<string, number>();
 
   try {
+    const classroom = getClassroom(db, input.classroomId);
+    dailyBudget = claimDailyBudget({
+      db,
+      classroomId: input.classroomId,
+      studentId: input.studentId,
+      range: budgetDayRange(classroom?.timezone ?? "UTC"),
+      budgets: input.budgets ?? BUDGET_PRESETS.standard,
+    });
     for await (const event of runTurn({
       adapter: input.adapter,
       dialect: input.alias.dialect,
@@ -110,6 +127,7 @@ export async function executeTurn(input: ExecuteTurnInput): Promise<void> {
       artifacts: input.artifacts,
       budgets: input.budgets,
       consumed: input.consumed,
+      dailyBudget,
       signal,
       ...(input.tools && input.toolContext
         ? {
@@ -156,6 +174,7 @@ export async function executeTurn(input: ExecuteTurnInput): Promise<void> {
     log.error("turn execution failed", { turnId, cause: describeCause(cause) });
     logTurn(input, { status: "failed", usage, startedAt });
   } finally {
+    dailyBudget?.release();
     liveTurns.end(turnId);
     // Whatever the turn declared answerable — a checkpoint, the warning banner's
     // button — dies with it, so a late click cannot be held against the next one.

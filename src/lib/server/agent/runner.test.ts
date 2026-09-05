@@ -6,9 +6,12 @@ import { appendMessage, listConversationMessages } from "../db/queries/messages"
 import { createTurn, getTurn } from "../db/queries/turns";
 import { createTestDatabase, seedTestFixtures } from "../db/testing";
 import { GatewayAdapter } from "../gateway/adapter";
+import { promptTextOf } from "../gateway/messages";
 import { streamingResponse, stubFetch } from "../gateway/testing";
+import { estimateTokens } from "../gateway/usage";
 import { BUDGET_PRESETS } from "./budgets";
 import { assertNoTurnInFlight, getActiveTurn, TurnInFlightError } from "./concurrency";
+import { assembleContext } from "./loop";
 import { executeTurn } from "./runner";
 import { streamTurnEvents } from "./stream";
 import { readBufferedEvents } from "./turn-buffer";
@@ -175,7 +178,10 @@ describe("executeTurn", () => {
       ),
       // An allowance small enough that the first chunk empties it: the loop
       // stops at a clean boundary and the partial answer is kept (§10).
-      budgets: { ...BUDGET_PRESETS.standard, perStudentDailyTokens: 1 },
+      budgets: {
+        ...BUDGET_PRESETS.standard,
+        perStudentDailyTokens: estimateTokens(promptTextOf(assembleContext([scaffold.prompt]))) + 1,
+      },
     });
 
     const assistant = listConversationMessages(db, scaffold.conversation.id).find(

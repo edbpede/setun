@@ -1,0 +1,89 @@
+import type { AppDatabase } from "../db/client";
+import { dailyConsumption } from "../db/queries/usage";
+import type { BudgetSettings, DailyBudgetLease, DailyConsumption } from "./budgets";
+
+interface Claim {
+  classroomId: string;
+  studentId: string;
+  day: number;
+  spent: number;
+  reserved: number;
+}
+
+// Process infrastructure, like liveTurns: claims coordinate pupils in the same
+// database and live only until their turn's usage is persisted.
+const claimsByDb = new WeakMap<AppDatabase, { claims: Set<Claim>; generation: number }>();
+
+/** Synchronous reservations prevent overlapping turns from claiming the same tokens. */
+export function claimDailyBudget(input: {
+  db: AppDatabase;
+  classroomId: string;
+  studentId: string;
+  range: { start: Date; end: Date };
+  budgets: BudgetSettings;
+}): DailyBudgetLease {
+  const shared = claimsByDb.get(input.db) ?? { claims: new Set<Claim>(), generation: 0 };
+  claimsByDb.set(input.db, shared);
+  const { claims } = shared;
+  const own: Claim = {
+    classroomId: input.classroomId,
+    studentId: input.studentId,
+    day: input.range.start.getTime(),
+    spent: 0,
+    reserved: 0,
+  };
+  claims.add(own);
+  let persisted: DailyConsumption = { studentTokens: 0, classroomTokens: 0 };
+  let generation = -1;
+
+  function consumed(includeReservations = false, refresh = false) {
+    // Refresh at each provider request (including tool/utility usage committed
+    // since the previous one), and when another turn finishes. Deltas only sum
+    // the small live claim set; they never scan the persisted usage history.
+    if (refresh || generation !== shared.generation) {
+      persisted = dailyConsumption(input.db, {
+        classroomId: input.classroomId,
+        studentId: input.studentId,
+        from: input.range.start,
+        until: input.range.end,
+      });
+      generation = shared.generation;
+    }
+    const used = { ...persisted };
+    for (const claim of claims) {
+      if (claim === own || claim.classroomId !== own.classroomId || claim.day !== own.day) continue;
+      const tokens = claim.spent + (includeReservations ? claim.reserved : 0);
+      used.classroomTokens += tokens;
+      if (claim.studentId === own.studentId) used.studentTokens += tokens;
+    }
+    return used;
+  }
+
+  return {
+    consumed,
+    reserve(promptTokens) {
+      const used = consumed(true, true);
+      const classroomLeft =
+        input.budgets.perClassroomDailyTokens - used.classroomTokens - own.spent;
+      const studentLeft = input.budgets.perStudentDailyTokens - used.studentTokens - own.spent;
+      if (classroomLeft <= promptTokens) return { stop: "classroom-cap-exhausted" };
+      if (studentLeft <= promptTokens) return { stop: "student-allowance-exhausted" };
+      // Reserve the prompt plus the whole permitted output before yielding to
+      // the network. Per-turn checkpoints remain soft; only daily tokens bind.
+      own.reserved = Math.floor(Math.min(classroomLeft, studentLeft));
+      return {
+        outputTokens: own.reserved - promptTokens,
+        limit:
+          classroomLeft <= studentLeft ? "classroom-cap-exhausted" : "student-allowance-exhausted",
+      };
+    },
+    settle(tokens) {
+      own.spent += tokens;
+      own.reserved = 0;
+    },
+    release() {
+      claims.delete(own);
+      shared.generation++;
+    },
+  };
+}

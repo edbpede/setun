@@ -17,6 +17,7 @@ import {
   BUDGET_PRESETS,
   type BudgetSettings,
   DAILY_WARNING_REQUEST_ID,
+  type DailyBudgetLease,
   type DailyConsumption,
   type PerTurnCap,
   TurnBudget,
@@ -95,6 +96,7 @@ export interface RunTurnInput {
    * never one that mistakenly believes an allowance is full.
    */
   readonly consumed?: DailyConsumption;
+  readonly dailyBudget?: DailyBudgetLease;
   readonly tooling?: TurnTooling;
   /** Aborting the turn cancels the upstream request and any running tool (§10). */
   readonly signal?: AbortSignal;
@@ -277,7 +279,11 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<GatewayEvent
     input.artifacts,
   );
   const now = input.now ?? Date.now;
-  const budget = new TurnBudget(input.budgets ?? BUDGET_PRESETS.standard, now(), input.consumed);
+  const budget = new TurnBudget(
+    input.budgets ?? BUDGET_PRESETS.standard,
+    now(),
+    input.dailyBudget?.consumed ?? input.consumed,
+  );
 
   /**
    * Linked to the caller's signal so a *hard* stop cancels the upstream request
@@ -370,7 +376,7 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<GatewayEvent
       // The pupil may have pressed "Keep going" on the warning banner minutes
       // ago, while the answer was still streaming. That counts, and the boundary
       // must not ask again for something already answered.
-      if (caps.length === 0 && budget.warningPending) {
+      if (budget.warningPending) {
         const early = input.tooling.interactions.takeEarly({
           turnId: input.tooling.turnId,
           requestId: DAILY_WARNING_REQUEST_ID,
@@ -443,8 +449,24 @@ async function* runStep(args: {
   definitions: ReturnType<ToolSet["definitions"]>;
 }): AsyncGenerator<GatewayEvent, StepOutcome> {
   const { input, messages, budget } = args;
+  const promptText = promptTextOf(messages);
+  const promptTokens = estimateTokens(promptText);
+  const allocation = input.dailyBudget?.reserve(promptTokens);
+  if (allocation && "stop" in allocation) {
+    return { text: "", toolCalls: [], stopped: allocation.stop };
+  }
+  // The prompt is billed before output arrives. Reserve its estimate before
+  // starting the request, then replace it with provider usage at settlement.
+  budget.recordProvisionalTokens(promptTokens);
+  const exhaustedBeforeRequest = budget.dailyExhausted();
+  if (exhaustedBeforeRequest) {
+    budget.settleStepTokens(0);
+    input.dailyBudget?.settle(0);
+    return { text: "", toolCalls: [], stopped: exhaustedBeforeRequest };
+  }
 
   let text = "";
+  let reasoning = "";
   const toolCalls: GatewayToolCall[] = [];
   let sawUsage = false;
   /** Whether the request reached the provider at all — see the trailing usage below. */
@@ -459,6 +481,7 @@ async function* runStep(args: {
    * to one estimate over the whole completion, whatever the chunking.
    */
   let provisional = 0;
+  let stepTokens = promptTokens;
   let stopped: TurnEndReason | null = null;
   let finishReason: FinishReason | undefined;
 
@@ -488,6 +511,7 @@ async function* runStep(args: {
   }
 
   try {
+    yield* warnIfDue();
     for await (const event of input.adapter.streamChat(input.dialect, {
       model: input.model,
       messages,
@@ -496,6 +520,7 @@ async function* runStep(args: {
     })) {
       reachedUpstream = true;
 
+      if (event.type === "thinking-delta") reasoning += event.text;
       if (event.type === "text-delta") {
         text += event.text;
         // A provisional figure while the step is in flight, so the token cap can
@@ -503,11 +528,14 @@ async function* runStep(args: {
         const estimate = estimateTokens(text);
         budget.recordProvisionalTokens(estimate - provisional);
         provisional = estimate;
+        stepTokens = promptTokens + estimate;
       }
       if (event.type === "usage") {
         sawUsage = true;
         finishReason = event.finishReason;
+        stepTokens = event.inputTokens + event.outputTokens;
         budget.settleStepTokens(event.inputTokens + event.outputTokens);
+        input.dailyBudget?.settle(event.inputTokens + event.outputTokens);
       }
       if (event.type === "tool-call-started") {
         toolCalls.push({
@@ -527,7 +555,11 @@ async function* runStep(args: {
       // The one thing that stops a response mid-stream: the day's tokens are
       // gone. The event just yielded is durable, the student keeps every word
       // that reached them, and nothing further is read (§10).
-      const exhausted = budget.dailyExhausted();
+      const exhausted =
+        budget.dailyExhausted() ??
+        (allocation && stepTokens >= promptTokens + allocation.outputTokens
+          ? allocation.limit
+          : null);
       if (exhausted) {
         stopped = exhausted;
         break;
@@ -546,7 +578,13 @@ async function* runStep(args: {
      * losing the figure.
      */
     if (!sawUsage && reachedUpstream) {
-      yield resolveUsage({ promptText: promptTextOf(messages), completionText: text });
+      const usage = resolveUsage({ promptText, completionText: text + reasoning });
+      budget.settleStepTokens(usage.inputTokens + usage.outputTokens);
+      input.dailyBudget?.settle(usage.inputTokens + usage.outputTokens);
+      yield usage;
+    } else if (!sawUsage) {
+      budget.settleStepTokens(0);
+      input.dailyBudget?.settle(0);
     }
     throw cause;
   }
@@ -554,7 +592,13 @@ async function* runStep(args: {
   // A hard stop cuts the dialect off before it reports usage, and those tokens
   // were still spent: usage is never counted as zero (§10).
   if (!sawUsage && reachedUpstream) {
-    yield resolveUsage({ promptText: promptTextOf(messages), completionText: text });
+    const usage = resolveUsage({ promptText, completionText: text + reasoning });
+    budget.settleStepTokens(usage.inputTokens + usage.outputTokens);
+    input.dailyBudget?.settle(usage.inputTokens + usage.outputTokens);
+    yield usage;
+  } else if (!sawUsage) {
+    budget.settleStepTokens(0);
+    input.dailyBudget?.settle(0);
   }
 
   /**

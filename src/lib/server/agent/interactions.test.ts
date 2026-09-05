@@ -64,6 +64,24 @@ describe("answering a question the loop is waiting on", () => {
 });
 
 describe("an answer that arrives before the loop waits for it (§10)", () => {
+  it("preserves the first answer and rejects retries before and after consumption", async () => {
+    const registry = new TurnInteractionRegistry();
+    const question = { turnId: TURN, requestId: "daily-warning" };
+    registry.expect(question);
+    expect(registry.answer({ ...question, answer: { kind: "continue", proceed: false } })).toBe(
+      true,
+    );
+    expect(registry.answer({ ...question, answer: { kind: "continue", proceed: true } })).toBe(
+      false,
+    );
+    expect(await registry.wait({ ...question, timeoutMs: 1 })).toEqual({
+      kind: "continue",
+      proceed: false,
+    });
+    expect(registry.answer({ ...question, answer: { kind: "continue", proceed: true } })).toBe(
+      false,
+    );
+  });
   it("is held for a declared question and consumed by the wait", async () => {
     const registry = new TurnInteractionRegistry();
     registry.expect({ turnId: TURN, requestId: "daily-warning" });
