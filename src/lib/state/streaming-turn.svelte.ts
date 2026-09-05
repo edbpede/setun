@@ -79,6 +79,8 @@ export class StreamingTurn {
   /** When reasoning first arrived, and when the first visible output replaced it. */
   thinkingStartedAt = $state<number | null>(null);
   thinkingSettledAt = $state<number | null>(null);
+  /** Each reasoning part has its own interval, including reasoning after a tool result. */
+  thinkingTimings = $state<Record<number, { startedAt: number; settledAt: number | null }>>({});
   turnId = $state<string | null>(null);
   /** Last sequence number applied — the cursor a resume continues from (§10). */
   lastSeq = $state(-1);
@@ -157,6 +159,7 @@ export class StreamingTurn {
     this.startedAt = this.#now();
     this.thinkingStartedAt = null;
     this.thinkingSettledAt = null;
+    this.thinkingTimings = {};
     this.#streaming = true;
   }
 
@@ -184,19 +187,15 @@ export class StreamingTurn {
     // be answering a question nobody is waiting for.
     if (event.type !== "continue-request") this.continuePrompt = null;
 
-    // The first thing a pupil reads as the answer settles the reasoning: the
-    // block collapses from "Thinking…" to "Thoughts" at that moment, not when
-    // the turn ends.
-    if (event.type !== "thinking-delta" && !this.hasVisibleOutput && this.thinkingStartedAt) {
-      this.thinkingSettledAt ??= this.#now();
-    }
-
     switch (event.type) {
       case "text-delta":
+        if (!event.text) break;
+        this.#settleThinking();
         this.#appendText(event.text);
         break;
 
       case "thinking-delta":
+        if (!event.text) break;
         this.thinkingStartedAt ??= this.#now();
         this.#appendThinking(event.text);
         break;
@@ -222,6 +221,7 @@ export class StreamingTurn {
         break;
 
       case "tool-call-started":
+        this.#settleThinking();
         this.permission = null;
         this.parts = [
           ...this.parts,
@@ -237,6 +237,7 @@ export class StreamingTurn {
         break;
 
       case "tool-result": {
+        this.#settleThinking();
         // A call refused by the permission mode never announced itself, so the
         // result is the first the transcript hears of it.
         const announced = this.parts.some(
@@ -295,6 +296,7 @@ export class StreamingTurn {
         break;
 
       case "image-generated":
+        this.#settleThinking();
         this.parts = [
           ...this.parts,
           { type: "generated-image", imageId: event.imageId, prompt: event.prompt },
@@ -310,7 +312,7 @@ export class StreamingTurn {
         this.permission = null;
         this.elicitation = null;
         this.continuePrompt = null;
-        this.thinkingSettledAt ??= this.thinkingStartedAt === null ? null : this.#now();
+        this.#settleThinking();
         // `stop` is the model reaching its own end and announces nothing. Every
         // other reason cut the answer short, including a per-turn cap, which
         // stops at a clean boundary and keeps the partial answer on screen — a
@@ -325,6 +327,7 @@ export class StreamingTurn {
 
   /** Give up on the stream without claiming the turn ended. */
   detach(): void {
+    this.#settleThinking();
     this.#streaming = false;
     this.permission = null;
     this.elicitation = null;
@@ -338,6 +341,7 @@ export class StreamingTurn {
     this.startedAt = null;
     this.thinkingStartedAt = null;
     this.thinkingSettledAt = null;
+    this.thinkingTimings = {};
     this.notice = null;
     this.permission = null;
     this.elicitation = null;
@@ -368,9 +372,28 @@ export class StreamingTurn {
     const last = this.parts.at(-1);
 
     if (last?.type === "thinking") {
+      const index = this.parts.length - 1;
+      const timing = this.thinkingTimings[index];
+      if (timing && timing.settledAt !== null) {
+        this.thinkingTimings = { ...this.thinkingTimings, [index]: { ...timing, settledAt: null } };
+      }
       this.parts = [...this.parts.slice(0, -1), { type: "thinking", text: last.text + text }];
     } else {
+      this.thinkingTimings = {
+        ...this.thinkingTimings,
+        [this.parts.length]: { startedAt: this.#now(), settledAt: null },
+      };
       this.parts = [...this.parts, { type: "thinking", text }];
     }
+  }
+
+  /** Usage and checkpoint events do not append an answer or end a reasoning part. */
+  #settleThinking(): void {
+    const index = this.parts.length - 1;
+    const timing = this.thinkingTimings[index];
+    if (this.parts[index]?.type !== "thinking" || !timing || timing.settledAt !== null) return;
+    const settledAt = this.#now();
+    this.thinkingTimings = { ...this.thinkingTimings, [index]: { ...timing, settledAt } };
+    this.thinkingSettledAt ??= settledAt;
   }
 }

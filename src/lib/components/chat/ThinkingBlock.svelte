@@ -1,5 +1,5 @@
 <script lang="ts">
-import { thinkingHeadline, thinkingParagraphs } from "$lib/chat/thinking-text";
+import { thinkingParagraphHeadline, thinkingParagraphs } from "$lib/chat/thinking-text";
 import * as m from "$lib/paraglide/messages";
 
 /**
@@ -60,7 +60,7 @@ const seconds = $derived.by(() => {
 });
 
 const paragraphs = $derived(thinkingParagraphs(text));
-const headline = $derived(thinkingHeadline(text));
+const headline = $derived(thinkingParagraphHeadline(paragraphs.at(-1) ?? ""));
 </script>
 
 <details class="my-1.5 rounded-md border border-border bg-secondary/40 text-xs">

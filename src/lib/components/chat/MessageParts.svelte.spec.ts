@@ -35,6 +35,22 @@ function ref(overrides: Partial<MessageArtifactRef> = {}): MessageArtifactRef {
 }
 
 describe("MessageParts artifact cards", () => {
+  it("shows one project card across text parts and preserves intervening prose", async () => {
+    render(MessageParts, {
+      parts: [
+        { type: "text", text: "```html id=side path=index.html\n<p>hi</p>\n```\nMore files next." },
+        { type: "thinking", text: "Choosing a colour" },
+        { type: "text", text: "A teal page.\n```css id=side path=styles.css\np {color:teal}\n```" },
+      ],
+      artifacts: [ref()],
+    });
+    await expect
+      .element(page.getByRole("button", { name: m.artifact_card_label({ title: "Min side" }) }))
+      .toBeVisible();
+    await expect.element(page.getByText("More files next.")).toBeVisible();
+    await expect.element(page.getByText("A teal page.")).toBeVisible();
+    await expect.element(page.getByText("p {color:teal}")).not.toBeInTheDocument();
+  });
   it("shows what was built, with its identity in the mono line", async () => {
     render(MessageParts, { parts: text(PROSE), artifacts: [ref()] });
 

@@ -30,10 +30,8 @@ export type ArtifactSegment =
       /**
        * Position among the message's artifacts, counting from `firstIndex`.
        *
-       * A message's text arrives as several parts, and the artifact refs the
-       * server hands back are numbered across the whole message — so the caller
-       * carries the running count between parts rather than each part starting
-       * at zero.
+       * artifactMessageSegments numbers writes across the whole message;
+       * artifactSegments can offset an isolated part with firstIndex.
        */
       readonly index: number;
       readonly artifact: DetectedArtifact;
@@ -50,41 +48,54 @@ export type ArtifactSegment =
  * lines: the gap between a paragraph and the block below it is not a paragraph.
  */
 export function artifactSegments(markdown: string, firstIndex = 0): ArtifactSegment[] {
-  const writes = groupProjectWrites(detectArtifacts(markdown));
-  if (writes.length === 0) {
-    return markdown.trim() ? [{ kind: "text", text: markdown }] : [];
-  }
+  return artifactMessageSegments([markdown])[0].map((segment) =>
+    segment.kind === "artifact" ? { ...segment, index: segment.index + firstIndex } : segment,
+  );
+}
 
+/** Group across the same joined text as the recorder, keeping each part's prose in place. */
+export function artifactMessageSegments(texts: readonly string[]): ArtifactSegment[][] {
+  const markdown = texts.join("\n");
   const lines = markdown.split("\n");
-  const segments: ArtifactSegment[] = [];
-  let at = 0;
-
-  writes.forEach((write, offset) => {
-    const [first, ...rest] = write.blocks;
-    const before = lines.slice(at, first.line).join("\n");
-    if (before.trim()) segments.push({ kind: "text", text: before });
-
-    // One card per *write*, not per fence: three fences under one id are one
-    // revision of one project, and three cards would say the model built three
-    // things (§13).
-    segments.push({
+  const detected = detectArtifacts(markdown);
+  const writes = groupProjectWrites(detected);
+  const cards = new Map<number, Extract<ArtifactSegment, { kind: "artifact" }>>();
+  writes.forEach((write, index) => {
+    const first = write.blocks[0];
+    cards.set(first.line, {
       kind: "artifact",
-      index: firstIndex + offset,
+      index,
       artifact: first,
-      raw: lines.slice(first.line, first.endLine + 1).join("\n"),
+      raw: write.blocks
+        .map((block) => lines.slice(block.line, block.endLine + 1).join("\n"))
+        .join("\n"),
       files: write.blocks.flatMap((block) => (block.path ? [block.path] : [])),
     });
-
-    // The prose between a write's own fences is dropped, along with the fences
-    // after the first: they belong to the card, and rendering them would put a
-    // wall of markup under it.
-    at = (rest.at(-1) ?? first).endLine + 1;
   });
 
-  const after = lines.slice(at).join("\n");
-  if (after.trim()) segments.push({ kind: "text", text: after });
+  let start = 0;
+  return texts.map((text) => {
+    const end = start + text.split("\n").length;
+    const segments: ArtifactSegment[] = [];
+    let at = start;
+    const prose = (from: number, to: number) => {
+      const text = lines.slice(from, to).join("\n");
+      if (text.trim()) segments.push({ kind: "text", text });
+    };
 
-  return segments;
+    // Walk individual ranges in document order. Grouping must never swallow
+    // prose or another project's fences between files of the same write.
+    for (const block of detected) {
+      if (block.endLine < start || block.line >= end) continue;
+      prose(at, Math.max(at, block.line));
+      const card = cards.get(block.line);
+      if (card && block.line >= start) segments.push(card);
+      at = Math.min(end, block.endLine + 1);
+    }
+    prose(at, end);
+    start = end;
+    return segments;
+  });
 }
 
 /**

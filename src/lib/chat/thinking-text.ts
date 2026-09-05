@@ -11,7 +11,7 @@
 /** Split a summary into paragraphs, dropping the blank runs between them. */
 export function thinkingParagraphs(text: string): string[] {
   return text
-    .split(/\n{2,}/)
+    .split(/\r?\n[ \t]*(?:\r?\n[ \t]*)+/)
     .map((paragraph) => paragraph.trim())
     .filter((paragraph) => paragraph.length > 0);
 }
@@ -24,13 +24,22 @@ export function thinkingParagraphs(text: string): string[] {
  * literal asterisks they read as noise.
  */
 export function thinkingHeadline(text: string, maxLength = 80): string {
-  const paragraphs = thinkingParagraphs(text);
-  const latest = paragraphs.at(-1) ?? "";
-  const line = latest.split("\n")[0] ?? "";
+  const latest = thinkingParagraphs(text).at(-1) ?? "";
+  return thinkingParagraphHeadline(latest, maxLength);
+}
+
+/** The component already has paragraphs; do not split the whole summary twice. */
+export function thinkingParagraphHeadline(paragraph: string, maxLength = 80): string {
+  const newline = paragraph.indexOf("\n");
+  const line = newline === -1 ? paragraph : paragraph.slice(0, newline);
 
   const stripped = line
-    .replace(/^[-*+>\s]+/, "")
-    .replace(/\*\*|__|[*_`#]/g, "")
+    .replace(/^\s*(?:[-*+>]\s+|#{1,6}\s+)/, "")
+    .replace(
+      /`([^`]+)`|(^|[\s([{])(\*\*|__|\*|_)([^\s*_](?:.*?[^\s*_])?)\3(?=$|[\s.,!?;:)\]}])/g,
+      (_match, code: string | undefined, prefix: string, _marker, emphasized: string) =>
+        code ?? prefix + emphasized,
+    )
     .trim();
 
   if (stripped.length <= maxLength) return stripped;

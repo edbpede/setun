@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+  artifactMessageSegments,
   artifactSegmentCount,
   artifactSegments,
   streamingMessageSegments,
@@ -7,6 +8,44 @@ import {
 } from "./segments";
 
 describe("artifactSegments", () => {
+  it("preserves disjoint prose and other projects while grouping a write", () => {
+    const first = "```html id=a path=index.html\n<p>a</p>\n```";
+    const last = "```css id=a path=style.css\np {color: teal}\n```";
+    const segments = artifactSegments(
+      [
+        first,
+        "Between A and B.",
+        "```svg id=b\n<svg/>\n```",
+        "Between B and A.",
+        last,
+        "Done.",
+      ].join("\n"),
+    );
+    expect(segments.map((segment) => segment.kind)).toEqual([
+      "artifact",
+      "text",
+      "artifact",
+      "text",
+      "text",
+    ]);
+    expect(segments[0].kind === "artifact" && segments[0].raw).toBe(`${first}\n${last}`);
+    expect(segments[1]).toEqual({ kind: "text", text: "Between A and B." });
+    expect(segments[3]).toEqual({ kind: "text", text: "Between B and A." });
+  });
+
+  it("groups project files across text parts before numbering cards", () => {
+    const parts = artifactMessageSegments([
+      "```html id=a path=index.html\n<p>a</p>\n```",
+      "Styles follow.\n```css id=a path=style.css\np {}\n```\n```svg id=b\n<svg/>\n```",
+    ]);
+    expect(parts[0][0].kind === "artifact" && parts[0][0].files).toEqual([
+      "index.html",
+      "style.css",
+    ]);
+    expect(parts[1][0]).toEqual({ kind: "text", text: "Styles follow." });
+    const cards = parts.flat().filter((segment) => segment.kind === "artifact");
+    expect(cards.map((card) => card.index)).toEqual([0, 1]);
+  });
   it("splits prose around an artifact block", () => {
     const segments = artifactSegments(
       ["Her er siden:", "```html id=side", "<p>hi</p>", "```", "Prøv den."].join("\n"),

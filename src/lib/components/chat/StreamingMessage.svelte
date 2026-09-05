@@ -89,6 +89,7 @@ const seconds = $derived(Math.round(elapsedMs / 1000));
             {showThinking}
             thinkingStartedAt={turn.thinkingStartedAt}
             thinkingSettledAt={turn.thinkingSettledAt}
+            thinkingTimings={turn.thinkingTimings}
           />
         </div>
       {/if}

@@ -171,6 +171,52 @@ describe("StreamingTurn — the checkpoint prompt", () => {
  * answer has not begun.
  */
 describe("StreamingTurn — thinking", () => {
+  it("reopens a reasoning interval when a detached stream resumes", () => {
+    let clock = 0;
+    const turn = new StreamingTurn(() => clock);
+    turn.begin("turn-1");
+    turn.apply({ type: "thinking-delta", text: "First" }, 0);
+    clock = 1_000;
+    turn.detach();
+    expect(turn.thinkingTimings[0]?.settledAt).toBe(1_000);
+    turn.resume("turn-1", 0);
+    turn.apply({ type: "thinking-delta", text: " continued" }, 1);
+    expect(turn.thinkingTimings[0]?.settledAt).toBeNull();
+    clock = 3_000;
+    turn.apply({ type: "done", reason: "stop" }, 2);
+    expect(turn.thinkingTimings[0]).toEqual({ startedAt: 0, settledAt: 3_000 });
+  });
+
+  it("ignores usage and checkpoints, and times reasoning after tool output separately", () => {
+    let clock = 0;
+    const turn = new StreamingTurn(() => clock);
+    turn.begin("turn-1");
+    turn.apply({ type: "thinking-delta", text: "First" }, 0);
+    clock = 1_000;
+    turn.apply({ type: "usage", inputTokens: 10, outputTokens: 20, estimated: false }, 1);
+    turn.apply(
+      {
+        type: "continue-request",
+        requestId: "continue-1",
+        cause: "steps",
+        caps: ["steps"],
+        turn: { steps: 20, tokens: 30, elapsedMs: 1_000 },
+        daily: { usedTokens: 30, limitTokens: 100 },
+      },
+      2,
+    );
+    expect(turn.thinkingTimings[0]).toEqual({ startedAt: 0, settledAt: null });
+    clock = 2_000;
+    turn.apply({ type: "tool-result", toolCallId: "tool-1", result: "Found", isError: false }, 3);
+    expect(turn.thinkingTimings[0]).toEqual({ startedAt: 0, settledAt: 2_000 });
+    clock = 5_000;
+    turn.apply({ type: "thinking-delta", text: "Second" }, 4);
+    clock = 9_000;
+    turn.apply({ type: "text-delta", text: "Answer" }, 5);
+    expect(turn.thinkingTimings[0]).toEqual({ startedAt: 0, settledAt: 2_000 });
+    expect(turn.thinkingTimings[2]).toEqual({ startedAt: 5_000, settledAt: 9_000 });
+  });
+
   it("grows into one trailing part rather than one per delta", () => {
     const turn = new StreamingTurn();
     turn.begin("turn-1");

@@ -57,7 +57,7 @@ const name = $derived(title ?? m.artifact_untitled({ language }));
     </p>
     {#if pending}
       <p class="truncate text-xs text-muted-foreground">
-        {#if path}
+        {#if path && artifactKey}
           <!-- A project's own file, named: "Building Tidslinje…" says nothing
                about which of five files is arriving (§13). -->
           {m.artifact_card_writing({ path })}

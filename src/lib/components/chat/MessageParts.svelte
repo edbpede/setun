@@ -1,7 +1,7 @@
 <script lang="ts">
 import {
-  artifactSegmentCount,
-  artifactSegments,
+  type ArtifactSegment,
+  artifactMessageSegments,
   type StreamingSegment,
   streamingMessageSegments,
 } from "$lib/artifacts/segments";
@@ -60,6 +60,7 @@ interface Props {
    */
   thinkingStartedAt?: number | null;
   thinkingSettledAt?: number | null;
+  thinkingTimings?: Readonly<Record<number, { startedAt: number; settledAt: number | null }>>;
 }
 
 let {
@@ -72,25 +73,25 @@ let {
   showThinking = true,
   thinkingStartedAt = null,
   thinkingSettledAt = null,
+  thinkingTimings = {},
 }: Props = $props();
 
 /**
- * Where each text part starts counting artifacts (§13).
- *
- * A message's prose arrives as several parts and the refs are numbered across
- * the whole message, so each part needs to know how many came before it.
+ * Group all text parts together, just as the recorder does (§13).
  */
-const firstIndexOf = $derived.by(() => {
-  const offsets = new Map<number, number>();
-  let seen = 0;
-
+const settledByPart = $derived.by(() => {
+  const texts: string[] = [];
+  const indexes: number[] = [];
   parts.forEach((part, index) => {
     if (part.type !== "text") return;
-    offsets.set(index, seen);
-    seen += artifactSegmentCount(part.text);
+    texts.push(part.text);
+    indexes.push(index);
   });
-
-  return { offsets, total: seen };
+  const byIndex = new Map<number, ArtifactSegment[]>();
+  artifactMessageSegments(texts).forEach((segments, at) => {
+    byIndex.set(indexes[at], segments);
+  });
+  return byIndex;
 });
 
 /**
@@ -104,19 +105,14 @@ const firstIndexOf = $derived.by(() => {
  */
 const aligned = $derived.by(() => {
   const refs = artifacts ?? [];
-  if (refs.length === 0 || refs.length !== firstIndexOf.total) return false;
-
-  return parts.every((part, index) => {
-    if (part.type !== "text") return true;
-
-    return artifactSegments(part.text, firstIndexOf.offsets.get(index) ?? 0).every((segment) => {
-      if (segment.kind !== "artifact") return true;
-      // A write whose first fence is a plain file — a revision that changed only
-      // the stylesheet — states no language of its own, so there is nothing to
-      // compare and the ref's own tag stands (§13).
-      if (segment.artifact.language === null) return refs[segment.index] !== undefined;
-      return refs[segment.index]?.language === segment.artifact.language;
-    });
+  const cards = [...settledByPart.values()].flat().filter((segment) => segment.kind === "artifact");
+  if (refs.length === 0 || refs.length !== cards.length) return false;
+  return cards.every((segment) => {
+    // A write whose first fence is a plain file — a revision that changed only
+    // the stylesheet — states no language of its own, so there is nothing to
+    // compare and the ref's own tag stands (§13).
+    if (segment.artifact.language === null) return refs[segment.index] !== undefined;
+    return refs[segment.index]?.language === segment.artifact.language;
   });
 });
 
@@ -206,7 +202,7 @@ const failed = $derived(
         between them is ordinary markdown, and `renderMarkdown` stays the only
         producer of `{@html}` in the transcript (§5).
       -->
-      {#each artifactSegments(part.text, firstIndexOf.offsets.get(index) ?? 0) as segment, at (at)}
+      {#each settledByPart.get(index) ?? [] as segment, at (at)}
         {#if segment.kind === "text"}
           <MarkdownMessage text={segment.text} />
         {:else if artifacts?.[segment.index]}
@@ -229,9 +225,9 @@ const failed = $derived(
       -->
       <ThinkingBlock
         text={part.text}
-        live={streaming && index === parts.length - 1}
-        startedAt={thinkingStartedAt}
-        settledAt={thinkingSettledAt}
+        live={streaming && index === parts.length - 1 && (thinkingTimings[index]?.settledAt ?? null) === null}
+        startedAt={thinkingTimings[index]?.startedAt ?? thinkingStartedAt}
+        settledAt={thinkingTimings[index]?.settledAt ?? thinkingSettledAt}
       />
     {/if}
   {:else if part.type === "tool-call"}

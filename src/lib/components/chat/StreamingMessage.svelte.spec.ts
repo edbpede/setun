@@ -10,6 +10,23 @@ import StreamingMessage from "./StreamingMessage.svelte";
  */
 
 describe("StreamingMessage", () => {
+  it("settles each reasoning block with its own duration, including a reasoning-only ending", async () => {
+    let clock = 0;
+    const turn = new StreamingTurn(() => clock);
+    turn.begin("turn-1");
+    turn.apply({ type: "thinking-delta", text: "First" }, 0);
+    clock = 2_000;
+    turn.apply({ type: "tool-result", toolCallId: "tool-1", result: "Found", isError: false }, 1);
+    clock = 5_000;
+    turn.apply({ type: "thinking-delta", text: "Second" }, 2);
+    clock = 9_000;
+    turn.apply({ type: "done", reason: "stop" }, 3);
+    render(StreamingMessage, { turn });
+
+    await expect.element(page.getByText(m.chat_thoughts_elapsed({ seconds: 2 }))).toBeVisible();
+    await expect.element(page.getByText(m.chat_thoughts_elapsed({ seconds: 4 }))).toBeVisible();
+  });
+
   it("renders nothing before a turn starts", async () => {
     const turn = new StreamingTurn();
     render(StreamingMessage, { turn });
