@@ -60,6 +60,11 @@ async function ask(page: Page): Promise<void> {
   await expect(page.locator('[data-role="assistant"]').getByText(/Et loop/)).toBeVisible({
     timeout: 30_000,
   });
+  // Visible text can arrive before the turn finishes. A second conversation
+  // still shares this pupil's one-turn-in-flight guard.
+  await expect(page.getByRole("button", { name: m.chat_send(), exact: true })).toBeVisible({
+    timeout: 30_000,
+  });
 }
 
 /**

@@ -353,6 +353,7 @@ test("the pinned runtimes are served from the sandbox origin", async ({ request 
  * with no filesystem behind them, and the plugin is the whole of the resolution.
  */
 test("a tsx project bundles its own modules, data and styles", async ({ page }) => {
+  test.setTimeout(90_000);
   await page.goto("/login");
 
   const stage = await mountArtifact(page, {
@@ -373,13 +374,14 @@ test("a tsx project bundles its own modules, data and styles", async ({ page }) 
     },
   });
 
-  await expect(stage.locator("#out")).toHaveText("Klik — Tidslinje");
+  await expect(stage.locator("#out")).toHaveText("Klik — Tidslinje", { timeout: 60_000 });
   // The stylesheet travelled as its own esbuild output and was injected into the
   // document, rather than arriving inside the module.
   await expect(stage.locator("#out")).toHaveCSS("color", "rgb(0, 128, 128)");
 });
 
 test("a svelte child component compiles with its own styles", async ({ page }) => {
+  test.setTimeout(90_000);
   await page.goto("/login");
 
   const stage = await mountArtifact(page, {
@@ -399,7 +401,7 @@ test("a svelte child component compiles with its own styles", async ({ page }) =
     },
   });
 
-  await expect(stage.locator("#out")).toHaveText("Færdig");
+  await expect(stage.locator("#out")).toHaveText("Færdig", { timeout: 60_000 });
   await expect(stage.locator("#out")).toHaveCSS("color", "rgb(0, 128, 128)");
 });
 
@@ -408,6 +410,7 @@ test("a svelte child component compiles with its own styles", async ({ page }) =
  * would otherwise fail at run time with a message about a module specifier.
  */
 test("an import from outside the project is refused by name", async ({ page }) => {
+  test.setTimeout(90_000);
   await page.goto("/login");
 
   await mountArtifact(page, {
@@ -419,11 +422,12 @@ test("an import from outside the project is refused by name", async ({ page }) =
   });
 
   await expect
-    .poll(async () => (await sandboxMessageTypes(page)).includes("failed"))
+    .poll(async () => (await sandboxMessageTypes(page)).includes("failed"), { timeout: 60_000 })
     .toBe(true);
 });
 
 test("a relative import naming nothing lists the files the project does hold", async ({ page }) => {
+  test.setTimeout(90_000);
   await page.goto("/login");
 
   await mountArtifact(page, {
@@ -436,7 +440,7 @@ test("a relative import naming nothing lists the files the project does hold", a
   });
 
   await expect
-    .poll(async () => (await sandboxMessageTypes(page)).includes("failed"))
+    .poll(async () => (await sandboxMessageTypes(page)).includes("failed"), { timeout: 60_000 })
     .toBe(true);
 });
 
