@@ -2,13 +2,15 @@ import { describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { appendSnapshot, createArtifact, snapshotOf } from "../db/queries/artifacts";
 import { recordAttachmentWithinLimit } from "../db/queries/attachments";
-import { updateClassroomSettings } from "../db/queries/classrooms";
+import { deleteClassroom, updateClassroomSettings } from "../db/queries/classrooms";
 import { createConversation } from "../db/queries/conversations";
 import { recordGeneratedImage } from "../db/queries/images";
 import { appendMessage } from "../db/queries/messages";
 import { searchConversations } from "../db/queries/search";
 import { createSessionRow } from "../db/queries/sessions";
+import { deleteStudent } from "../db/queries/students";
 import { createTestDatabase, seedTestFixtures } from "../db/testing";
 import { FileStore } from "../storage/files";
 import { retentionCutoffs, runRetention } from "./retention";
@@ -56,6 +58,51 @@ describe("retentionCutoffs", () => {
 });
 
 describe("runRetention", () => {
+  it.each(["expiry", "student", "classroom"] as const)(
+    "sweeps orphan artifact blobs after %s deletion and preserves shared content",
+    async (mode) => {
+      const db = createTestDatabase();
+      const doomed = seedTestFixtures(db);
+      const kept = seedTestFixtures(db);
+      const revisions = [doomed, kept].map(({ student }, at) => {
+        const artifact = createArtifact(db, { studentId: student.id, language: "html" });
+        const version = appendSnapshot(db, {
+          artifactId: artifact.id,
+          entry: "index.html",
+          files: { "index.html": `page ${at}`, "styles.css": "shared" },
+          authoredBy: "model",
+        });
+        return { artifact, version };
+      });
+
+      if (mode === "expiry") {
+        updateClassroomSettings(db, {
+          classroomId: doomed.classroom.id,
+          settings: { creationRetentionDays: 30 },
+        });
+        backdate(
+          db,
+          "UPDATE artifact SET updatedAt = ? WHERE id = ?",
+          new Date("2026-01-01T00:00:00Z"),
+          revisions[0].artifact.id,
+        );
+      } else if (mode === "student") {
+        deleteStudent(db, { studentId: doomed.student.id, classroomId: doomed.classroom.id });
+      } else {
+        deleteClassroom(db, doomed.classroom.id);
+      }
+
+      await runRetention(db, store(), NOW);
+
+      expect(snapshotOf(db, revisions[0].version.id)).toBeNull();
+      expect(snapshotOf(db, revisions[1].version.id)?.files).toEqual({
+        "index.html": "page 1",
+        "styles.css": "shared",
+      });
+      expect(db.$client.query("SELECT count(*) AS n FROM artifact_blob").get()).toEqual({ n: 2 });
+    },
+  );
+
   it("deletes an expired conversation, its messages and its search index entry", async () => {
     const db = createTestDatabase();
     const { student, alias } = seedTestFixtures(db);
