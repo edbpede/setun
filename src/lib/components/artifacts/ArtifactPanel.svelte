@@ -283,15 +283,17 @@ async function commit(replace = false): Promise<void> {
 }
 
 async function restore(summary: ArtifactVersionSummary): Promise<void> {
+  const artifactId = workspace.openId;
+  if (!artifactId) return;
   const full = await snapshotFor(summary.id);
-  if (!full) return;
+  if (!full || workspace.openId !== artifactId) return;
 
   // Not `edit`: the revision comes back under the tag it was written with, and
   // an html revision of an artifact since rewritten as a component must not go
   // through the Svelte compiler (§13).
   workspace.restore(full);
   await commit(true);
-  workspace.tab = "preview";
+  if (workspace.openId === artifactId) workspace.tab = "preview";
 }
 
 /**
@@ -681,7 +683,9 @@ $effect(() => {
               {@const before = previousSnapshot?.files[diffFile]}
               {@const after = selectedSnapshot?.files[diffFile]}
               <div class="min-h-0 flex-1 overflow-auto">
-                {#if after === undefined}
+                {#if selectedSnapshot === null || (previous !== null && previousSnapshot === null)}
+                  <!-- Both snapshots must arrive before a missing path means added or deleted. -->
+                {:else if after === undefined}
                   <p class="p-3 text-xs text-muted-foreground">
                     {m.artifact_diff_deleted({ path: diffFile })}
                   </p>

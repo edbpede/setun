@@ -434,6 +434,7 @@ export class ArtifactWorkspace {
   recordOutcome(status: BuildStatus, message: string | null): void {
     this.outcome = {
       files: this.running?.files ?? {},
+      entry: this.running?.entry ?? "",
       language: this.runningLanguage,
       status,
       message,
@@ -559,13 +560,20 @@ export class ArtifactWorkspace {
 
   /** Fold a version the server just stored back into the list. */
   applyVersion(artifactId: string, version: ArtifactVersionView): void {
+    const current = this.items.find((item) => item.id === artifactId);
+    if (current && version.revision < current.latest.revision) return;
     this.items = this.items.map((item) =>
       item.id === artifactId ? { ...item, latest: version } : item,
     );
 
     // The edit the server just stored is no longer an edit: an overlay that
     // matches the revision beneath it would keep the file marked as changed.
-    if (this.openId === artifactId && sameFiles(this.files, version.files)) {
+    if (
+      this.openId === artifactId &&
+      this.entry === version.entry &&
+      this.language === effectiveLanguage(this.open ?? { language: "html" }, version) &&
+      sameFiles(this.files, version.files)
+    ) {
       this.drafts = {};
       this.draftReplace = null;
       this.draftLanguage = null;

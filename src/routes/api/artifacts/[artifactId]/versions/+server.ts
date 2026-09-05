@@ -1,5 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import * as v from "valibot";
+import { effectiveLanguage } from "$lib/artifacts/identity";
 import {
   asProjectFiles,
   entryOf,
@@ -12,8 +13,8 @@ import { getDb } from "$lib/server/boot";
 import {
   appendSnapshot,
   getOwnedArtifact,
-  latestSnapshotOf,
-  listArtifactVersions,
+  latestVersionOf,
+  snapshotOf,
 } from "$lib/server/db/queries/artifacts";
 import type { RequestHandler } from "./$types";
 
@@ -69,7 +70,8 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   if (!record) error(404, "Not found");
 
   const body = parsed.output;
-  const previous = latestSnapshotOf(db, record.id);
+  const previousVersion = latestVersionOf(db, record.id);
+  const previous = previousVersion ? snapshotOf(db, previousVersion.id) : null;
 
   const composed: Record<string, string> = body.replace ? {} : { ...(previous?.files ?? {}) };
   for (const [path, source] of Object.entries(body.files)) composed[path] = source;
@@ -98,11 +100,12 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   const unchanged =
     previous !== null &&
     previous.entry === entry &&
+    effectiveLanguage(record, body) === effectiveLanguage(record, previousVersion) &&
     Object.keys(previous.files).length === Object.keys(files).length &&
     Object.entries(files).every(([path, source]) => previous.files[path] === source);
 
   const version = unchanged
-    ? listArtifactVersions(db, record.id).at(-1)
+    ? previousVersion
     : appendSnapshot(db, {
         artifactId: record.id,
         entry,

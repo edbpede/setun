@@ -214,6 +214,41 @@ test("a student builds an artifact, edits it, and the edit travels back", async 
   expect(escaped.status()).toBe(400);
 });
 
+test("history retains deleted paths and language-only restores create revisions", async ({ page }) => {
+  test.setTimeout(120_000);
+  const { code } = await provisionStudent();
+  await signIn(page, code);
+  await askForArtifact(page);
+  const artifactId = await page.locator("[data-artifact-id]").first().getAttribute("data-artifact-id");
+  const endpoint = `/api/artifacts/${artifactId}/versions`;
+  const files = { "index.html": "<p>same source</p>", "styles.css": "p { color: red }" };
+
+  const initial = await page.request.post(endpoint, {
+    data: { files, entry: "index.html", language: "html", replace: true },
+  });
+  expect(initial.status()).toBe(201);
+  const changed = await page.request.post(endpoint, {
+    data: { files, entry: "index.html", language: "svg", replace: true },
+  });
+  expect(changed.status()).toBe(201);
+  expect((await changed.json()).language).toBe("svg");
+  const unchanged = await page.request.post(endpoint, {
+    data: { files, entry: "index.html", language: "svg", replace: true },
+  });
+  expect(unchanged.status()).toBe(200);
+
+  const removed = await page.request.post(endpoint, {
+    data: { files: {}, deletes: ["styles.css"], language: "svg" },
+  });
+  expect(removed.status()).toBe(201);
+  const history = await (await page.request.get(`/api/artifacts/${artifactId}`)).json();
+  expect(history.versions.at(-1).files).toContainEqual({
+    path: "styles.css",
+    bytes: new TextEncoder().encode(files["styles.css"]).length,
+    change: "deleted",
+  });
+});
+
 test("the creations gallery holds what the student made", async ({ page }) => {
   test.setTimeout(120_000);
   const { label, code } = await provisionStudent();

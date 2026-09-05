@@ -13,6 +13,7 @@ import {
   listConversationAnchors,
   listConversationVersions,
   listVersionFiles,
+  previousVersionIds,
   pruneOrphanBlobs,
   recordVersionBuild,
   snapshotOf,
@@ -385,6 +386,28 @@ describe("project snapshots", () => {
   function blobCount(): number {
     return (db.$client.query("SELECT count(*) AS n FROM artifact_blob").get() as { n: number }).n;
   }
+
+  it("batches immediate predecessors including edits outside the selected messages", () => {
+    const first = seedProject({ "src/App.tsx": "first" });
+    const edit = appendSnapshot(db, {
+      artifactId: first.record.id,
+      entry: "src/App.tsx",
+      files: { "src/App.tsx": "student edit" },
+      authoredBy: "student",
+    });
+    const next = appendSnapshot(db, {
+      artifactId: first.record.id,
+      entry: "src/App.tsx",
+      files: { "src/App.tsx": "next answer" },
+      authoredBy: "model",
+    });
+    const unrelated = seedProject({ "src/App.tsx": "another artifact" });
+
+    expect(previousVersionIds(db, [first.version.id, next.id, unrelated.version.id])).toEqual(
+      new Map([[next.id, edit.id]]),
+    );
+    expect(previousVersionIds(db, [])).toEqual(new Map());
+  });
 
   it("reads a revision back as the project it was written as", () => {
     const { version } = seedProject({

@@ -55,18 +55,17 @@ export const GET: RequestHandler = ({ params, locals }) => {
     versions: versions.map((version, at) => {
       const files = byVersion.get(version.id) ?? [];
       const previous = at === 0 ? [] : (byVersion.get(versions[at - 1].id) ?? []);
-      const changes = new Map(
-        diffFileLists(previous, files).map((change) => [change.path, change.change]),
-      );
+      const changes = diffFileLists(previous, files);
+      const sizes = new Map([...previous, ...files].map((file) => [file.path, file.bytes]));
 
       return {
         id: version.id,
         revision: version.revision,
         entry: version.entryPath,
-        files: files.map((file) => ({
-          path: file.path,
-          bytes: file.bytes,
-          change: changes.get(file.path) ?? "unchanged",
+        files: changes.map(({ path, change }) => ({
+          path,
+          bytes: sizes.get(path) ?? 0,
+          change,
         })),
         // Null for a revision written before the column, which reads as "whatever
         // the artifact says" — `effectiveLanguage` is the one that resolves it.

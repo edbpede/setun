@@ -63,6 +63,59 @@ function openWorkspace(items: ArtifactView[] = [artifact()]): ArtifactWorkspace 
 }
 
 describe("ArtifactPanel", () => {
+  it("waits for both diff snapshots and abandons a restore after switching artifacts", async () => {
+    const first = artifact({ latest: { ...BASE_VERSION, id: "version-2", revision: 2 } });
+    const second = artifact({ id: "artifact-2", title: "Other" });
+    const workspace = openWorkspace([first, second]);
+    workspace.select(first.id);
+    const pending = new Map<string, ((response: Response) => void)[]>();
+    const fetched = vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+      const url = String(input);
+      if (url.includes("/versions/")) {
+        return new Promise<Response>((resolve) => {
+          pending.set(url, [...(pending.get(url) ?? []), resolve]);
+        });
+      }
+      return Promise.resolve(
+        Response.json({
+          versions: [BASE_VERSION, first.latest].map((version) => ({
+            ...version,
+            files: [{ path: "index.html", bytes: 20, change: "modified" }],
+          })),
+        }),
+      );
+    });
+    try {
+      render(ArtifactPanel, { workspace, sandboxOrigin: SANDBOX });
+      await page.getByRole("tab", { name: m.artifact_tab_history() }).click();
+      await expect.element(page.getByRole("button", { name: m.artifact_restore() })).toBeVisible();
+      await expect
+        .element(page.getByText(m.artifact_diff_deleted({ path: "index.html" })))
+        .not.toBeInTheDocument();
+
+      for (const resolve of pending.get("/api/artifacts/artifact-1/versions/version-2") ?? []) {
+        resolve(Response.json(first.latest));
+      }
+      await new Promise(requestAnimationFrame);
+      await expect
+        .element(page.getByText(m.artifact_diff_added({ path: "index.html" })))
+        .not.toBeInTheDocument();
+
+      await page.getByText(m.artifact_version_label({ revision: 1 })).click();
+      await page.getByRole("button", { name: m.artifact_restore() }).click();
+      workspace.select(second.id);
+      for (const resolve of pending.get("/api/artifacts/artifact-1/versions/version-1") ?? []) {
+        resolve(Response.json({ ...BASE_VERSION, files: { "index.html": "old source" } }));
+      }
+      await new Promise(requestAnimationFrame);
+      expect(workspace.openId).toBe(second.id);
+      expect(workspace.files).toEqual(second.latest.files);
+      expect(fetched.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+    } finally {
+      fetched.mockRestore();
+    }
+  });
+
   it("says what to ask for when nothing has been built", async () => {
     const workspace = new ArtifactWorkspace();
     workspace.reveal();

@@ -11,9 +11,9 @@ import { resolveClassroomStatus } from "$lib/server/classroom/status";
 import { getConfig } from "$lib/server/config";
 import {
   attachSnapshots,
-  listArtifactVersions,
   listConversationArtifacts,
   listVersionFiles,
+  previousVersionIds,
   versionsByMessage,
 } from "$lib/server/db/queries/artifacts";
 import { listPendingAttachments } from "$lib/server/db/queries/attachments";
@@ -90,10 +90,11 @@ export const load: PageServerLoad = ({ locals, url }) => {
    * none of it needs the sources.
    */
   const filesByVersion = new Map<string, { path: string; hash: string }[]>();
-  for (const file of listVersionFiles(
-    db,
-    written.map(({ version }) => version.id),
-  )) {
+  const writtenIds = written.map(({ version }) => version.id);
+  const predecessors = previousVersionIds(db, writtenIds);
+  for (const file of listVersionFiles(db, [
+    ...new Set([...writtenIds, ...predecessors.values()]),
+  ])) {
     filesByVersion.set(file.versionId, [...(filesByVersion.get(file.versionId) ?? []), file]);
   }
 
@@ -101,7 +102,9 @@ export const load: PageServerLoad = ({ locals, url }) => {
     if (!version.messageId) continue;
 
     const files = filesByVersion.get(version.id) ?? [];
-    const changes = diffFileLists(previousFiles(db, filesByVersion, version), files);
+    const previousId = predecessors.get(version.id);
+    const previous = previousId ? (filesByVersion.get(previousId) ?? []) : [];
+    const changes = diffFileLists(previous, files);
 
     const held = messageArtifacts.get(version.messageId) ?? [];
     held.push({
@@ -279,28 +282,3 @@ export const actions: Actions = {
     redirect(303, "/login");
   },
 };
-
-/**
- * The files of the revision before this one, for the card's change summary.
- *
- * Read out of the map already fetched rather than by a second query: a
- * conversation's revisions arrive together, and the one before is the one with
- * the next lower revision number of the same artifact.
- */
-function previousFiles(
-  db: ReturnType<typeof getDb>,
-  filesByVersion: Map<string, { path: string; hash: string }[]>,
-  version: { artifactId: string; revision: number },
-): { path: string; hash: string }[] {
-  if (version.revision <= 1) return [];
-
-  const earlier = listArtifactVersions(db, version.artifactId).find(
-    (row) => row.revision === version.revision - 1,
-  );
-  if (!earlier) return [];
-
-  return (
-    filesByVersion.get(earlier.id) ??
-    listVersionFiles(db, [earlier.id]).map((file) => ({ path: file.path, hash: file.hash }))
-  );
-}

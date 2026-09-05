@@ -33,6 +33,33 @@ function artifact(overrides: Partial<ArtifactView> = {}): ArtifactView {
 }
 
 describe("the workspace stage", () => {
+  it("keeps a newer restore when an older save has identical files but another entry or tag", () => {
+    const workspace = new ArtifactWorkspace();
+    const files = { "index.html": "<p>home</p>", "other.html": "<p>other</p>" };
+    workspace.items = [artifact({ latest: { ...BASE_VERSION, files } })];
+    workspace.select("artifact-1");
+    workspace.restore({ ...BASE_VERSION, files, entry: "other.html", language: "html" });
+    workspace.applyVersion("artifact-1", { ...BASE_VERSION, files, revision: 2 });
+    expect(workspace.entry).toBe("other.html");
+    expect(workspace.draftReplace).not.toBeNull();
+
+    workspace.restore({ ...BASE_VERSION, files, language: "svelte" });
+    workspace.applyVersion("artifact-1", { ...BASE_VERSION, files, revision: 3, language: "html" });
+    expect(workspace.language).toBe("svelte");
+    expect(workspace.draftReplace).not.toBeNull();
+
+    workspace.applyVersion("artifact-1", {
+      ...BASE_VERSION,
+      files,
+      revision: 4,
+      language: "svelte",
+    });
+    expect(workspace.draftReplace).toBeNull();
+    workspace.applyVersion("artifact-1", { ...BASE_VERSION, files, revision: 3, language: "html" });
+    expect(workspace.open?.latest.revision).toBe(4);
+    expect(workspace.language).toBe("svelte");
+  });
+
   it("starts on the conversation and nothing else", () => {
     const workspace = new ArtifactWorkspace();
 

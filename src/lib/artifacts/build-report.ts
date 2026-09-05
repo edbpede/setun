@@ -31,6 +31,7 @@ import type { ArtifactLanguage, BuildStatus } from "./types";
 export interface BuildOutcome {
   /** The project that actually ran, so a draft can be told from the version. */
   readonly files: ProjectFiles;
+  readonly entry: string;
   /** And the tag it ran under, so a restore can be told from the version too. */
   readonly language: ArtifactLanguage | null;
   readonly status: BuildStatus;
@@ -44,6 +45,7 @@ export interface BuildTarget {
   readonly latest: {
     readonly id: string;
     readonly files: ProjectFiles;
+    readonly entry: string;
     readonly language?: ArtifactLanguage | null;
     readonly buildStatus?: BuildStatus | null;
     readonly buildMessage?: string | null;
@@ -66,6 +68,7 @@ export function buildReportFor(
 ): BuildReport | null {
   if (!open || !outcome) return null;
   if (!sameFiles(outcome.files, open.latest.files)) return null;
+  if (outcome.entry !== open.latest.entry) return null;
   if (outcome.language !== effectiveLanguage(open, open.latest)) return null;
   if ((open.latest.buildStatus ?? null) === outcome.status) return null;
 

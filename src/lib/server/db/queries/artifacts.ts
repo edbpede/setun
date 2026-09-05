@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { and, asc, count, desc, eq, inArray, isNull, max, notInArray, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/sqlite-core";
 import { byteLength, type ProjectFiles, type ProjectSnapshot } from "../../../artifacts/project";
 import type { ArtifactLanguage, BuildStatus, VersionAuthor } from "../../../artifacts/types";
 import type { AppDatabase } from "../client";
@@ -251,15 +252,19 @@ export function snapshotsOf(
 
 /** The newest revision's project, for an artifact about to gain another (§13). */
 export function latestSnapshotOf(db: AppDatabase, artifactId: string): ProjectSnapshot | null {
-  const version = db
-    .select({ id: artifactVersion.id })
+  const version = latestVersionOf(db, artifactId);
+  return version ? snapshotOf(db, version.id) : null;
+}
+
+/** The newest revision's metadata without loading its entire history. */
+export function latestVersionOf(db: AppDatabase, artifactId: string): ArtifactVersion | undefined {
+  return db
+    .select()
     .from(artifactVersion)
     .where(eq(artifactVersion.artifactId, artifactId))
     .orderBy(desc(artifactVersion.revision))
     .limit(1)
     .get();
-
-  return version ? snapshotOf(db, version.id) : null;
 }
 
 /**
@@ -415,6 +420,30 @@ export function listArtifactVersions(db: AppDatabase, artifactId: string): Artif
     .where(eq(artifactVersion.artifactId, artifactId))
     .orderBy(artifactVersion.revision)
     .all();
+}
+
+/** Immediate predecessors, including student edits and revisions off the active path. */
+export function previousVersionIds(
+  db: AppDatabase,
+  versionIds: readonly string[],
+): Map<string, string> {
+  if (versionIds.length === 0) return new Map();
+
+  const previous = alias(artifactVersion, "previous");
+  const rows = db
+    .select({ id: artifactVersion.id, previousId: previous.id })
+    .from(artifactVersion)
+    .innerJoin(
+      previous,
+      and(
+        eq(previous.artifactId, artifactVersion.artifactId),
+        eq(previous.revision, sql`${artifactVersion.revision} - 1`),
+      ),
+    )
+    .where(inArray(artifactVersion.id, [...versionIds]))
+    .all();
+
+  return new Map(rows.map((row) => [row.id, row.previousId]));
 }
 
 /** The artifacts of one conversation, newest first, each with its current source. */

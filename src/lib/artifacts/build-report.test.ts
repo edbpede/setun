@@ -6,6 +6,7 @@ const target: BuildTarget = {
   language: "html",
   latest: {
     id: "v1",
+    entry: "index.html",
     files: { "index.html": "<p>hi</p>" },
     buildStatus: null,
     buildMessage: null,
@@ -13,9 +14,20 @@ const target: BuildTarget = {
 };
 
 describe("buildReportFor", () => {
+  it("does not report the same files run from a different entry", () => {
+    const files = { "index.html": "<p>home</p>", "other.html": "<p>other</p>" };
+    expect(
+      buildReportFor(
+        { ...target, latest: { ...target.latest, files } },
+        { entry: "other.html", files, language: "html", status: "ok", message: null },
+      ),
+    ).toBeNull();
+  });
+
   it("reports a failure of the stored source", () => {
     expect(
       buildReportFor(target, {
+        entry: "index.html",
         files: { "index.html": "<p>hi</p>" },
         language: "html",
         status: "failed",
@@ -27,6 +39,7 @@ describe("buildReportFor", () => {
   it("reports a success the same way", () => {
     expect(
       buildReportFor(target, {
+        entry: "index.html",
         files: { "index.html": "<p>hi</p>" },
         language: "html",
         status: "ok",
@@ -43,6 +56,7 @@ describe("buildReportFor", () => {
   it("reports nothing for a draft the version does not hold", () => {
     expect(
       buildReportFor(target, {
+        entry: "index.html",
         files: { "index.html": "<p>udkast</p>" },
         language: "html",
         status: "failed",
@@ -57,6 +71,7 @@ describe("buildReportFor", () => {
       language: "html",
       latest: {
         id: "v1",
+        entry: "index.html",
         files: { "index.html": "<p>hi</p>" },
         buildStatus: "ok",
         buildMessage: null,
@@ -65,6 +80,7 @@ describe("buildReportFor", () => {
 
     expect(
       buildReportFor(stored, {
+        entry: "index.html",
         files: { "index.html": "<p>hi</p>" },
         language: "html",
         status: "ok",
@@ -79,6 +95,7 @@ describe("buildReportFor", () => {
       language: "html",
       latest: {
         id: "v1",
+        entry: "index.html",
         files: { "index.html": "<p>hi</p>" },
         buildStatus: "ok",
         buildMessage: null,
@@ -87,6 +104,7 @@ describe("buildReportFor", () => {
 
     expect(
       buildReportFor(stored, {
+        entry: "index.html",
         files: { "index.html": "<p>hi</p>" },
         language: "html",
         status: "failed",
@@ -101,6 +119,7 @@ describe("buildReportFor", () => {
       language: "html",
       latest: {
         id: "v1",
+        entry: "index.html",
         files: { "index.html": "<p>hi</p>" },
         buildStatus: "ok",
         buildMessage: null,
@@ -111,6 +130,7 @@ describe("buildReportFor", () => {
     // model has to be told the second thing, or it is told a working page.
     expect(
       buildReportFor(stored, {
+        entry: "index.html",
         files: { "index.html": "<p>hi</p>" },
         language: "html",
         status: "threw",
@@ -125,6 +145,7 @@ describe("buildReportFor", () => {
       language: "html",
       latest: {
         id: "v1",
+        entry: "index.html",
         files: { "index.html": "<p>hi</p>" },
         buildStatus: "threw",
         buildMessage: "TypeError",
@@ -134,6 +155,7 @@ describe("buildReportFor", () => {
     // A rAF loop that throws every frame is one PATCH, not sixty a second.
     expect(
       buildReportFor(stored, {
+        entry: "index.html",
         files: { "index.html": "<p>hi</p>" },
         language: "html",
         status: "threw",
@@ -152,6 +174,7 @@ describe("buildReportFor", () => {
       language: "svelte",
       latest: {
         id: "v3",
+        entry: "index.html",
         files: { "index.html": "<p>hi</p>" },
         language: "svelte",
         buildStatus: null,
@@ -160,6 +183,7 @@ describe("buildReportFor", () => {
 
     expect(
       buildReportFor(rewritten, {
+        entry: "index.html",
         files: { "index.html": "<p>hi</p>" },
         language: "html",
         status: "failed",
@@ -173,6 +197,7 @@ describe("buildReportFor", () => {
       language: "svelte",
       latest: {
         id: "v4",
+        entry: "index.html",
         files: { "index.html": "<p>hi</p>" },
         language: "html",
         buildStatus: null,
@@ -181,6 +206,7 @@ describe("buildReportFor", () => {
 
     expect(
       buildReportFor(restored, {
+        entry: "index.html",
         files: { "index.html": "<p>hi</p>" },
         language: "html",
         status: "failed",
@@ -193,6 +219,7 @@ describe("buildReportFor", () => {
     // Every row that predates the column, which must keep reporting as it did.
     expect(
       buildReportFor(target, {
+        entry: "index.html",
         files: { "index.html": "<p>hi</p>" },
         language: "html",
         status: "ok",
@@ -203,6 +230,7 @@ describe("buildReportFor", () => {
 
   it("caps the message, which is a prompt line and not a log", () => {
     const report = buildReportFor(target, {
+      entry: "index.html",
       files: { "index.html": "<p>hi</p>" },
       language: "html",
       status: "failed",
@@ -214,7 +242,13 @@ describe("buildReportFor", () => {
 
   it("reports nothing without an open artifact or an outcome", () => {
     expect(
-      buildReportFor(null, { files: {}, language: "html", status: "ok", message: null }),
+      buildReportFor(null, {
+        entry: "index.html",
+        files: {},
+        language: "html",
+        status: "ok",
+        message: null,
+      }),
     ).toBeNull();
     expect(buildReportFor(target, null)).toBeNull();
   });
