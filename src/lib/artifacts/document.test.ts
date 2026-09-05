@@ -54,6 +54,18 @@ const SVELTE: RuntimeSources = {
 const RUNTIMES = REACT;
 
 describe("staticDocument", () => {
+  it("puts its preamble before structural-looking tags in inert or foreign subtrees", () => {
+    for (const source of [
+      "<template><head></head></template><p>live</p>",
+      "<template><template></template><html></html></template><p>live</p>",
+      '<template><script>"</template>"</script><head></head></template><p>live</p>',
+      "<svg><head></head></svg><p>live</p>",
+      "<math><html></html></math><p>live</p>",
+    ]) {
+      const html = staticDocument({ language: "html", source, runtimes: RUNTIMES, runId: "run-1" });
+      expect(html.indexOf("connect-src 'none'")).toBeLessThan(html.indexOf(source));
+    }
+  });
   it("injects the preamble into a full document's head", () => {
     const html = staticDocument({
       language: "html",

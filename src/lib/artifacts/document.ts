@@ -414,14 +414,18 @@ function tagEnd(source: string, from: number): number {
  * every context in which `<` opens nothing.
  */
 function structuralTagEnd(source: string, name: "head" | "html"): number {
-  for (const tag of markupStartTags(source)) {
+  for (const tag of markupStartTags(source, true)) {
     if (tag.name === name) return tag.end;
   }
   return -1;
 }
 
-function* markupStartTags(source: string): Generator<{ name: string; start: number; end: number }> {
+function* markupStartTags(
+  source: string,
+  documentOnly = false,
+): Generator<{ name: string; start: number; end: number }> {
   let at = 0;
+  const excluded: string[] = [];
 
   while (at < source.length) {
     const open = source.indexOf("<", at);
@@ -453,7 +457,20 @@ function* markupStartTags(source: string): Generator<{ name: string; start: numb
     // An unclosed tag swallows the rest of the input, so nothing follows it.
     if (end < 0) return;
 
-    if (!closesTag) yield { name: tagName, start: open, end };
+    if (documentOnly) {
+      // Template contents and foreign elements cannot own the document's head.
+      // Nesting matters; raw-text bodies below must not affect this stack.
+      if (closesTag) {
+        const scope = excluded.lastIndexOf(tagName);
+        if (scope !== -1) excluded.splice(scope);
+      } else if (
+        tagName === "template" ||
+        ((tagName === "svg" || tagName === "math") && !/\/\s*>$/.test(source.slice(open, end)))
+      ) {
+        excluded.push(tagName);
+      }
+    }
+    if (!closesTag && excluded.length === 0) yield { name: tagName, start: open, end };
 
     // `<plaintext>` has no end tag — the parser stays in that mode to the end of
     // input, so a `</plaintext>` in the source closes nothing and no structural
