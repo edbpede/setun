@@ -65,7 +65,7 @@ describe("FileTree", () => {
     tree();
 
     await page
-      .getByRole("button", { name: m.artifact_file_folder_toggle({ name: "src" }) })
+      .getByRole("treeitem", { name: m.artifact_file_folder_toggle({ name: "src" }) })
       .click();
 
     await expect.element(page.getByRole("treeitem", { name: /App\.tsx/ })).not.toBeInTheDocument();
@@ -111,19 +111,25 @@ describe("FileTree", () => {
   it("roves through folders and retains one tab stop after collapsing the active file", async () => {
     const onselect = vi.fn();
     tree({ onselect });
-    const folder = page.getByRole("button", {
+    const folder = page.getByRole("treeitem", {
       name: m.artifact_file_folder_toggle({ name: "src" }),
       exact: true,
     });
     expect(document.querySelectorAll('[role="tree"] button[tabindex="0"]')).toHaveLength(1);
     await expect.element(folder).toHaveAttribute("tabindex", "-1");
+    await expect.element(folder).toHaveAttribute("aria-expanded", "true");
+    const groupId = folder.element().getAttribute("aria-owns");
+    expect(groupId).not.toBeNull();
+    expect(document.getElementById(groupId ?? "")?.getAttribute("role")).toBe("group");
     await folder.element().focus();
     await userEvent.keyboard("{ArrowDown}");
     await expect
-      .element(page.getByRole("button", { name: m.artifact_file_folder_toggle({ name: "lib" }) }))
+      .element(page.getByRole("treeitem", { name: m.artifact_file_folder_toggle({ name: "lib" }) }))
       .toHaveFocus();
     expect(onselect).not.toHaveBeenCalled();
     await folder.click();
+    await expect.element(folder).toHaveAttribute("aria-expanded", "false");
+    await expect.element(folder).not.toHaveAttribute("aria-owns");
     await expect.element(folder).toHaveAttribute("tabindex", "0");
     expect(document.querySelectorAll('[role="tree"] button[tabindex="0"]')).toHaveLength(1);
     await userEvent.keyboard("{ArrowDown}");

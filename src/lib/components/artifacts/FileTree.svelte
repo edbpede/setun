@@ -30,6 +30,7 @@ interface Props {
 }
 
 let { paths, active, entry, changed = [], onselect }: Props = $props();
+const treeId = $props.id();
 
 const tree = $derived(buildFileTree([...paths]));
 const changedSet = $derived(new Set(changed));
@@ -92,9 +93,12 @@ function onkeydown(event: KeyboardEvent): void {
       <li role="none">
         <button
           type="button"
+          role="treeitem"
           data-path={node.path}
           tabindex={tabStop === node.path ? 0 : -1}
           aria-expanded={!collapsed[node.path]}
+          aria-selected={false}
+          aria-owns={collapsed[node.path] ? undefined : `${treeId}-${node.path}`}
           aria-label={m.artifact_file_folder_toggle({ name: node.name })}
           onfocus={() => (focused = node.path)}
           onclick={() => (collapsed = { ...collapsed, [node.path]: !collapsed[node.path] })}
@@ -108,7 +112,7 @@ function onkeydown(event: KeyboardEvent): void {
         </button>
 
         {#if !collapsed[node.path]}
-          <ul role="group" class="flex flex-col">
+          <ul id={`${treeId}-${node.path}`} role="group" class="flex flex-col">
             {@render nodes(node.children, depth + 1)}
           </ul>
         {/if}
