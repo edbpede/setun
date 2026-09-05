@@ -84,6 +84,10 @@ function assistantTurn(text: string, parentId: string | null = null) {
 }
 
 describe("recordTurnArtifacts", () => {
+  it("refuses an oversized keyless fence without persisting an artifact", () => {
+    expect(assistantTurn(`\`\`\`html\n${"x".repeat(256_001)}\n\`\`\``)).toEqual([]);
+    expect(listStudentArtifacts(db, fixtures.student.id)).toEqual([]);
+  });
   it("records an artifact and its first revision", () => {
     const recorded = assistantTurn("Her er siden:\n```html\n<title>Kort</title>\n```");
 

@@ -88,7 +88,9 @@ export function composeSnapshot(
     if (!language) return null;
 
     const path = defaultPathFor(language);
-    return { entry: path, files: { [path]: write.single.source }, language };
+    const files = asProjectFiles({ [path]: write.single.source });
+    if (!files) return null;
+    return { entry: path, files, language };
   }
 
   const files: Record<string, string> = { ...(previous?.files ?? {}) };

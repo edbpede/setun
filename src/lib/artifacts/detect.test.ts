@@ -160,6 +160,16 @@ describe("fencedBlocks", () => {
 });
 
 describe("detectArtifacts", () => {
+  it("requires a complete address for deletion even on runnable fences", () => {
+    for (const address of ["", "id=side", "path=index.html", "id=side path=../index.html"]) {
+      expect(detectArtifacts(`\`\`\`html ${address} delete\n\`\`\``)).toEqual([]);
+    }
+    expect(detectArtifacts("```html id=side path=index.html delete\n```")[0]).toMatchObject({
+      deleted: true,
+      key: "side",
+      path: "index.html",
+    });
+  });
   it("takes the artifact blocks and leaves the rest", () => {
     const prose = [
       "Here is the page:",

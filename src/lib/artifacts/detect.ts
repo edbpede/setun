@@ -91,7 +91,7 @@ export function detectArtifacts(markdown: string): DetectedArtifact[] {
 
     // An empty block is a fence the model opened and closed with nothing in it —
     // except for a deletion, which is exactly the block that has no body.
-    if (!deleted && !block.source.trim()) continue;
+    if ((deleted && !(key && path)) || (!deleted && !block.source.trim())) continue;
 
     found.push({
       language,

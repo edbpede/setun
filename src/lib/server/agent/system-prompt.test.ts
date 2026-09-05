@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { detectArtifacts } from "../../artifacts/detect";
 import { ARTIFACT_INSTRUCTIONS, buildSystemPrompt, FIXED_SYSTEM_PROMPT } from "./system-prompt";
 
 /**
@@ -68,6 +69,13 @@ describe("buildSystemPrompt", () => {
 });
 
 describe("the artifact layer", () => {
+  it("shows a complete deletion fence that the artifact detector accepts", () => {
+    expect(
+      detectArtifacts(ARTIFACT_INSTRUCTIONS).some(
+        (block) => block.deleted && block.key === "tidslinje" && block.path === "src/old.ts",
+      ),
+    ).toBe(true);
+  });
   it("is part of the fixed prefix, before any educator layer", () => {
     const prompt = buildSystemPrompt({ classroomInstructions: "Svar altid på dansk." });
 
