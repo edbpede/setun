@@ -77,6 +77,8 @@ let versions = $state<ArtifactVersionSummary[]>([]);
  * because moving up and down the list revisits the same pair.
  */
 let snapshots = $state<Record<string, ArtifactVersionView>>({});
+let snapshotFailures = $state<Record<string, boolean>>({});
+const snapshotRequests = new Map<string, Promise<ArtifactVersionView | null>>();
 /** Which file of the selected revision the diff is showing. */
 let diffPath = $state<string | null>(null);
 let selectedVersionId = $state<string | null>(null);
@@ -330,16 +332,35 @@ async function loadVersions(artifactId: string): Promise<void> {
 async function snapshotFor(versionId: string): Promise<ArtifactVersionView | null> {
   const held = snapshots[versionId];
   if (held) return held;
+  const pending = snapshotRequests.get(versionId);
+  if (pending) return pending;
 
   const id = workspace.openId;
   if (!id) return null;
 
-  const response = await fetch(`/api/artifacts/${id}/versions/${versionId}`).catch(() => null);
-  if (!response?.ok) return null;
+  const request = fetch(`/api/artifacts/${id}/versions/${versionId}`)
+    .then(async (response) => {
+      if (!response.ok) throw new Error("Snapshot request failed");
+      const full = (await response.json()) as ArtifactVersionView;
+      snapshots = { ...snapshots, [versionId]: full };
+      snapshotFailures = { ...snapshotFailures, [versionId]: false };
+      return full;
+    })
+    .catch(() => {
+      snapshotFailures = { ...snapshotFailures, [versionId]: true };
+      return null;
+    })
+    .finally(() => snapshotRequests.delete(versionId));
+  snapshotRequests.set(versionId, request);
+  return request;
+}
 
-  const full = (await response.json()) as ArtifactVersionView;
-  snapshots = { ...snapshots, [versionId]: full };
-  return full;
+function retrySnapshots(): void {
+  for (const version of [selected, previous]) {
+    if (version && snapshotFailures[version.id]) {
+      snapshotFailures = { ...snapshotFailures, [version.id]: false };
+    }
+  }
 }
 
 /**
@@ -384,7 +405,7 @@ $effect(() => {
 $effect(() => {
   const ids = [selected?.id, previous?.id].filter((id): id is string => typeof id === "string");
   for (const id of ids) {
-    if (!snapshots[id]) void snapshotFor(id);
+    if (!snapshots[id] && !snapshotFailures[id]) void snapshotFor(id);
   }
 });
 
@@ -683,8 +704,23 @@ $effect(() => {
               {@const before = previousSnapshot?.files[diffFile]}
               {@const after = selectedSnapshot?.files[diffFile]}
               <div class="min-h-0 flex-1 overflow-auto">
-                {#if selectedSnapshot === null || (previous !== null && previousSnapshot === null)}
-                  <!-- Both snapshots must arrive before a missing path means added or deleted. -->
+                {#if snapshotFailures[selected.id] || (previous && snapshotFailures[previous.id])}
+                  <div class="flex flex-col items-start gap-2 p-3">
+                    <p role="alert" class="text-xs text-muted-foreground">
+                      {m.artifact_history_load_failed()}
+                    </p>
+                    <button
+                      type="button"
+                      onclick={retrySnapshots}
+                      class="min-h-9 rounded-md border border-input px-2.5 text-xs text-card-foreground hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      {m.artifact_history_retry()}
+                    </button>
+                  </div>
+                {:else if selectedSnapshot === null || (previous !== null && previousSnapshot === null)}
+                  <p role="status" class="p-3 text-xs text-muted-foreground">
+                    {m.artifact_history_loading()}
+                  </p>
                 {:else if after === undefined}
                   <p class="p-3 text-xs text-muted-foreground">
                     {m.artifact_diff_deleted({ path: diffFile })}

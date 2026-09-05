@@ -63,6 +63,53 @@ function openWorkspace(items: ArtifactView[] = [artifact()]): ArtifactWorkspace 
 }
 
 describe("ArtifactPanel", () => {
+  it.each(["version-1", "version-2"])(
+    "retries a failed %s diff snapshot without reloading the cached side",
+    async (failedId) => {
+      const latest = { ...BASE_VERSION, id: "version-2", revision: 2 };
+      const requests = new Map<string, number>();
+      const fetched = vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+        const url = String(input);
+        if (url.includes("/versions/")) {
+          const id = url.split("/").at(-1) ?? "";
+          const count = (requests.get(id) ?? 0) + 1;
+          requests.set(id, count);
+          if (id === failedId && count === 1)
+            return Promise.resolve(new Response(null, { status: 503 }));
+          return Promise.resolve(Response.json(id === "version-1" ? BASE_VERSION : latest));
+        }
+        return Promise.resolve(
+          Response.json({
+            versions: [BASE_VERSION, latest].map((version) => ({
+              ...version,
+              files: [{ path: "index.html", bytes: 20, change: "unchanged" }],
+            })),
+          }),
+        );
+      });
+      try {
+        render(ArtifactPanel, {
+          workspace: openWorkspace([artifact({ latest })]),
+          sandboxOrigin: SANDBOX,
+        });
+        await page.getByRole("tab", { name: m.artifact_tab_history() }).click();
+        await expect.element(page.getByText(m.artifact_history_load_failed())).toBeVisible();
+        expect(requests.get(failedId)).toBe(1);
+        await page.getByRole("button", { name: m.artifact_history_retry() }).click();
+        await expect
+          .element(page.getByText(m.artifact_diff_unchanged({ path: "index.html" })))
+          .toBeVisible();
+        await expect
+          .element(page.getByText(m.artifact_history_load_failed()))
+          .not.toBeInTheDocument();
+        expect(requests.get(failedId)).toBe(2);
+        expect(requests.get(failedId === "version-1" ? "version-2" : "version-1")).toBe(1);
+      } finally {
+        fetched.mockRestore();
+      }
+    },
+  );
+
   it("waits for both diff snapshots and abandons a restore after switching artifacts", async () => {
     const first = artifact({ latest: { ...BASE_VERSION, id: "version-2", revision: 2 } });
     const second = artifact({ id: "artifact-2", title: "Other" });
