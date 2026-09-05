@@ -192,6 +192,7 @@ export class OpenAiDialect implements GatewayDialectAdapter {
 
   async *#streamResponses(request: ChatRequest, response: Response): AsyncGenerator<GatewayEvent> {
     let completion = "";
+    let reasoning = "";
     let reported: { inputTokens?: number; outputTokens?: number } | undefined;
     let finishReason: FinishReason | undefined;
     /** How many summary parts have opened, so the second onwards gets a break. */
@@ -222,7 +223,10 @@ export class OpenAiDialect implements GatewayDialectAdapter {
           }
           case "response.reasoning_summary_text.delta":
           case "response.reasoning_text.delta": {
-            if (payload.delta) yield { type: "thinking-delta", text: payload.delta };
+            if (payload.delta) {
+              reasoning += payload.delta;
+              yield { type: "thinking-delta", text: payload.delta };
+            }
             break;
           }
           case "response.output_text.delta": {
@@ -308,7 +312,7 @@ export class OpenAiDialect implements GatewayDialectAdapter {
       yield resolveUsage({
         reported,
         promptText: promptTextOf(request.messages),
-        completionText: completion,
+        completionText: completion + reasoning,
       });
       throw cause;
     }
@@ -326,7 +330,7 @@ export class OpenAiDialect implements GatewayDialectAdapter {
     yield resolveUsage({
       reported,
       promptText: promptTextOf(request.messages),
-      completionText: completion,
+      completionText: completion + reasoning,
       finishReason,
     });
   }

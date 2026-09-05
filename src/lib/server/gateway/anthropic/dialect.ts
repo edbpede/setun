@@ -48,13 +48,15 @@ interface MessageStreamEvent {
 /**
  * Anthropic requires an explicit output ceiling; CPA forwards it unchanged.
  *
- * 4 096 was the old Claude 3 ceiling and it cut long answers in half: a pupil
- * asking for a timeline artifact got a file that stopped mid-element, reported
- * as a clean stop. Every current model accepts far more, so the ceiling is set
- * where it stops a runaway rather than where it truncates ordinary work. Drop
- * it back to 8 192 if a Claude 3.x alias ever appears.
+ * Keep the larger ceiling for newer Claude families without rejecting requests
+ * to older models. An opaque gateway alias has no known capability, so it gets
+ * the conservative default; a caller can still supply an explicit ceiling.
  */
-const DEFAULT_MAX_TOKENS = 32_000;
+function defaultMaxTokens(model: string): number {
+  if (/^claude-(?:3-7-|(?:opus|sonnet|haiku)-4(?:-|$)|4-)/i.test(model)) return 32_000;
+  if (/^claude-3-5-/i.test(model)) return 8_192;
+  return 4_096;
+}
 
 export class AnthropicDialect implements GatewayDialectAdapter {
   readonly name = "anthropic" as const;
@@ -76,7 +78,7 @@ export class AnthropicDialect implements GatewayDialectAdapter {
       "/v1/messages",
       {
         model: request.model,
-        max_tokens: request.maxOutputTokens ?? DEFAULT_MAX_TOKENS,
+        max_tokens: request.maxOutputTokens ?? defaultMaxTokens(request.model),
         stream: true,
         ...(system ? { system } : {}),
         ...(request.tools?.length ? { tools: request.tools.map(encodeTool) } : {}),
@@ -257,9 +259,12 @@ export class AnthropicDialect implements GatewayDialectAdapter {
  * which the loop turns into a truncation notice rather than a clean stop.
  */
 function mapStopReason(raw: string): FinishReason {
-  if (raw === "max_tokens") return "length";
+  if (raw === "max_tokens" || raw === "model_context_window_exceeded") return "length";
   if (raw === "tool_use") return "tool-calls";
-  return "stop";
+  if (raw === "end_turn" || raw === "stop_sequence" || raw === "refusal") return "stop";
+  // pause_turn requires replaying server-tool blocks, which this dialect does
+  // not support. Unknown reasons likewise cannot establish a completed answer.
+  throw new GatewayError("unavailable", `unsupported Anthropic stop reason: ${raw}`);
 }
 
 function encodeTool(tool: GatewayToolDefinition) {

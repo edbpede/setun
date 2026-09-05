@@ -277,9 +277,22 @@ describe("anthropic dialect", () => {
    */
   it("asks for a ceiling high enough not to truncate ordinary work", async () => {
     const { adapter, stub } = adapterOver(() => streamingResponse(ANTHROPIC_STREAM));
-    await collect(adapter.streamChat("anthropic", request));
+    await collect(adapter.streamChat("anthropic", { ...request, model: "claude-sonnet-4-6" }));
 
     expect(stub.calls[0].body).toMatchObject({ max_tokens: 32_000 });
+  });
+
+  it("uses a supported default for older models and opaque aliases", async () => {
+    for (const [model, limit] of [
+      ["claude-3-haiku-20240307", 4_096],
+      ["claude-3-5-sonnet-20241022", 8_192],
+      ["claude-3-7-sonnet-latest", 32_000],
+      ["custom-classroom-alias", 4_096],
+    ] as const) {
+      const { adapter, stub } = adapterOver(() => streamingResponse(ANTHROPIC_STREAM));
+      await collect(adapter.streamChat("anthropic", { ...request, model }));
+      expect(stub.calls[0].body).toMatchObject({ max_tokens: limit });
+    }
   });
 
   it("honours an explicit ceiling over the default", async () => {
@@ -294,6 +307,9 @@ describe("anthropic dialect", () => {
       ["max_tokens", "length"],
       ["tool_use", "tool-calls"],
       ["end_turn", "stop"],
+      ["stop_sequence", "stop"],
+      ["refusal", "stop"],
+      ["model_context_window_exceeded", "length"],
     ] as const;
 
     for (const [raw, expected] of cases) {
@@ -313,6 +329,20 @@ describe("anthropic dialect", () => {
       const events = await collect(adapter.streamChat("anthropic", request));
 
       expect(events.at(-1)).toMatchObject({ type: "usage", finishReason: expected });
+    }
+  });
+
+  it("reports unsupported pauses and unknown stop reasons as failures with usage", async () => {
+    for (const reason of ["pause_turn", "unknown_reason"]) {
+      const { adapter } = adapterOver(() =>
+        streamingResponse([
+          ...ANTHROPIC_STREAM,
+          { event: "message_delta", data: JSON.stringify({ delta: { stop_reason: reason } }) },
+        ]),
+      );
+      const { events, error } = await collectUntilThrow(adapter.streamChat("anthropic", request));
+      expect(error).toBeInstanceOf(GatewayError);
+      expect(events.at(-1)).toMatchObject({ type: "usage", inputTokens: 31, outputTokens: 9 });
     }
   });
 
@@ -612,6 +642,19 @@ describe("openai dialect — the responses transport", () => {
     const usage = events.filter((event) => event.type === "usage");
     expect(usage).toHaveLength(1);
     expect(usage[0]).toMatchObject({ estimated: true, outputTokens: 0 });
+  });
+
+  it("prices reasoning on a cancelled Responses stream without replaying it as answer text", async () => {
+    const { adapter } = adapterOver(
+      () =>
+        acceptedThenCancelled([
+          responseEvent("response.reasoning_summary_text.delta", { delta: "Thinking about loops" }),
+        ]),
+      { responses: true },
+    );
+    const { events } = await collectUntilThrow(adapter.streamChat("openai", request));
+    expect(events.some((event) => event.type === "text-delta")).toBe(false);
+    expect(events.at(-1)).toMatchObject({ type: "usage", estimated: true, outputTokens: 5 });
   });
 });
 
