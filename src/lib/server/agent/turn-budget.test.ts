@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { recordUsageEvent } from "../db/queries/usage";
 import { createTestDatabase, seedTestFixtures } from "../db/testing";
 import { GatewayAdapter } from "../gateway/adapter";
 import type { GatewayEvent } from "../gateway/events";
@@ -120,6 +121,44 @@ describe("a daily ceiling binds mid-stream (§10)", () => {
     perStudentDailyTokens: PROMPT_TOKENS + 250,
     perClassroomDailyTokens: 2_500_000,
   };
+
+  it("stops a live stream when utility usage consumes its remaining classroom headroom", async () => {
+    const db = createTestDatabase();
+    const fixtures = seedTestFixtures(db);
+    const budgets = { ...BUDGETS, perClassroomDailyTokens: PROMPT_TOKENS + 500 };
+    const lease = claimDailyBudget({
+      db,
+      classroomId: fixtures.classroom.id,
+      studentId: fixtures.student.id,
+      budgets,
+      range: budgetDayRange("UTC"),
+    });
+    const stream = runTurn({
+      adapter: adapterOver(LONG_STREAM),
+      dialect: "openai",
+      model: "m",
+      path,
+      budgets,
+      dailyBudget: lease,
+    });
+    try {
+      expect((await stream.next()).value).toMatchObject({ type: "text-delta" });
+      recordUsageEvent(db, {
+        classroomId: fixtures.classroom.id,
+        studentId: null,
+        modelAliasId: fixtures.alias.id,
+        inputTokens: 500,
+        outputTokens: 0,
+        estimated: false,
+      });
+      const remaining = await collect(stream);
+      expect(remaining.some((event) => event.type === "text-delta")).toBe(false);
+      expect(doneOf(remaining)).toEqual({ type: "done", reason: "classroom-cap-exhausted" });
+    } finally {
+      await stream.return(undefined);
+      lease.release();
+    }
+  });
 
   it("does not start another pupil's stream against tokens already reserved upstream", async () => {
     const db = createTestDatabase();

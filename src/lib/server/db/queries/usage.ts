@@ -2,6 +2,13 @@ import { and, eq, gte, isNotNull, lt, sql } from "drizzle-orm";
 import type { AppDatabase } from "../client";
 import { type UsageEvent, usageEvent } from "../schema";
 
+/** Invalidate cached totals without scanning the ledger on every streamed delta. */
+const revisions = new WeakMap<AppDatabase, number>();
+
+export function usageRevision(db: AppDatabase): number {
+  return revisions.get(db) ?? 0;
+}
+
 /**
  * Usage accounting rows (PRD §10, §19).
  *
@@ -38,6 +45,7 @@ export function recordUsageEvent(
     })
     .returning()
     .all();
+  revisions.set(db, usageRevision(db) + 1);
   return row;
 }
 

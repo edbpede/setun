@@ -1,5 +1,5 @@
 import type { AppDatabase } from "../db/client";
-import { dailyConsumption } from "../db/queries/usage";
+import { dailyConsumption, usageRevision } from "../db/queries/usage";
 import type { BudgetSettings, DailyBudgetLease, DailyConsumption } from "./budgets";
 
 interface Claim {
@@ -35,12 +35,13 @@ export function claimDailyBudget(input: {
   claims.add(own);
   let persisted: DailyConsumption = { studentTokens: 0, classroomTokens: 0 };
   let generation = -1;
+  let revision = -1;
 
   function consumed(includeReservations = false, refresh = false) {
-    // Refresh at each provider request (including tool/utility usage committed
-    // since the previous one), and when another turn finishes. Deltas only sum
-    // the small live claim set; they never scan the persisted usage history.
-    if (refresh || generation !== shared.generation) {
+    // Refresh when any chat, utility or image usage is written, or another turn
+    // finishes. Unchanged deltas only sum the small live claim set.
+    const currentRevision = usageRevision(input.db);
+    if (refresh || generation !== shared.generation || revision !== currentRevision) {
       persisted = dailyConsumption(input.db, {
         classroomId: input.classroomId,
         studentId: input.studentId,
@@ -48,6 +49,7 @@ export function claimDailyBudget(input: {
         until: input.range.end,
       });
       generation = shared.generation;
+      revision = currentRevision;
     }
     const used = { ...persisted };
     for (const claim of claims) {
