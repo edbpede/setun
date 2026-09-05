@@ -520,12 +520,12 @@ async function* runStep(args: {
     })) {
       reachedUpstream = true;
 
-      if (event.type === "thinking-delta") reasoning += event.text;
-      if (event.type === "text-delta") {
-        text += event.text;
+      if (event.type === "text-delta" || event.type === "thinking-delta") {
+        if (event.type === "text-delta") text += event.text;
+        else reasoning += event.text;
         // A provisional figure while the step is in flight, so the token cap can
         // bind mid-stream; the gateway's own number supersedes it below.
-        const estimate = estimateTokens(text);
+        const estimate = estimateTokens(text + reasoning);
         budget.recordProvisionalTokens(estimate - provisional);
         provisional = estimate;
         stepTokens = promptTokens + estimate;

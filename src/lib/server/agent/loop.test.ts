@@ -470,9 +470,8 @@ describe("replaying a turn that used tools (§10, §11)", () => {
 /**
  * The model's reasoning, on its way to the pupil (PRD §20, §10).
  *
- * It travels through the loop untouched and stops there: it is not the answer,
- * so it is neither replayed to the model on the next turn nor priced as output
- * text on this one.
+ * It is kept separate from the answer and never replayed to the model. Until
+ * usage arrives, its estimate counts toward the same daily ceiling as text.
  */
 describe("thinking passes through the loop", () => {
   const THINKING_STREAM = [
@@ -493,8 +492,8 @@ describe("thinking passes through the loop", () => {
     },
   ];
 
-  function responsesAdapter() {
-    const stub = stubFetch(() => streamingResponse(THINKING_STREAM), { responses: true });
+  function responsesAdapter(records = THINKING_STREAM) {
+    const stub = stubFetch(() => streamingResponse(records), { responses: true });
     return {
       adapter: new GatewayAdapter({
         baseUrl: "http://cpa:8317",
@@ -536,10 +535,10 @@ describe("thinking passes through the loop", () => {
   });
 
   /**
-   * `output_tokens` already includes the reasoning tokens, so estimating the
-   * summary text on top of them would charge the pupil for it twice (§10).
+   * `output_tokens` already includes reasoning: settlement must replace the
+   * combined provisional estimate, rather than adding provider usage to it.
    */
-  it("does not add the reasoning to the provisional token estimate", async () => {
+  it("replaces the combined reasoning/text estimate with reported usage", async () => {
     const { adapter } = responsesAdapter();
     const events = await collect(
       runTurn({
@@ -551,13 +550,54 @@ describe("thinking passes through the loop", () => {
           perTurnStepCap: 20,
           perTurnWallClockSeconds: 300,
           perTurnTokenCap: 100_000,
-          // Small enough that a summary counted as output would empty it.
-          perStudentDailyTokens: estimateTokens(promptTextOf(assembleContext(path))) + 20,
+          // Four estimated output tokens fit. Adding the reported six tokens
+          // instead of replacing the provisional total would exhaust this cap.
+          perStudentDailyTokens: estimateTokens(promptTextOf(assembleContext(path))) + 5,
           perClassroomDailyTokens: 2_500_000,
         },
       }),
     );
 
     expect(events.at(-1)).toEqual({ type: "done", reason: "stop" });
+    expect(events.filter((event) => event.type === "usage")).toEqual([
+      { type: "usage", inputTokens: 5, outputTokens: 1, estimated: false, finishReason: "stop" },
+    ]);
+  });
+
+  it("warns and stops during reasoning before an answer or provider usage arrives", async () => {
+    const { adapter } = responsesAdapter(
+      Array.from({ length: 20 }, () => ({
+        event: "response.reasoning_summary_text.delta",
+        data: JSON.stringify({
+          type: "response.reasoning_summary_text.delta",
+          delta: "r".repeat(400),
+        }),
+      })),
+    );
+    const promptTokens = estimateTokens(promptTextOf(assembleContext(path)));
+    const events = await collect(
+      runTurn({
+        adapter,
+        dialect: "openai",
+        model: "m",
+        path,
+        budgets: {
+          perTurnStepCap: 20,
+          perTurnWallClockSeconds: 300,
+          perTurnTokenCap: 100_000,
+          perStudentDailyTokens: promptTokens + 500,
+          perClassroomDailyTokens: 2_500_000,
+        },
+      }),
+    );
+    expect(events.filter((event) => event.type === "thinking-delta")).toHaveLength(5);
+    expect(events.some((event) => event.type === "text-delta")).toBe(false);
+    expect(events.filter((event) => event.type === "budget-warning")).toHaveLength(1);
+    expect(events.find((event) => event.type === "usage")).toMatchObject({
+      inputTokens: promptTokens,
+      outputTokens: 500,
+      estimated: true,
+    });
+    expect(events.at(-1)).toEqual({ type: "done", reason: "student-allowance-exhausted" });
   });
 });
