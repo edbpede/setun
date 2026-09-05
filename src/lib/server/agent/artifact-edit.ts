@@ -22,7 +22,7 @@ import type { MessagePart } from "../db/schema";
  */
 export function encodeArtifactEdit(part: Extract<MessagePart, { type: "artifact-edit" }>): string {
   const named = part.title
-    ? ` ${JSON.stringify(part.title.replace(/\s+/g, " ").trim().slice(0, 120))}`
+    ? ` ${JSON.stringify([...part.title.replace(/\s+/g, " ").trim()].slice(0, 120).join(""))}`
     : "";
   const key = part.key ?? null;
   const files = filesOf(part);
