@@ -11,7 +11,7 @@ import type {
   ImageRequest,
 } from "../dialect";
 import { GatewayError } from "../errors";
-import type { GatewayEvent } from "../events";
+import type { FinishReason, GatewayEvent } from "../events";
 import { promptTextOf } from "../messages";
 import { resolveUsage } from "../usage";
 
@@ -24,20 +24,39 @@ import { resolveUsage } from "../usage";
  * (output) rather than in one trailing chunk; tool calls stream as a content
  * block whose input arrives as JSON fragments; and a tool's answer travels back
  * as a user message rather than as a role of its own.
+ *
+ * Thinking blocks are parsed if a provider sends them, but nothing here asks for
+ * them: the request-side thinking parameter is a follow-up (§20).
  */
 
 interface MessageStreamEvent {
   type?: string;
   index?: number;
-  delta?: { type?: string; text?: string; partial_json?: string; stop_reason?: string | null };
-  content_block?: { type?: string; text?: string; id?: string; name?: string };
+  delta?: {
+    type?: string;
+    text?: string;
+    thinking?: string;
+    partial_json?: string;
+    stop_reason?: string | null;
+  };
+  content_block?: { type?: string; text?: string; thinking?: string; id?: string; name?: string };
   message?: { usage?: { input_tokens?: number; output_tokens?: number } };
   usage?: { input_tokens?: number; output_tokens?: number };
   error?: { message?: string };
 }
 
-/** Anthropic requires an explicit output ceiling; CPA forwards it unchanged. */
-const DEFAULT_MAX_TOKENS = 4096;
+/**
+ * Anthropic requires an explicit output ceiling; CPA forwards it unchanged.
+ *
+ * Keep the larger ceiling for newer Claude families without rejecting requests
+ * to older models. An opaque gateway alias has no known capability, so it gets
+ * the conservative default; a caller can still supply an explicit ceiling.
+ */
+function defaultMaxTokens(model: string): number {
+  if (/^claude-(?:3-7-|(?:opus|sonnet|haiku)-4(?:-|$)|4-)/i.test(model)) return 32_000;
+  if (/^claude-3-5-/i.test(model)) return 8_192;
+  return 4_096;
+}
 
 export class AnthropicDialect implements GatewayDialectAdapter {
   readonly name = "anthropic" as const;
@@ -59,7 +78,7 @@ export class AnthropicDialect implements GatewayDialectAdapter {
       "/v1/messages",
       {
         model: request.model,
-        max_tokens: request.maxOutputTokens ?? DEFAULT_MAX_TOKENS,
+        max_tokens: request.maxOutputTokens ?? defaultMaxTokens(request.model),
         stream: true,
         ...(system ? { system } : {}),
         ...(request.tools?.length ? { tools: request.tools.map(encodeTool) } : {}),
@@ -71,6 +90,7 @@ export class AnthropicDialect implements GatewayDialectAdapter {
     let completion = "";
     let inputTokens: number | undefined;
     let outputTokens: number | undefined;
+    let finishReason: FinishReason | undefined;
     /** Tool blocks stream their input as JSON fragments, keyed by block index. */
     const toolBlocks = new Map<number, { id: string; name: string; arguments: string }>();
 
@@ -118,6 +138,15 @@ export class AnthropicDialect implements GatewayDialectAdapter {
               break;
             }
 
+            // A thinking block, where a provider sends one. Not added to the
+            // completion: it is never replayed to the model and never priced as
+            // output text (§20, §10).
+            const thinking = payload.delta?.thinking;
+            if (thinking) {
+              yield { type: "thinking-delta", text: thinking };
+              break;
+            }
+
             const text = payload.delta?.text;
             if (text) {
               completion += text;
@@ -135,6 +164,12 @@ export class AnthropicDialect implements GatewayDialectAdapter {
               break;
             }
 
+            if (payload.content_block?.type === "thinking") {
+              const opening = payload.content_block.thinking;
+              if (opening) yield { type: "thinking-delta", text: opening };
+              break;
+            }
+
             // A text block can open with text already in it.
             const text = payload.content_block?.text;
             if (text) {
@@ -145,6 +180,9 @@ export class AnthropicDialect implements GatewayDialectAdapter {
           }
           case "message_delta": {
             outputTokens = payload.usage?.output_tokens ?? outputTokens;
+            if (payload.delta?.stop_reason) {
+              finishReason = mapStopReason(payload.delta.stop_reason);
+            }
             break;
           }
           case "error": {
@@ -186,6 +224,7 @@ export class AnthropicDialect implements GatewayDialectAdapter {
       reported: { inputTokens, outputTokens },
       promptText: promptTextOf(request.messages),
       completionText: completion,
+      finishReason,
     });
   }
 
@@ -211,6 +250,21 @@ export class AnthropicDialect implements GatewayDialectAdapter {
       new GatewayError("rejected", "the Anthropic dialect exposes no image generation endpoint"),
     );
   }
+}
+
+/**
+ * Normalise `stop_reason` (§10).
+ *
+ * `max_tokens` is this dialect's name for "I stopped at the output ceiling",
+ * which the loop turns into a truncation notice rather than a clean stop.
+ */
+function mapStopReason(raw: string): FinishReason {
+  if (raw === "max_tokens" || raw === "model_context_window_exceeded") return "length";
+  if (raw === "tool_use") return "tool-calls";
+  if (raw === "end_turn" || raw === "stop_sequence" || raw === "refusal") return "stop";
+  // pause_turn requires replaying server-tool blocks, which this dialect does
+  // not support. Unknown reasons likewise cannot establish a completed answer.
+  throw new GatewayError("unavailable", `unsupported Anthropic stop reason: ${raw}`);
 }
 
 function encodeTool(tool: GatewayToolDefinition) {

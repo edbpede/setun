@@ -13,13 +13,15 @@ import type { PermissionMode } from "../db/schema";
 import { createTestDatabase, seedTestFixtures } from "../db/testing";
 import { GatewayAdapter } from "../gateway/adapter";
 import type { GatewayEvent } from "../gateway/events";
+import { promptTextOf } from "../gateway/messages";
 import { streamingResponse, stubFetch } from "../gateway/testing";
+import { estimateTokens } from "../gateway/usage";
 import { McpClient } from "../mcp/client";
 import type { McpServerConfig } from "../mcp/config";
 import { resolveSkills } from "../skills/registry";
 import { FileStore } from "../storage/files";
 import { TurnInteractionRegistry } from "./interactions";
-import { runTurn } from "./loop";
+import { assembleContext, runTurn } from "./loop";
 import { buildToolSet, type ToolContext } from "./tools";
 
 /**
@@ -420,12 +422,38 @@ describe("loop termination with tools (§10, §22)", () => {
     expect(events.at(-1)).toEqual({ type: "done", reason: "stop" });
   });
 
-  it("stops at the step cap rather than looping for ever", async () => {
+  /**
+   * A per-turn cap is a checkpoint, not a ceiling (§10).
+   *
+   * The runaway loop still stops — but by asking the pupil at a clean boundary
+   * rather than by cutting the turn off, and saying yes buys another allotment.
+   */
+  const CHECKPOINT_BUDGETS = {
+    perTurnStepCap: 3,
+    // Also the time every question may wait, so an unanswered checkpoint ends
+    // the turn a second later rather than five minutes later.
+    perTurnWallClockSeconds: 1,
+    perTurnTokenCap: 1_000_000,
+    perStudentDailyTokens: 250_000,
+    perClassroomDailyTokens: 2_500_000,
+  };
+  const WARNING_ALLOWANCE = estimateTokens(promptTextOf(assembleContext(PATH))) + 100;
+
+  /**
+   * Drive a loop over a gateway that asks for the same tool every time, with a
+   * scripted reply to each question it asks. A reply arrives while the loop is
+   * suspended on the `yield`, which is exactly how a pupil's click arrives.
+   */
+  async function runCheckpointed(options: {
+    budgets?: typeof CHECKPOINT_BUDGETS;
+    consumed?: { studentTokens: number; classroomTokens: number };
+    answers?: readonly boolean[];
+    answerWarning?: boolean;
+  }) {
     const db = createTestDatabase();
     const fixtures = seedTestFixtures(db);
     seedAllowedTool(db, fixtures.classroom.id);
 
-    // A gateway that asks for the same tool every time it is called.
     const gateway = stubFetch(() =>
       streamingResponse([
         JSON.stringify({
@@ -469,19 +497,203 @@ describe("loop termination with tools (§10, §22)", () => {
       }),
     };
 
+    const interactions = new TurnInteractionRegistry();
+    const turnId = crypto.randomUUID();
+    const answers = [...(options.answers ?? [])];
+
     const events: GatewayEvent[] = [];
     for await (const event of runTurn({
       adapter,
       dialect: "openai",
       model: "test-model",
       path: PATH,
-      budgets: {
-        perTurnStepCap: 3,
-        perTurnWallClockSeconds: 300,
-        perTurnTokenCap: 1_000_000,
-        perStudentDailyTokens: 250_000,
-        perClassroomDailyTokens: 2_500_000,
+      budgets: options.budgets ?? CHECKPOINT_BUDGETS,
+      consumed: options.consumed,
+      tooling: {
+        tools: buildToolSet(context),
+        context,
+        mode: "open",
+        turnId,
+        interactions,
       },
+    })) {
+      events.push(event);
+
+      if (event.type === "continue-request") {
+        const proceed = answers.shift();
+        if (proceed !== undefined) {
+          interactions.answer({
+            turnId,
+            requestId: event.requestId,
+            answer: { kind: "continue", proceed },
+          });
+        }
+      }
+
+      if (event.type === "budget-warning" && options.answerWarning !== undefined) {
+        interactions.answer({
+          turnId,
+          requestId: event.requestId,
+          answer: { kind: "continue", proceed: options.answerWarning },
+        });
+      }
+    }
+
+    return { events, gateway };
+  }
+
+  it("asks at the step checkpoint, and ends the turn when nobody answers", async () => {
+    const { events, gateway } = await runCheckpointed({});
+
+    expect(gateway.calls).toHaveLength(3);
+
+    const asked = events.filter((event) => event.type === "continue-request");
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatchObject({
+      type: "continue-request",
+      requestId: "continue-1",
+      cause: "steps",
+      caps: ["steps"],
+    });
+
+    // The partial content is preserved and the pupil is told, never shown an
+    // error (§10).
+    expect(events.at(-1)).toEqual({ type: "done", reason: "budget" });
+  });
+
+  it("grants another allotment when the pupil says to keep going", async () => {
+    const { events, gateway } = await runCheckpointed({ answers: [true] });
+
+    // Three more steps before the second checkpoint, and a question of its own.
+    expect(gateway.calls).toHaveLength(6);
+    expect(
+      events
+        .filter((event) => event.type === "continue-request")
+        .map((event) => event.type === "continue-request" && event.requestId),
+    ).toEqual(["continue-1", "continue-2"]);
+    expect(events.at(-1)).toEqual({ type: "done", reason: "budget" });
+  });
+
+  it("ends the turn as a stop when the pupil says stop here", async () => {
+    const { events, gateway } = await runCheckpointed({ answers: [false] });
+
+    expect(gateway.calls).toHaveLength(3);
+    expect(events.at(-1)).toEqual({ type: "done", reason: "aborted" });
+  });
+
+  /**
+   * The 70 % warning is shown mid-stream and confirmed at the next boundary — so
+   * a pupil who never sees the banner is still asked before more work is done.
+   */
+  it("asks at the boundary when the warning was not acknowledged", async () => {
+    const { events } = await runCheckpointed({
+      budgets: { ...CHECKPOINT_BUDGETS, perStudentDailyTokens: WARNING_ALLOWANCE },
+      consumed: { studentTokens: 70, classroomTokens: 0 },
+    });
+
+    expect(events.some((event) => event.type === "budget-warning")).toBe(true);
+
+    const asked = events.filter((event) => event.type === "continue-request");
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatchObject({ requestId: "daily-warning", cause: "daily-warning" });
+    expect(events.at(-1)).toEqual({ type: "done", reason: "budget" });
+  });
+
+  it("does not ask again when the pupil already pressed Keep going", async () => {
+    const { events } = await runCheckpointed({
+      budgets: {
+        ...CHECKPOINT_BUDGETS,
+        perTurnStepCap: 100,
+        perStudentDailyTokens: WARNING_ALLOWANCE,
+      },
+      consumed: { studentTokens: 70, classroomTokens: 0 },
+      answerWarning: true,
+    });
+
+    expect(events.some((event) => event.type === "budget-warning")).toBe(true);
+    expect(events.some((event) => event.type === "continue-request")).toBe(false);
+    // It ran on until the allowance itself ran out — the hard ceiling (§10).
+    expect(events.at(-1)).toEqual({ type: "done", reason: "student-allowance-exhausted" });
+  });
+
+  it("honours an early stop even when the boundary also reaches a step checkpoint", async () => {
+    const { events, gateway } = await runCheckpointed({
+      budgets: {
+        ...CHECKPOINT_BUDGETS,
+        perTurnStepCap: 1,
+        perStudentDailyTokens: WARNING_ALLOWANCE,
+      },
+      consumed: { studentTokens: 70, classroomTokens: 0 },
+      answerWarning: false,
+      answers: [true],
+    });
+    expect(gateway.calls).toHaveLength(1);
+    expect(events.some((event) => event.type === "continue-request")).toBe(false);
+    expect(events.at(-1)).toEqual({ type: "done", reason: "aborted" });
+  });
+
+  /**
+   * A step the provider cut at its own output ceiling (§10).
+   *
+   * The arguments the model was writing are half-finished, so acting on them
+   * would mean running a call it never finished asking for. The pupil is told
+   * the answer was cut short instead.
+   */
+  it("runs no tools from a step the provider truncated", async () => {
+    const db = createTestDatabase();
+    const fixtures = seedTestFixtures(db);
+    seedAllowedTool(db, fixtures.classroom.id);
+
+    const gateway = stubFetch(() =>
+      streamingResponse([
+        JSON.stringify({
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call-1",
+                    function: { name: "docs__search", arguments: '{"q":"lo' },
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+        JSON.stringify({ choices: [{ delta: {}, finish_reason: "length" }] }),
+        JSON.stringify({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 4 } }),
+        "[DONE]",
+      ]),
+    );
+    const mcp = mcpServer([{ content: [{ type: "text", text: "aldrig" }] }]);
+
+    const adapter = new GatewayAdapter({
+      baseUrl: "http://cpa:8317",
+      listenerKey: "k",
+      fetch: gateway.fetch,
+    });
+    const context: ToolContext = {
+      db,
+      adapter,
+      files: new FileStore("/tmp/setun-test-unused"),
+      mcp: new McpClient([SERVER_CONFIG], { fetch: mcp.fetch }),
+      classroom: fixtures.classroom,
+      studentId: fixtures.student.id,
+      conversationId: crypto.randomUUID(),
+      skills: resolveSkills(db, {
+        classroomId: fixtures.classroom.id,
+        studentId: fixtures.student.id,
+        authoringPolicy: "immediate",
+      }),
+    };
+
+    const events: GatewayEvent[] = [];
+    for await (const event of runTurn({
+      adapter,
+      dialect: "openai",
+      model: "test-model",
+      path: PATH,
       tooling: {
         tools: buildToolSet(context),
         context,
@@ -493,9 +705,9 @@ describe("loop termination with tools (§10, §22)", () => {
       events.push(event);
     }
 
-    // Three steps, and the partial content is preserved (§10).
-    expect(gateway.calls).toHaveLength(3);
-    expect(events.at(-1)).toEqual({ type: "done", reason: "budget" });
+    expect(mcp.calls.some((call) => call.method === "tools/call")).toBe(false);
+    expect(events.some((event) => event.type === "tool-call-started")).toBe(false);
+    expect(events.at(-1)).toEqual({ type: "done", reason: "truncated" });
   });
 
   it("cancels a running tool call when the turn is aborted (§10)", async () => {

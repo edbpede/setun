@@ -22,12 +22,26 @@ export class GatewayError extends Error {
   readonly code: GatewayFailureCode;
   /** Operator-facing. Logged; never sent to the browser (§21). */
   readonly detail: string;
+  /**
+   * The upstream HTTP status, when there was one (§9).
+   *
+   * Three codes collapse into one `rejected`, which is the right vocabulary for
+   * a student-facing message and the wrong one for a dialect deciding whether an
+   * endpoint exists at all: a 404 from `/v1/responses` means "use the other
+   * transport", and a 400 means "this request was wrong". The status used to
+   * survive only as text inside `detail`.
+   *
+   * Absent when the failure never reached a response — a refused connection, a
+   * malformed stream, a dialect refusing a request of its own.
+   */
+  readonly status?: number;
 
-  constructor(code: GatewayFailureCode, detail: string) {
+  constructor(code: GatewayFailureCode, detail: string, status?: number) {
     super(`gateway ${code}`);
     this.name = "GatewayError";
     this.code = code;
     this.detail = detail;
+    this.status = status;
   }
 }
 

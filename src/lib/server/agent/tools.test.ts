@@ -171,6 +171,30 @@ describe("the turn's tool set", () => {
     expect(new Set(names).size).toBe(names.length);
     for (const name of names) expect(name).toMatch(/^[a-zA-Z0-9_-]+$/);
   });
+
+  /**
+   * The OpenAI dialect prefixes every name with `setun_` on the wire, so the
+   * limit that matters is the one the provider enforces on what it receives (§9).
+   */
+  it("leaves room for the wire prefix in the longest name it will build", () => {
+    const db = createTestDatabase();
+    const fixtures = seedTestFixtures(db);
+    const server = upsertMcpServer(db, { configKey: "docs", label: "Docs" });
+    setMcpServerEnabled(db, { serverId: server.id, enabled: true });
+    syncMcpTools(db, {
+      serverId: server.id,
+      tools: [{ name: "x".repeat(120), description: null, inputSchema: null }],
+    });
+
+    for (const tool of listMcpTools(db, server.id)) {
+      setMcpToolFlags(db, { toolId: tool.id, enabled: true });
+      allowTool(db, { classroomId: fixtures.classroom.id, mcpToolId: tool.id });
+    }
+
+    const [name] = buildToolSet(contextFor(db, fixtures)).all.map((tool) => tool.name);
+    expect(name.length).toBe(54);
+    expect(`setun_${name}`.length).toBeLessThanOrEqual(60);
+  });
 });
 
 describe("permission modes (§11)", () => {

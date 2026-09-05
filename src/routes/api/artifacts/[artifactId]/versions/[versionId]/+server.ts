@@ -3,7 +3,12 @@ import * as v from "valibot";
 import { BUILD_STATUSES } from "$lib/artifacts/types";
 import { requireStudentApi } from "$lib/server/auth/guards";
 import { getDb } from "$lib/server/boot";
-import { recordVersionBuild } from "$lib/server/db/queries/artifacts";
+import {
+  getOwnedArtifact,
+  listArtifactVersions,
+  recordVersionBuild,
+  snapshotOf,
+} from "$lib/server/db/queries/artifacts";
 import type { RequestHandler } from "./$types";
 
 /**
@@ -46,4 +51,44 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
   if (!recorded) error(404, "Not found");
 
   return json({ ok: true });
+};
+
+/**
+ * One revision's files, fetched when the pupil selects it (§13).
+ *
+ * Split off the artifact's own endpoint because a version list is cheap and its
+ * sources are not: a project of a hundred kilobytes revised twenty times would
+ * otherwise arrive whole every time the History tab opened. That endpoint
+ * carries paths, sizes and what each revision changed; this carries the content,
+ * for the one revision being read.
+ *
+ * Owner-scoped through the artifact, and the version has to belong to it: a
+ * version identifier from somebody else's artifact is absent rather than
+ * forbidden, so there is nothing to probe (§21).
+ */
+export const GET: RequestHandler = ({ params, locals }) => {
+  const student = requireStudentApi(locals);
+  const db = getDb();
+
+  const record = getOwnedArtifact(db, { artifactId: params.artifactId, studentId: student.id });
+  if (!record) error(404, "Not found");
+
+  const version = listArtifactVersions(db, record.id).find((row) => row.id === params.versionId);
+  if (!version) error(404, "Not found");
+
+  const snapshot = snapshotOf(db, version.id);
+  if (!snapshot) error(404, "Not found");
+
+  return json({
+    id: version.id,
+    revision: version.revision,
+    entry: snapshot.entry,
+    files: snapshot.files,
+    source: snapshot.files[snapshot.entry] ?? "",
+    language: version.language,
+    authoredBy: version.authoredBy,
+    buildStatus: version.buildStatus,
+    buildMessage: version.buildMessage,
+    createdAt: version.createdAt.toISOString(),
+  });
 };

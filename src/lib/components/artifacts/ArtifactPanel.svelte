@@ -15,11 +15,18 @@ let sending: Promise<unknown> = Promise.resolve();
 <script lang="ts">
 import { rovingTarget } from "$lib/a11y/roving";
 import { effectiveArtifactKey, effectiveLanguage } from "$lib/artifacts/identity";
+import { kindOf } from "$lib/artifacts/project";
 import type { ConsoleLine } from "$lib/artifacts/protocol";
 import type { ArtifactLanguage, BuildStatus } from "$lib/artifacts/types";
 import * as m from "$lib/paraglide/messages";
-import type { ArtifactVersionView, ArtifactWorkspace, PanelTab } from "$lib/state/artifacts.svelte";
+import type {
+  ArtifactVersionSummary,
+  ArtifactVersionView,
+  ArtifactWorkspace,
+  PanelTab,
+} from "$lib/state/artifacts.svelte";
 import ArtifactDiff from "./ArtifactDiff.svelte";
+import FileTree from "./FileTree.svelte";
 import ArtifactEditor from "./ArtifactEditor.svelte";
 import ArtifactFrame from "./ArtifactFrame.svelte";
 import ArtifactIndex from "./ArtifactIndex.svelte";
@@ -61,7 +68,19 @@ let { workspace, sandboxOrigin, onaskforhelp }: Props = $props();
  */
 const IDLE_MS = 3_000;
 
-let versions = $state<ArtifactVersionView[]>([]);
+let versions = $state<ArtifactVersionSummary[]>([]);
+/**
+ * The revisions whose files have been fetched, by version.
+ *
+ * The list carries paths and sizes; the content is fetched for the revision the
+ * pupil selects, and for the one before it so the diff has both sides. Cached
+ * because moving up and down the list revisits the same pair.
+ */
+let snapshots = $state<Record<string, ArtifactVersionView>>({});
+let snapshotFailures = $state<Record<string, boolean>>({});
+const snapshotRequests = new Map<string, Promise<ArtifactVersionView | null>>();
+/** Which file of the selected revision the diff is showing. */
+let diffPath = $state<string | null>(null);
 let selectedVersionId = $state<string | null>(null);
 let frame = $state<ReturnType<typeof ArtifactFrame> | null>(null);
 let tablist = $state<HTMLDivElement | null>(null);
@@ -84,6 +103,15 @@ function release(stamp: string): void {
 }
 
 const artifact = $derived(workspace.open);
+
+/**
+ * The project the frame runs.
+ *
+ * The committed snapshot, which advances only at a commit point — never the
+ * files the editor holds, which move with every keystroke (§13).
+ */
+const runningEntry = $derived(workspace.running?.entry ?? artifact?.latest.entry ?? "index.html");
+const runningFiles = $derived(workspace.running?.files ?? artifact?.latest.files ?? {});
 const title = $derived(
   artifact?.title ?? (artifact ? m.artifact_untitled({ language: artifact.language }) : ""),
 );
@@ -100,6 +128,34 @@ const previous = $derived.by(() => {
   const index = versions.findIndex((version) => version.id === selected.id);
   return index > 0 ? versions[index - 1] : null;
 });
+
+/** Which file of the selected revision the diff shows: the pupil's pick, else what changed. */
+const diffFile = $derived.by(() => {
+  if (!selected) return null;
+  if (diffPath && selected.files.some((file) => file.path === diffPath)) return diffPath;
+
+  const changed = selected.files.find((file) => file.change !== "unchanged");
+  return (changed ?? selected.files[0])?.path ?? null;
+});
+
+const selectedSnapshot = $derived(selected ? (snapshots[selected.id] ?? null) : null);
+const previousSnapshot = $derived(previous ? (snapshots[previous.id] ?? null) : null);
+
+/** What one revision did, in the three counts the list shows. */
+function changeSummary(version: ArtifactVersionSummary): string {
+  const counts = { added: 0, modified: 0, deleted: 0 };
+  for (const file of version.files) {
+    if (file.change === "added") counts.added++;
+    if (file.change === "modified") counts.modified++;
+  }
+
+  return [
+    counts.added > 0 ? m.artifact_history_added({ count: counts.added }) : "",
+    counts.modified > 0 ? m.artifact_history_modified({ count: counts.modified }) : "",
+  ]
+    .filter((part) => part.length > 0)
+    .join(" · ");
+}
 
 /**
  * The list is a tab of its own, and only where there is a choice to make.
@@ -160,19 +216,47 @@ function ontablistkeydown(event: KeyboardEvent): void {
  * "Edits recompile locally with no model request" — this reaches Setun and no
  * further; nothing about it touches the gateway or a student's allowance (§13).
  */
-async function store(source: string, language: ArtifactLanguage | null): Promise<void> {
+async function store(snapshot: {
+  entry: string;
+  files: Record<string, string>;
+  language: ArtifactLanguage | null;
+  /** A Restore states the whole project; an edit states only what it changed. */
+  replace: boolean;
+}): Promise<void> {
   const target = workspace.open;
   if (!target) return;
-  // Both, because a restore can bring back a source the artifact already holds
+
+  const stored = target.latest.files;
+  const changed = Object.fromEntries(
+    Object.entries(snapshot.files).filter(([path, source]) => stored[path] !== source),
+  );
+  const deletes = Object.keys(stored).filter((path) => !(path in snapshot.files));
+
+  // Both, because a restore can bring back files the artifact already holds
   // under a different tag — same text, different pipeline (§13).
-  if (source === target.latest.source && language === effectiveLanguage(target, target.latest)) {
+  const sameTag = snapshot.language === effectiveLanguage(target, target.latest);
+  if (
+    Object.keys(changed).length === 0 &&
+    deletes.length === 0 &&
+    snapshot.entry === target.latest.entry &&
+    sameTag
+  ) {
     return;
   }
 
   const response = await fetch(`/api/artifacts/${target.id}/versions`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ source, language }),
+    body: JSON.stringify({
+      // A Restore posts the whole file list: the revision it brings back may
+      // lack files the current one holds, and merging those would leave a
+      // project that is neither revision.
+      files: snapshot.replace ? snapshot.files : changed,
+      deletes: snapshot.replace ? [] : deletes,
+      replace: snapshot.replace,
+      entry: snapshot.entry,
+      language: snapshot.language,
+    }),
   }).catch(() => null);
 
   if (!response?.ok) {
@@ -182,24 +266,36 @@ async function store(source: string, language: ArtifactLanguage | null): Promise
 
   const version = (await response.json()) as ArtifactVersionView;
   workspace.applyVersion(target.id, version);
-  versions = [...versions.filter((existing) => existing.id !== version.id), version];
+  // The history list holds summaries, so a stored revision invalidates it rather
+  // than being folded in: what the list shows is what each revision *changed*,
+  // which this one has just altered for the revision after it too.
+  if (tab === "history") void loadVersions(target.id);
 }
 
 /** A commit point: run what is on screen, and keep it. */
-async function commit(): Promise<void> {
-  const source = workspace.source;
-  const language = workspace.language;
+async function commit(replace = false): Promise<void> {
+  const snapshot = {
+    entry: workspace.entry,
+    files: { ...workspace.files },
+    language: workspace.language,
+    replace,
+  };
   workspace.commit();
-  await store(source, language);
+  await store(snapshot);
 }
 
-async function restore(version: ArtifactVersionView): Promise<void> {
+async function restore(summary: ArtifactVersionSummary): Promise<void> {
+  const artifactId = workspace.openId;
+  if (!artifactId) return;
+  const full = await snapshotFor(summary.id);
+  if (!full || workspace.openId !== artifactId) return;
+
   // Not `edit`: the revision comes back under the tag it was written with, and
   // an html revision of an artifact since rewritten as a component must not go
   // through the Svelte compiler (§13).
-  workspace.restore(version);
-  await commit();
-  workspace.tab = "preview";
+  workspace.restore(full);
+  await commit(true);
+  if (workspace.openId === artifactId) workspace.tab = "preview";
 }
 
 /**
@@ -218,7 +314,7 @@ async function loadVersions(artifactId: string): Promise<void> {
   const response = await fetch(`/api/artifacts/${artifactId}`).catch(() => null);
   if (!response?.ok) return;
 
-  const body = (await response.json()) as { versions: ArtifactVersionView[] };
+  const body = (await response.json()) as { versions: ArtifactVersionSummary[] };
   // Both, because they answer different questions. The generation catches a
   // second request overtaking the first — which is how a revision of this same
   // artifact races. The artifact catches the case where no second request was
@@ -229,6 +325,42 @@ async function loadVersions(artifactId: string): Promise<void> {
 
   versions = body.versions;
   selectedVersionId = body.versions.at(-1)?.id ?? null;
+  diffPath = null;
+}
+
+/** One revision's files, from the cache or from the server. */
+async function snapshotFor(versionId: string): Promise<ArtifactVersionView | null> {
+  const held = snapshots[versionId];
+  if (held) return held;
+  const pending = snapshotRequests.get(versionId);
+  if (pending) return pending;
+
+  const id = workspace.openId;
+  if (!id) return null;
+
+  const request = fetch(`/api/artifacts/${id}/versions/${versionId}`)
+    .then(async (response) => {
+      if (!response.ok) throw new Error("Snapshot request failed");
+      const full = (await response.json()) as ArtifactVersionView;
+      snapshots = { ...snapshots, [versionId]: full };
+      snapshotFailures = { ...snapshotFailures, [versionId]: false };
+      return full;
+    })
+    .catch(() => {
+      snapshotFailures = { ...snapshotFailures, [versionId]: true };
+      return null;
+    })
+    .finally(() => snapshotRequests.delete(versionId));
+  snapshotRequests.set(versionId, request);
+  return request;
+}
+
+function retrySnapshots(): void {
+  for (const version of [selected, previous]) {
+    if (version && snapshotFailures[version.id]) {
+      snapshotFailures = { ...snapshotFailures, [version.id]: false };
+    }
+  }
 }
 
 /**
@@ -255,10 +387,26 @@ function focusArtifact(): void {
 // The heavily debounced idle (§13). Re-armed on every keystroke, so it fires
 // once the student stops rather than while they are still typing.
 $effect(() => {
-  if (workspace.draft === null || !workspace.dirty) return;
+  // Read so the effect re-arms on every keystroke rather than only on the first.
+  void workspace.files;
+  if (!workspace.dirty) return;
 
   const timer = setTimeout(() => void commit(), IDLE_MS);
   return () => clearTimeout(timer);
+});
+
+/**
+ * The selected revision's files, and the one before it (§13).
+ *
+ * Fetched rather than listed: a version list is cheap and its sources are not,
+ * so the History tab loads paths and sizes and reaches for content only for the
+ * pair a diff actually needs.
+ */
+$effect(() => {
+  const ids = [selected?.id, previous?.id].filter((id): id is string => typeof id === "string");
+  for (const id of ids) {
+    if (!snapshots[id] && !snapshotFailures[id]) void snapshotFor(id);
+  }
 });
 
 // History is read when it is opened, and again once a revision lands.
@@ -326,7 +474,9 @@ $effect(() => {
           <!-- Identity is always the mono face, so code-things read as code-things. -->
           <p class="truncate font-mono text-xs tabular-nums text-muted-foreground">
             {m.artifact_id_label()}={artifactKey} · {workspace.language ??
-              artifact.language} · v{artifact.latest.revision}
+              artifact.language} · v{artifact.latest.revision}{workspace.paths.length > 1
+              ? ` · ${m.artifact_files_count({ count: workspace.paths.length })}`
+              : ""}
           </p>
         {/if}
       </div>
@@ -403,7 +553,8 @@ $effect(() => {
             {sandboxOrigin}
             artifactId={artifact.id}
             language={workspace.runningLanguage ?? artifact.language}
-            source={workspace.running}
+            entry={runningEntry}
+            files={runningFiles}
             oncompiling={() => (workspace.status = "compiling")}
             onrunning={() => {
               workspace.status = "running";
@@ -430,18 +581,39 @@ $effect(() => {
       </div>
 
       {#if tab === "code" && artifact}
-        <!--
-          Re-keyed on the language: the editor resolves its grammar once inside
-          its attachment and holds no compartment, so a restore that changes the
-          tag is only followed by a fresh editor (§13).
-        -->
-        {#key workspace.language}
-          <ArtifactEditor
-            value={workspace.source}
-            language={workspace.language ?? artifact.language}
-            onchange={(source) => workspace.edit(source)}
-          />
-        {/key}
+        <div class="flex h-full min-h-0 flex-col sm:flex-row">
+          {#if workspace.paths.length > 1}
+            <!--
+              Only where there is something to choose: a one-file artifact has no
+              tree to show, and a sidebar naming its single file would cost the
+              editor a third of its lines on a 640-pixel screen (§20).
+            -->
+            <FileTree
+              paths={workspace.paths}
+              active={workspace.path}
+              entry={workspace.entry}
+              changed={workspace.changedPaths}
+              onselect={(path) => workspace.selectFile(path)}
+            />
+          {/if}
+
+          <div class="min-h-0 flex-1">
+            <!--
+              Re-keyed on the file and its tag: the editor resolves its grammar
+              once inside its attachment and holds no compartment, so moving to
+              another file — or a restore that changes the tag — is followed by a
+              fresh editor (§13).
+            -->
+            {#key `${workspace.path}:${workspace.language}`}
+              <ArtifactEditor
+                value={workspace.source}
+                language={workspace.language ?? artifact.language}
+                kind={kindOf(workspace.path)}
+                onchange={(source) => workspace.edit(source)}
+              />
+            {/key}
+          </div>
+        </div>
       {/if}
 
       {#if tab === "history" && artifact}
@@ -485,19 +657,89 @@ $effect(() => {
                   {:else if !version.buildStatus}
                     <span>{m.artifact_status_not_run()}</span>
                   {/if}
+                  <!--
+                    What this revision did, rather than what it holds: a project
+                    of five files revised in one place should read as one change
+                    (§13).
+                  -->
+                  <span class="font-mono tabular-nums">{changeSummary(version)}</span>
                 </button>
               </li>
             {/each}
           </ul>
 
           <div class="flex min-h-0 flex-1 flex-col">
-            {#if selected && previous}
+            {#if selected && selected.files.length > 1}
+              <!--
+                One diff per file: a revision of a five-file project against its
+                predecessor is five diffs, and stacking them would bury the one
+                that changed.
+              -->
+              <div
+                class="flex shrink-0 gap-1 overflow-x-auto border-b border-border px-2 py-1"
+                aria-label={m.artifact_diff_file_label()}
+              >
+                {#each selected.files as file (file.path)}
+                  <button
+                    type="button"
+                    onclick={() => (diffPath = file.path)}
+                    aria-current={file.path === diffFile}
+                    class={[
+                      "shrink-0 rounded-md px-2 py-1 font-mono text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      file.path === diffFile
+                        ? "bg-secondary text-secondary-foreground"
+                        : "text-muted-foreground hover:bg-secondary/50",
+                    ]}
+                  >
+                    {file.path}
+                    {#if file.change !== "unchanged"}
+                      <span aria-hidden="true" class="text-primary">•</span>
+                    {/if}
+                  </button>
+                {/each}
+              </div>
+            {/if}
+
+            {#if selected && diffFile}
+              {@const before = previousSnapshot?.files[diffFile]}
+              {@const after = selectedSnapshot?.files[diffFile]}
               <div class="min-h-0 flex-1 overflow-auto">
-                <ArtifactDiff
-                  original={previous.source}
-                  revised={selected.source}
-                  pairKey={`${previous.id}:${selected.id}`}
-                />
+                {#if snapshotFailures[selected.id] || (previous && snapshotFailures[previous.id])}
+                  <div class="flex flex-col items-start gap-2 p-3">
+                    <p role="alert" class="text-xs text-muted-foreground">
+                      {m.artifact_history_load_failed()}
+                    </p>
+                    <button
+                      type="button"
+                      onclick={retrySnapshots}
+                      class="min-h-9 rounded-md border border-input px-2.5 text-xs text-card-foreground hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      {m.artifact_history_retry()}
+                    </button>
+                  </div>
+                {:else if selectedSnapshot === null || (previous !== null && previousSnapshot === null)}
+                  <p role="status" class="p-3 text-xs text-muted-foreground">
+                    {m.artifact_history_loading()}
+                  </p>
+                {:else if after === undefined}
+                  <p class="p-3 text-xs text-muted-foreground">
+                    {m.artifact_diff_deleted({ path: diffFile })}
+                  </p>
+                {:else if before === undefined}
+                  <p class="p-3 text-xs text-muted-foreground">
+                    {m.artifact_diff_added({ path: diffFile })}
+                  </p>
+                {:else if before === after}
+                  <p class="p-3 text-xs text-muted-foreground">
+                    {m.artifact_diff_unchanged({ path: diffFile })}
+                  </p>
+                {:else}
+                  <ArtifactDiff
+                    original={before}
+                    revised={after}
+                    pairKey={`${selected.id}:${diffFile}`}
+                  />
+                {/if}
               </div>
             {:else}
               <p class="p-3 text-xs text-muted-foreground">{m.artifact_diff_none()}</p>

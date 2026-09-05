@@ -1,7 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import { GatewayAdapter } from "../gateway/adapter";
 import type { GatewayEvent } from "../gateway/events";
+import { promptTextOf } from "../gateway/messages";
 import { streamingResponse, stubFetch } from "../gateway/testing";
+import { estimateTokens } from "../gateway/usage";
 import { assembleContext, runTurn } from "./loop";
 import { FIXED_SYSTEM_PROMPT } from "./system-prompt";
 
@@ -80,6 +82,7 @@ describe("assembleContext", () => {
           authoredBy: "model" as const,
           buildStatus: "failed" as const,
           buildMessage: "SyntaxError",
+          files: [],
         },
       ],
       carried: [],
@@ -109,6 +112,7 @@ describe("assembleContext", () => {
           authoredBy: "model" as const,
           buildStatus: null,
           buildMessage: null,
+          files: [],
         },
       ],
       carried: [
@@ -117,7 +121,9 @@ describe("assembleContext", () => {
           language: "html" as const,
           title: "Min side",
           revision: 2,
-          source: "<p>to</p>",
+          entry: "index.html",
+          allPaths: ["index.html"],
+          missing: { "index.html": "<p>to</p>" },
         },
       ],
     };
@@ -147,6 +153,7 @@ describe("assembleContext", () => {
         authoredBy: "model" as const,
         buildStatus: null,
         buildMessage: null,
+        files: [],
       },
     ];
 
@@ -457,5 +464,140 @@ describe("replaying a turn that used tools (§10, §11)", () => {
 
     // A text file that has gone leaves the typed message unchanged.
     expect(assembleContext(path)[1].content).toBe("Hvad returnerer funktionen?");
+  });
+});
+
+/**
+ * The model's reasoning, on its way to the pupil (PRD §20, §10).
+ *
+ * It is kept separate from the answer and never replayed to the model. Until
+ * usage arrives, its estimate counts toward the same daily ceiling as text.
+ */
+describe("thinking passes through the loop", () => {
+  const THINKING_STREAM = [
+    {
+      event: "response.reasoning_summary_text.delta",
+      data: JSON.stringify({ type: "response.reasoning_summary_text.delta", delta: "Overvejer" }),
+    },
+    {
+      event: "response.output_text.delta",
+      data: JSON.stringify({ type: "response.output_text.delta", delta: "Svar" }),
+    },
+    {
+      event: "response.completed",
+      data: JSON.stringify({
+        type: "response.completed",
+        response: { status: "completed", usage: { input_tokens: 5, output_tokens: 1 } },
+      }),
+    },
+  ];
+
+  function responsesAdapter(records = THINKING_STREAM) {
+    const stub = stubFetch(() => streamingResponse(records), { responses: true });
+    return {
+      adapter: new GatewayAdapter({
+        baseUrl: "http://cpa:8317",
+        listenerKey: "k",
+        fetch: stub.fetch,
+      }),
+      stub,
+    };
+  }
+
+  it("yields the reasoning ahead of the answer", async () => {
+    const { adapter } = responsesAdapter();
+    const events = await collect(runTurn({ adapter, dialect: "openai", model: "m", path }));
+
+    expect(events[0]).toEqual({ type: "thinking-delta", text: "Overvejer" });
+    expect(events[1]).toEqual({ type: "text-delta", text: "Svar" });
+  });
+
+  /**
+   * A summary is a window onto how the answer was reached, not part of it. Sent
+   * back it would be both wasted context and a confusing thing for a model to
+   * read as its own previous words.
+   */
+  it("never replays a stored thinking part to the model", () => {
+    const messages = assembleContext([
+      { role: "user", parts: [{ type: "text", text: "Hej" }] },
+      {
+        role: "assistant",
+        parts: [
+          { type: "thinking", text: "Overvejer om det er et loop" },
+          { type: "text", text: "Et loop gentager noget" },
+        ],
+      },
+    ]);
+
+    const assistant = messages.find((message) => message.role === "assistant");
+    expect(assistant?.content).toBe("Et loop gentager noget");
+    expect(JSON.stringify(messages)).not.toContain("Overvejer");
+  });
+
+  /**
+   * `output_tokens` already includes reasoning: settlement must replace the
+   * combined provisional estimate, rather than adding provider usage to it.
+   */
+  it("replaces the combined reasoning/text estimate with reported usage", async () => {
+    const { adapter } = responsesAdapter();
+    const events = await collect(
+      runTurn({
+        adapter,
+        dialect: "openai",
+        model: "m",
+        path,
+        budgets: {
+          perTurnStepCap: 20,
+          perTurnWallClockSeconds: 300,
+          perTurnTokenCap: 100_000,
+          // Four estimated output tokens fit. Adding the reported six tokens
+          // instead of replacing the provisional total would exhaust this cap.
+          perStudentDailyTokens: estimateTokens(promptTextOf(assembleContext(path))) + 5,
+          perClassroomDailyTokens: 2_500_000,
+        },
+      }),
+    );
+
+    expect(events.at(-1)).toEqual({ type: "done", reason: "stop" });
+    expect(events.filter((event) => event.type === "usage")).toEqual([
+      { type: "usage", inputTokens: 5, outputTokens: 1, estimated: false, finishReason: "stop" },
+    ]);
+  });
+
+  it("warns and stops during reasoning before an answer or provider usage arrives", async () => {
+    const { adapter } = responsesAdapter(
+      Array.from({ length: 20 }, () => ({
+        event: "response.reasoning_summary_text.delta",
+        data: JSON.stringify({
+          type: "response.reasoning_summary_text.delta",
+          delta: "r".repeat(400),
+        }),
+      })),
+    );
+    const promptTokens = estimateTokens(promptTextOf(assembleContext(path)));
+    const events = await collect(
+      runTurn({
+        adapter,
+        dialect: "openai",
+        model: "m",
+        path,
+        budgets: {
+          perTurnStepCap: 20,
+          perTurnWallClockSeconds: 300,
+          perTurnTokenCap: 100_000,
+          perStudentDailyTokens: promptTokens + 500,
+          perClassroomDailyTokens: 2_500_000,
+        },
+      }),
+    );
+    expect(events.filter((event) => event.type === "thinking-delta")).toHaveLength(5);
+    expect(events.some((event) => event.type === "text-delta")).toBe(false);
+    expect(events.filter((event) => event.type === "budget-warning")).toHaveLength(1);
+    expect(events.find((event) => event.type === "usage")).toMatchObject({
+      inputTokens: promptTokens,
+      outputTokens: 500,
+      estimated: true,
+    });
+    expect(events.at(-1)).toEqual({ type: "done", reason: "student-allowance-exhausted" });
   });
 });

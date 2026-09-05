@@ -1,7 +1,17 @@
-import { and, asc, count, desc, eq, inArray, isNull, max, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import { and, asc, count, desc, eq, inArray, isNull, max, notInArray, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/sqlite-core";
+import { byteLength, type ProjectFiles, type ProjectSnapshot } from "../../../artifacts/project";
 import type { ArtifactLanguage, BuildStatus, VersionAuthor } from "../../../artifacts/types";
 import type { AppDatabase } from "../client";
-import { type Artifact, type ArtifactVersion, artifact, artifactVersion } from "../schema";
+import {
+  type Artifact,
+  type ArtifactVersion,
+  artifact,
+  artifactBlob,
+  artifactVersion,
+  artifactVersionFile,
+} from "../schema";
 
 /**
  * Artifacts and their revisions (PRD §13, §16, §19).
@@ -78,48 +88,253 @@ export function createArtifact(
 }
 
 /**
- * Append a revision.
+ * The identity of a file's content (§13).
+ *
+ * sha256 hex: a blob is written once however many revisions hold it, and two
+ * revisions that share four of five files share four rows. Rows written before
+ * the project migration carry a `legacy:` key instead — see `0012`.
+ */
+export function hashContent(content: string): string {
+  return createHash("sha256").update(content, "utf8").digest("hex");
+}
+
+/** Write one blob if it is not already there, and return its hash. */
+export function putBlob(db: AppDatabase, content: string): string {
+  const hash = hashContent(content);
+
+  db.insert(artifactBlob)
+    .values({ hash, content, bytes: byteLength(content) })
+    // Content-addressed, so a second write of the same bytes is the same row.
+    .onConflictDoNothing()
+    .run();
+
+  return hash;
+}
+
+/**
+ * Append a revision: a whole snapshot of the project's files (§13).
+ *
+ * A snapshot, not a diff. A history entry has to be restorable on its own, and a
+ * chain of diffs that must be replayed is a history one broken link can lose;
+ * the blobs are what make storing every file every time affordable.
+ *
+ * In a transaction, unlike the single-source append it replaces: it writes three
+ * tables, and a revision row whose files never landed is a version that renders
+ * nothing and cannot be told from one that legitimately holds no files.
  *
  * The revision number is computed from the rows themselves rather than kept as a
  * counter on the artifact: a counter is a second source of truth about the same
  * fact, and the unique index would be the only thing noticing they had diverged.
  */
-export function appendArtifactVersion(
+export function appendSnapshot(
   db: AppDatabase,
   input: {
     artifactId: string;
     messageId?: string | null;
-    source: string;
     authoredBy: VersionAuthor;
     /** The tag it was written under; null for "whatever the artifact says" (§13). */
     language?: ArtifactLanguage | null;
+    entry: string;
+    files: ProjectFiles;
   },
 ): ArtifactVersion {
-  const current =
-    db
-      .select({ revision: max(artifactVersion.revision) })
-      .from(artifactVersion)
-      .where(eq(artifactVersion.artifactId, input.artifactId))
-      .get()?.revision ?? 0;
+  return db.transaction((tx) => {
+    const current =
+      tx
+        .select({ revision: max(artifactVersion.revision) })
+        .from(artifactVersion)
+        .where(eq(artifactVersion.artifactId, input.artifactId))
+        .get()?.revision ?? 0;
 
-  const row = db
-    .insert(artifactVersion)
-    .values({
-      artifactId: input.artifactId,
-      messageId: input.messageId ?? null,
-      revision: current + 1,
-      source: input.source,
-      language: input.language ?? null,
-      authoredBy: input.authoredBy,
-    })
-    .returning()
+    const row = tx
+      .insert(artifactVersion)
+      .values({
+        artifactId: input.artifactId,
+        messageId: input.messageId ?? null,
+        revision: current + 1,
+        entryPath: input.entry,
+        language: input.language ?? null,
+        authoredBy: input.authoredBy,
+      })
+      .returning()
+      .get();
+
+    for (const [path, content] of Object.entries(input.files)) {
+      const hash = hashContent(content);
+
+      tx.insert(artifactBlob)
+        .values({ hash, content, bytes: byteLength(content) })
+        .onConflictDoNothing()
+        .run();
+
+      tx.insert(artifactVersionFile).values({ versionId: row.id, path, blobHash: hash }).run();
+    }
+
+    // The gallery and the continuity heuristic both order by recency, and a new
+    // revision is what makes an artifact recent.
+    tx.update(artifact)
+      .set({ updatedAt: new Date() })
+      .where(eq(artifact.id, input.artifactId))
+      .run();
+
+    return row;
+  });
+}
+
+/** One revision's files, content and all — what the sandbox is handed (§13). */
+export function snapshotOf(db: AppDatabase, versionId: string): ProjectSnapshot | null {
+  const version = db
+    .select({ entryPath: artifactVersion.entryPath })
+    .from(artifactVersion)
+    .where(eq(artifactVersion.id, versionId))
     .get();
+  if (!version) return null;
 
-  // The gallery and the continuity heuristic both order by recency, and a new
-  // revision is what makes an artifact recent.
-  db.update(artifact).set({ updatedAt: new Date() }).where(eq(artifact.id, input.artifactId)).run();
+  const rows = db
+    .select({ path: artifactVersionFile.path, content: artifactBlob.content })
+    .from(artifactVersionFile)
+    .innerJoin(artifactBlob, eq(artifactBlob.hash, artifactVersionFile.blobHash))
+    .where(eq(artifactVersionFile.versionId, versionId))
+    .orderBy(asc(artifactVersionFile.path))
+    .all();
 
-  return row;
+  const files: Record<string, string> = Object.create(null);
+  for (const row of rows) files[row.path] = row.content;
+
+  return { entry: version.entryPath, files };
+}
+
+/**
+ * The snapshots of many revisions at once (§13).
+ *
+ * One query rather than one per artifact: a conversation's page data carries the
+ * current project of everything the pupil has built, and a lesson with a dozen
+ * creations would otherwise be a dozen round trips per load.
+ */
+export function snapshotsOf(
+  db: AppDatabase,
+  versionIds: readonly string[],
+): Map<string, ProjectSnapshot> {
+  const snapshots = new Map<string, ProjectSnapshot>();
+  if (versionIds.length === 0) return snapshots;
+
+  const versions = db
+    .select({ id: artifactVersion.id, entryPath: artifactVersion.entryPath })
+    .from(artifactVersion)
+    .where(inArray(artifactVersion.id, [...versionIds]))
+    .all();
+
+  for (const version of versions) {
+    snapshots.set(version.id, { entry: version.entryPath, files: Object.create(null) });
+  }
+
+  const rows = db
+    .select({
+      versionId: artifactVersionFile.versionId,
+      path: artifactVersionFile.path,
+      content: artifactBlob.content,
+    })
+    .from(artifactVersionFile)
+    .innerJoin(artifactBlob, eq(artifactBlob.hash, artifactVersionFile.blobHash))
+    .where(inArray(artifactVersionFile.versionId, [...versionIds]))
+    .orderBy(asc(artifactVersionFile.versionId), asc(artifactVersionFile.path))
+    .all();
+
+  for (const row of rows) {
+    const snapshot = snapshots.get(row.versionId);
+    // The files map is a null-prototype record, so a path called `__proto__` is
+    // a path rather than a way to reach `Object` (§21).
+    if (snapshot) (snapshot.files as Record<string, string>)[row.path] = row.content;
+  }
+
+  return snapshots;
+}
+
+/** The newest revision's project, for an artifact about to gain another (§13). */
+export function latestSnapshotOf(db: AppDatabase, artifactId: string): ProjectSnapshot | null {
+  const version = latestVersionOf(db, artifactId);
+  return version ? snapshotOf(db, version.id) : null;
+}
+
+/** The newest revision's metadata without loading its entire history. */
+export function latestVersionOf(db: AppDatabase, artifactId: string): ArtifactVersion | undefined {
+  return db
+    .select()
+    .from(artifactVersion)
+    .where(eq(artifactVersion.artifactId, artifactId))
+    .orderBy(desc(artifactVersion.revision))
+    .limit(1)
+    .get();
+}
+
+/**
+ * Pair each artifact with the current source of its entry file (§13).
+ *
+ * The one place the several readers that still want "the source" go through, so
+ * a project's entry is resolved once rather than in each page's own map — and so
+ * the day those readers want the whole file list, there is one call to change.
+ */
+export function attachSnapshots(
+  db: AppDatabase,
+  rows: readonly ArtifactWithLatest[],
+): (ArtifactWithLatest & { readonly source: string; readonly snapshot: ProjectSnapshot })[] {
+  const snapshots = snapshotsOf(
+    db,
+    rows.map((row) => row.latest.id),
+  );
+
+  return rows.map((row) => {
+    const snapshot = snapshots.get(row.latest.id) ?? {
+      entry: row.latest.entryPath,
+      files: Object.create(null),
+    };
+
+    return { ...row, snapshot, source: snapshot.files[row.latest.entryPath] ?? "" };
+  });
+}
+
+/** What one revision holds, without its content — the history view's rows (§13). */
+export interface VersionFileRow {
+  readonly versionId: string;
+  readonly path: string;
+  readonly hash: string;
+  readonly bytes: number;
+}
+
+export function listVersionFiles(db: AppDatabase, versionIds: readonly string[]): VersionFileRow[] {
+  if (versionIds.length === 0) return [];
+
+  return db
+    .select({
+      versionId: artifactVersionFile.versionId,
+      path: artifactVersionFile.path,
+      hash: artifactVersionFile.blobHash,
+      bytes: artifactBlob.bytes,
+    })
+    .from(artifactVersionFile)
+    .innerJoin(artifactBlob, eq(artifactBlob.hash, artifactVersionFile.blobHash))
+    .where(inArray(artifactVersionFile.versionId, [...versionIds]))
+    .orderBy(asc(artifactVersionFile.versionId), asc(artifactVersionFile.path))
+    .all();
+}
+
+/**
+ * Blobs no revision holds any more, removed (§16).
+ *
+ * A blob is shared, so it cannot cascade from the revision that happened to be
+ * deleted — taking it would take it from every other revision holding it. This
+ * sweeps instead, after a deletion, which is the only moment one can be orphaned.
+ */
+export function pruneOrphanBlobs(db: AppDatabase): number {
+  const held = db.select({ hash: artifactVersionFile.blobHash }).from(artifactVersionFile);
+
+  const removed = db
+    .delete(artifactBlob)
+    .where(notInArray(artifactBlob.hash, held))
+    .returning({ hash: artifactBlob.hash })
+    .all();
+
+  return removed.length;
 }
 
 /**
@@ -205,6 +420,30 @@ export function listArtifactVersions(db: AppDatabase, artifactId: string): Artif
     .where(eq(artifactVersion.artifactId, artifactId))
     .orderBy(artifactVersion.revision)
     .all();
+}
+
+/** Immediate predecessors, including student edits and revisions off the active path. */
+export function previousVersionIds(
+  db: AppDatabase,
+  versionIds: readonly string[],
+): Map<string, string> {
+  if (versionIds.length === 0) return new Map();
+
+  const previous = alias(artifactVersion, "previous");
+  const rows = db
+    .select({ id: artifactVersion.id, previousId: previous.id })
+    .from(artifactVersion)
+    .innerJoin(
+      previous,
+      and(
+        eq(previous.artifactId, artifactVersion.artifactId),
+        eq(previous.revision, sql`${artifactVersion.revision} - 1`),
+      ),
+    )
+    .where(inArray(artifactVersion.id, [...versionIds]))
+    .all();
+
+  return new Map(rows.map((row) => [row.id, row.previousId]));
 }
 
 /** The artifacts of one conversation, newest first, each with its current source. */

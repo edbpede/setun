@@ -15,7 +15,10 @@ export type CompiledLanguage = "jsx" | "tsx" | "svelte";
 export interface CompileRequest {
   readonly id: string;
   readonly language: CompiledLanguage;
-  readonly source: string;
+  /** Which file the bundle starts from. Always a key of `files`. */
+  readonly entry: string;
+  /** The whole project: path → source (§13). */
+  readonly files: Readonly<Record<string, string>>;
 }
 
 /** Runner → worker. */
@@ -35,7 +38,19 @@ export type WorkerRequest =
     };
 
 export type CompileResponse =
-  | { readonly id: string; readonly ok: true; readonly code: string }
+  | {
+      readonly id: string;
+      readonly ok: true;
+      readonly code: string;
+      /**
+       * The stylesheets the bundle pulled in, concatenated (§13).
+       *
+       * esbuild extracts every imported `.css` file into an output of its own,
+       * so it arrives beside the module rather than inside it, and the document
+       * injects it as a `<style>`.
+       */
+      readonly css: string;
+    }
   /** The compiler's own message: this is what a pupil debugging their code reads. */
   | { readonly id: string; readonly ok: false; readonly message: string };
 

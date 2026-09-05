@@ -10,6 +10,7 @@ import {
   SESSION_POLICIES,
   SKILL_AUTHORING_POLICIES,
   STUDENT_STATUSES,
+  THINKING_VISIBILITIES,
 } from "../db/schema";
 import { OPEN_DURATIONS } from "./schedule";
 
@@ -211,6 +212,14 @@ export const ApplyPresetSchema = v.object({
 export const ClassroomPolicySchema = v.object({
   classroomInstructions: optionalText(8_000),
   interfaceLanguage: v.picklist(INTERFACE_LANGUAGES),
+  /**
+   * Whether pupils may see the model's reasoning (§20).
+   *
+   * `student` leaves it to the pupil's own device setting; the other two decide
+   * for the class. `hidden` is enforced server-side, so a pupil cannot reach the
+   * reasoning by any route (§21).
+   */
+  thinkingVisibility: v.picklist(THINKING_VISIBILITIES),
   sessionPolicy: v.picklist(SESSION_POLICIES),
   sessionSlidingDays: whole(1, 365),
   conversationRetentionDays: whole(1, 3_650),

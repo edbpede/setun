@@ -34,6 +34,8 @@ interface Props {
   onopenartifact?: (artifactId: string) => void;
   /** Which artifact the build surface is showing, so its card can say so (§13). */
   activeArtifactId?: string | null;
+  /** Whether the model's reasoning is rendered, once policy and preference agree (§20). */
+  showThinking?: boolean;
 }
 
 let {
@@ -43,6 +45,7 @@ let {
   onswitch,
   onopenartifact,
   activeArtifactId = null,
+  showThinking = true,
 }: Props = $props();
 
 const isUser = $derived(message.role === "user");
@@ -70,6 +73,7 @@ const action =
       artifacts={message.artifacts}
       {activeArtifactId}
       {onopenartifact}
+      {showThinking}
     />
   </div>
 

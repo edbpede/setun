@@ -1,18 +1,33 @@
 import { classroomStateChannel } from "../classroom/state-channel";
 import type { AppDatabase } from "../db/client";
+import { getClassroom } from "../db/queries/classrooms";
 import { setActiveLeaf } from "../db/queries/conversations";
 import { attachImageToMessage } from "../db/queries/images";
 import { appendMessage, recordMessageUsage } from "../db/queries/messages";
 import { finishTurn } from "../db/queries/turns";
 import { recordUsageEvent } from "../db/queries/usage";
-import type { Message, MessagePart, ModelAlias, PermissionMode, TurnNotice } from "../db/schema";
+import type {
+  Message,
+  MessagePart,
+  ModelAlias,
+  PermissionMode,
+  ThinkingVisibility,
+  TurnNotice,
+} from "../db/schema";
 import type { GatewayAdapter } from "../gateway/adapter";
 import type { GatewayEvent } from "../gateway/events";
 import { describeCause, log } from "../logging";
 import type { AttachmentPayload } from "../storage/attachments";
 import type { ArtifactContext } from "./artifact-context";
 import { recordTurnArtifacts } from "./artifacts";
-import type { BudgetSettings } from "./budgets";
+import {
+  BUDGET_PRESETS,
+  type BudgetSettings,
+  budgetDayRange,
+  type DailyBudgetLease,
+  type DailyConsumption,
+} from "./budgets";
+import { claimDailyBudget } from "./daily-budget";
 import { turnInteractions } from "./interactions";
 import { liveTurns } from "./live-turns";
 import { runTurn } from "./loop";
@@ -49,10 +64,21 @@ export interface ExecuteTurnInput {
   readonly artifacts?: ArtifactContext;
   /** The classroom's per-turn caps; the loop stops the turn at a clean boundary (§10). */
   readonly budgets?: BudgetSettings;
+  /** What the day has already cost, so the hard ceilings bind mid-turn (§10). */
+  readonly consumed?: DailyConsumption;
   /** The turn's tools and the mode that governs them; absent for plain chat (§11). */
   readonly tools?: ToolSet;
   readonly toolContext?: ToolContext;
   readonly permissionMode?: PermissionMode;
+  /**
+   * Whether the model's reasoning may reach this pupil (§20, §21).
+   *
+   * `hidden` drops the events here, before the turn is buffered — so nothing is
+   * persisted, nothing is published to a tailing tab, and nothing is there for a
+   * resume or a devtools panel to find. Hiding a block in the interface would
+   * not be enforcement.
+   */
+  readonly thinkingVisibility?: ThinkingVisibility;
 }
 
 interface TurnUsage {
@@ -73,6 +99,7 @@ export async function executeTurn(input: ExecuteTurnInput): Promise<void> {
   const signal = liveTurns.register(turnId);
   const buffer = new TurnBuffer(db, turnId);
   const startedAt = performance.now();
+  let dailyBudget: DailyBudgetLease | undefined;
 
   const parts: MessagePart[] = [];
   const imageIds: string[] = [];
@@ -82,6 +109,14 @@ export async function executeTurn(input: ExecuteTurnInput): Promise<void> {
   const asked = new Map<string, number>();
 
   try {
+    const classroom = getClassroom(db, input.classroomId);
+    dailyBudget = claimDailyBudget({
+      db,
+      classroomId: input.classroomId,
+      studentId: input.studentId,
+      range: budgetDayRange(classroom?.timezone ?? "UTC"),
+      budgets: input.budgets ?? BUDGET_PRESETS.standard,
+    });
     for await (const event of runTurn({
       adapter: input.adapter,
       dialect: input.alias.dialect,
@@ -91,6 +126,8 @@ export async function executeTurn(input: ExecuteTurnInput): Promise<void> {
       promptLayers: input.promptLayers,
       artifacts: input.artifacts,
       budgets: input.budgets,
+      consumed: input.consumed,
+      dailyBudget,
       signal,
       ...(input.tools && input.toolContext
         ? {
@@ -104,6 +141,9 @@ export async function executeTurn(input: ExecuteTurnInput): Promise<void> {
           }
         : {}),
     })) {
+      // Dropped before anything else sees it: the classroom said never (§21).
+      if (event.type === "thinking-delta" && input.thinkingVisibility === "hidden") continue;
+
       collect({ event, parts, imageIds, usage, asked });
 
       if (event.type === "done") {
@@ -134,7 +174,11 @@ export async function executeTurn(input: ExecuteTurnInput): Promise<void> {
     log.error("turn execution failed", { turnId, cause: describeCause(cause) });
     logTurn(input, { status: "failed", usage, startedAt });
   } finally {
+    dailyBudget?.release();
     liveTurns.end(turnId);
+    // Whatever the turn declared answerable — a checkpoint, the warning banner's
+    // button — dies with it, so a late click cannot be held against the next one.
+    turnInteractions.release(turnId);
   }
 }
 
@@ -162,6 +206,17 @@ function collect(args: {
         parts[parts.length - 1] = { type: "text", text: last.text + event.text };
       } else {
         parts.push({ type: "text", text: event.text });
+      }
+      break;
+    }
+    case "thinking-delta": {
+      // Grown into one trailing part, exactly as text is, and for the same
+      // reason: a summary arriving in eighty fragments is one summary.
+      const last = parts.at(-1);
+      if (last?.type === "thinking") {
+        parts[parts.length - 1] = { type: "thinking", text: last.text + event.text };
+      } else {
+        parts.push({ type: "thinking", text: event.text });
       }
       break;
     }

@@ -1,5 +1,6 @@
 import { subDays } from "date-fns";
 import type { AppDatabase } from "../db/client";
+import { pruneOrphanBlobs } from "../db/queries/artifacts";
 import { listClassrooms } from "../db/queries/classrooms";
 import {
   attachmentFilesFor,
@@ -122,6 +123,10 @@ export async function runRetention(
     }
     images += deleteGeneratedImages(db, removed);
   }
+
+  // Cascades from educator deletions can orphan blobs even without an expired
+  // creation (or any remaining classroom). Shared, still-referenced blobs stay.
+  pruneOrphanBlobs(db);
 
   return { conversations, artifacts, images, files: removedFiles };
 }

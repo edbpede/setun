@@ -1,19 +1,32 @@
 import { continuityDecision } from "../../artifacts/continuity";
-import { detectArtifacts } from "../../artifacts/detect";
+import { detectArtifacts, groupProjectWrites, type ProjectWrite } from "../../artifacts/detect";
 import { artifactTitle } from "../../artifacts/document";
 import { effectiveArtifactKey, effectiveLanguage } from "../../artifacts/identity";
+import {
+  asProjectFiles,
+  defaultPathFor,
+  diffFileLists,
+  entryOf,
+  type FileChange,
+  type ProjectFiles,
+  type ProjectSnapshot,
+  runnableLanguageOf,
+  sameFiles,
+} from "../../artifacts/project";
 import type { ArtifactLanguage } from "../../artifacts/types";
 import type { AppDatabase } from "../db/client";
 import {
   type ArtifactWithLatest,
-  appendArtifactVersion,
+  appendSnapshot,
   createArtifact,
+  listArtifactVersions,
   listConversationAnchors,
   listConversationArtifacts,
   markVersionsDelivered,
   setArtifactKey,
   setArtifactLanguage,
   setArtifactTitle,
+  snapshotOf,
   undeliveredStudentEdits,
 } from "../db/queries/artifacts";
 import { getMessage } from "../db/queries/messages";
@@ -37,16 +50,116 @@ export interface RecordedArtifact {
   readonly language: ArtifactLanguage;
   /** The id the artifact answers to, written or derived (§13). */
   readonly key: string;
-  /** True when the block was identical to what the artifact already held. */
+  /** True when the write was identical to what the artifact already held. */
   readonly unchanged: boolean;
+  /** How many files the project now holds, for the transcript's card (§13). */
+  readonly fileCount: number;
+  /** What this revision did to each file, for the card's summary. */
+  readonly changes: readonly FileChange[];
+}
+
+/**
+ * The project one write leaves behind, or null when it leaves nothing runnable.
+ *
+ * Pure, and separate from the recording around it: what a set of fences means
+ * for a project is a question about files, and answering it against a database
+ * is what made the single-source version untestable without one.
+ *
+ * A keyed write is a *change* to the project, not a replacement of it: files the
+ * model did not mention are kept. That is the whole economy of the thing — a
+ * pupil asking for a different colour gets one `css` fence back instead of a
+ * thousand-line page. A key-less block keeps the old meaning: one file, one
+ * artifact, replacing whatever was there.
+ */
+export interface ComposedSnapshot {
+  readonly entry: string;
+  readonly files: ProjectFiles;
+  readonly language: ArtifactLanguage;
+}
+
+export function composeSnapshot(
+  previous: ProjectSnapshot | null,
+  write: ProjectWrite,
+): ComposedSnapshot | null {
+  if (write.single) {
+    // The pre-project shape, unchanged: a fence with no id is one file that
+    // stands for the whole artifact.
+    const language = write.single.language;
+    if (!language) return null;
+
+    const path = defaultPathFor(language);
+    const files = asProjectFiles({ [path]: write.single.source });
+    if (!files) return null;
+    return { entry: path, files, language };
+  }
+
+  const files: Record<string, string> = { ...(previous?.files ?? {}) };
+
+  /**
+   * A keyed fence with no `path=`.
+   *
+   * Almost always the entry written the old way. It lands on the project's
+   * current entry when the tag still matches what runs there, and at that tag's
+   * conventional path otherwise — which is how a page rewritten as a component
+   * under the same id moves from `index.html` to `App.svelte`.
+   */
+  let moved: string | null = null;
+
+  for (const block of write.pathless) {
+    if (!block.language) continue;
+
+    if (previous && runnableLanguageOf(previous.entry) === block.language) {
+      files[previous.entry] = block.source;
+      continue;
+    }
+
+    /**
+     * The tag changed: a page rewritten as a component under the same id.
+     *
+     * One thing to the pupil, so the row follows — and the file it used to run
+     * goes, because it *is* what was rewritten. Leaving `index.html` beside the
+     * new `App.svelte` would keep the old page as the project's entry and the
+     * rewrite would do nothing at all.
+     */
+    const path = defaultPathFor(block.language);
+    if (previous && previous.entry !== path) delete files[previous.entry];
+    files[path] = block.source;
+    moved = path;
+  }
+
+  for (const [path, source] of Object.entries(write.files)) files[path] = source;
+
+  for (const path of write.deletes) {
+    const remaining = { ...files };
+    delete remaining[path];
+    // A deletion that would leave the project with nothing to render is not a
+    // deletion the pupil meant; the file stays and the model is told nothing.
+    if (entryOf(remaining) === null) continue;
+    delete files[path];
+  }
+
+  const checked = asProjectFiles(files);
+  if (!checked) return null;
+
+  const entry = entryOf(checked, {
+    explicit: write.entryHint ?? moved,
+    previous: previous?.entry,
+    writtenOrder: write.writtenOrder,
+  });
+  if (!entry) return null;
+
+  const language = runnableLanguageOf(entry);
+  if (!language) return null;
+
+  return { entry, files: checked, language };
 }
 
 /**
  * Record every artifact block in an assistant message.
  *
- * Continuity is resolved block by block, against the conversation as it stands
- * *after* the previous block — a message that writes two blocks under one id is
- * two revisions of one thing, and under two ids it is two things (§13).
+ * Continuity is resolved write by write, against the conversation as it stands
+ * *after* the previous write — a message that writes two blocks under one id is
+ * one revision of one thing, and under two ids it is two things (§13).
  *
  * Three rules beyond the resolution itself:
  *
@@ -60,8 +173,8 @@ export interface RecordedArtifact {
  * - An identical re-emission appends no revision. Models restate a file they did
  *   not change, and a history of eight identical revisions is a history of
  *   nothing — while every real change is still retained, which is what §13 asks.
- *   Identical means the text *and* the tag: the same file re-emitted under a new
- *   language is a different thing to run, and the revision is what carries it.
+ *   Identical means the files *and* the tag: the same project re-emitted under a
+ *   new language is a different thing to run, and the revision carries it.
  */
 export function recordTurnArtifacts(
   db: AppDatabase,
@@ -79,8 +192,19 @@ export function recordTurnArtifacts(
 
   const recorded: RecordedArtifact[] = [];
 
-  for (const detected of detectArtifacts(prose)) {
-    // Re-read per block: the previous block may have created the row this one
+  for (const write of groupProjectWrites(detectArtifacts(prose))) {
+    /**
+     * The language this write resolves continuity on.
+     *
+     * The entry's, where the write states one; otherwise whatever the previous
+     * revision runs, which is the css-only case — a write that changes nothing
+     * but a stylesheet still belongs to the artifact its `id=` names, and
+     * `continuityDecision` resolves a written key across languages, so the
+     * value here only matters for a key-less block (§13).
+     */
+    const written = firstLanguageOf(write);
+
+    // Re-read per write: an earlier write may have created the row this one
     // resolves to, or given it the key this one names.
     const rows = listConversationArtifacts(db, {
       conversationId: input.conversationId,
@@ -88,8 +212,8 @@ export function recordTurnArtifacts(
     });
 
     const decision = continuityDecision({
-      language: detected.language,
-      key: detected.key,
+      language: written ?? "html",
+      key: write.key,
       // Read apart from `rows`: the anchors carry the write order that decides
       // a tie, which `updatedAt` alone cannot express (§13).
       existing: listConversationAnchors(db, {
@@ -104,96 +228,139 @@ export function recordTurnArtifacts(
       })),
     });
 
-    if (decision.kind === "new") {
+    const existing =
+      decision.kind === "version"
+        ? rows.find(({ artifact }) => artifact.id === decision.artifactId)
+        : undefined;
+    const previous = existing ? snapshotOf(db, existing.latest.id) : null;
+
+    const composed = composeSnapshot(previous, write);
+    // Nothing runnable, or over the caps: recorded as nothing at all, and the
+    // block renders in the transcript as the fence the model wrote (§13).
+    if (!composed) continue;
+
+    const title = write.title ?? artifactTitle(sourceForTitle(composed));
+
+    if (!existing) {
       const created = createArtifact(db, {
         studentId: input.studentId,
         conversationId: input.conversationId,
-        language: detected.language,
-        key: decision.key,
-        title: detected.title ?? artifactTitle(detected.source),
+        language: composed.language,
+        key: decision.kind === "new" ? decision.key : null,
+        title,
       });
 
-      const version = appendArtifactVersion(db, {
+      const version = appendSnapshot(db, {
         artifactId: created.id,
         messageId: input.messageId,
-        source: detected.source,
-        language: detected.language,
+        entry: composed.entry,
+        files: composed.files,
+        language: composed.language,
         authoredBy: "model",
       });
 
       recorded.push({
         artifactId: created.id,
         versionId: version.id,
-        language: detected.language,
+        language: composed.language,
         key: effectiveArtifactKey(created),
         unchanged: false,
+        fileCount: Object.keys(composed.files).length,
+        changes: changesBetween(null, composed.files),
       });
       continue;
     }
 
-    const existing = rows.find(({ artifact }) => artifact.id === decision.artifactId);
-    // The row was resolved out of `rows` a line ago; this is a type narrowing.
-    if (!existing) continue;
-
-    if (detected.key && existing.artifact.key !== detected.key) {
-      setArtifactKey(db, { artifactId: existing.artifact.id, key: detected.key });
+    if (write.key && existing.artifact.key !== write.key) {
+      setArtifactKey(db, { artifactId: existing.artifact.id, key: write.key });
     }
-    if (existing.artifact.language !== detected.language) {
+    if (existing.artifact.language !== composed.language) {
       setArtifactLanguage(db, {
         artifactId: existing.artifact.id,
-        language: detected.language,
+        language: composed.language,
       });
     }
 
     // An explicit `title=` renames; a title read out of the source only names
     // what is still unnamed, so a later revision cannot quietly retitle the
     // thing a pupil has been calling something else.
-    const title =
-      detected.title ?? (existing.artifact.title ? null : artifactTitle(detected.source));
-    if (title) setArtifactTitle(db, { artifactId: existing.artifact.id, title });
+    const rename = write.title ?? (existing.artifact.title ? null : title);
+    if (rename) setArtifactTitle(db, { artifactId: existing.artifact.id, title: rename });
 
     const key = effectiveArtifactKey({
-      language: detected.language,
+      language: composed.language,
       id: existing.artifact.id,
-      key: detected.key ?? existing.artifact.key,
+      key: write.key ?? existing.artifact.key,
     });
 
     // Both, for the same reason a commit point in the panel compares both: the
-    // same text under a new tag is a different pipeline, and leaving it on the
+    // same files under a new tag are a different pipeline, and leaving it on the
     // old revision would tag the row `svelte` while its current version still
     // says `html` — which is the tag anything running it resolves through (§13).
     if (
-      existing.latest.source === detected.source &&
-      effectiveLanguage(existing.artifact, existing.latest) === detected.language
+      previous !== null &&
+      previous.entry === composed.entry &&
+      sameFiles(previous.files, composed.files) &&
+      effectiveLanguage(existing.artifact, existing.latest) === composed.language
     ) {
       recorded.push({
         artifactId: existing.artifact.id,
         versionId: existing.latest.id,
-        language: detected.language,
+        language: composed.language,
         key,
         unchanged: true,
+        fileCount: Object.keys(composed.files).length,
+        changes: [],
       });
       continue;
     }
 
-    const version = appendArtifactVersion(db, {
+    const version = appendSnapshot(db, {
       artifactId: existing.artifact.id,
       messageId: input.messageId,
-      source: detected.source,
-      language: detected.language,
+      entry: composed.entry,
+      files: composed.files,
+      language: composed.language,
       authoredBy: "model",
     });
 
     recorded.push({
       artifactId: existing.artifact.id,
       versionId: version.id,
-      language: detected.language,
+      language: composed.language,
       key,
       unchanged: false,
+      fileCount: Object.keys(composed.files).length,
+      changes: changesBetween(previous?.files ?? null, composed.files),
     });
   }
 
   return recorded;
+}
+
+/** The first runnable tag this write states, for a key-less continuity guess. */
+function firstLanguageOf(write: ProjectWrite): ArtifactLanguage | null {
+  if (write.single) return write.single.language;
+
+  for (const block of write.blocks) {
+    if (block.language) return block.language;
+  }
+  return null;
+}
+
+/** The entry's source, which is where a title is read from when one is needed. */
+function sourceForTitle(composed: ComposedSnapshot): string {
+  return composed.files[composed.entry] ?? "";
+}
+
+/** What a revision did to each file, by content rather than by hash. */
+function changesBetween(previous: ProjectFiles | null, next: ProjectFiles): FileChange[] {
+  const refs = (files: ProjectFiles | null) =>
+    Object.entries(files ?? {}).map(([path, source]) => ({ path, hash: source }));
+
+  return diffFileLists(refs(previous), refs(next)).filter(
+    (change) => change.change !== "unchanged",
+  );
 }
 
 /**
@@ -207,13 +374,35 @@ export function pendingArtifactEditParts(
   db: AppDatabase,
   input: { conversationId: string; studentId: string },
 ): Extract<MessagePart, { type: "artifact-edit" }>[] {
-  return undeliveredStudentEdits(db, input).map(toEditPart);
+  return undeliveredStudentEdits(db, input).map((row) => toEditPart(db, row));
 }
 
-function toEditPart({
-  artifact,
-  latest,
-}: ArtifactWithLatest): Extract<MessagePart, { type: "artifact-edit" }> {
+function toEditPart(
+  db: AppDatabase,
+  { artifact, latest }: ArtifactWithLatest,
+): Extract<MessagePart, { type: "artifact-edit" }> {
+  const current = snapshotOf(db, latest.id) ?? { entry: latest.entryPath, files: {} };
+
+  /**
+   * Only what the student changed since the model last wrote (§13).
+   *
+   * A project of ten files edited in one place travels as one fence. The
+   * baseline is the newest revision the *model* wrote: everything after it is
+   * the pupil's, however many times they saved.
+   */
+  const baseline = newestModelSnapshot(db, artifact.id, latest.id);
+  const changes = diffFileLists(
+    Object.entries(baseline?.files ?? {}).map(([path, source]) => ({ path, hash: source })),
+    Object.entries(current.files).map(([path, source]) => ({ path, hash: source })),
+  );
+
+  const files: Record<string, string> = {};
+  const deleted: string[] = [];
+  for (const change of changes) {
+    if (change.change === "deleted") deleted.push(change.path);
+    else if (change.change !== "unchanged") files[change.path] = current.files[change.path];
+  }
+
   return {
     type: "artifact-edit",
     artifactId: artifact.id,
@@ -222,11 +411,31 @@ function toEditPart({
     // a component still carries the pupil's html edit as html (§13).
     language: effectiveLanguage(artifact, latest),
     title: artifact.title,
-    source: latest.source,
+    source: current.files[current.entry] ?? "",
+    entry: current.entry,
+    // Everything, where nothing distinguishes the pupil's edit from the whole
+    // project — a first revision they wrote themselves, or one with no model
+    // revision behind it at all.
+    files: baseline ? files : { ...current.files },
+    deleted,
     // The id the model must reuse to change it — the same identity it writes on
     // its own blocks, so the carried source is something it can answer in kind.
     key: effectiveArtifactKey(artifact),
   };
+}
+
+/** The newest revision the model wrote, below `belowId`; null when there is none. */
+function newestModelSnapshot(
+  db: AppDatabase,
+  artifactId: string,
+  belowId: string,
+): ProjectSnapshot | null {
+  const versions = listArtifactVersions(db, artifactId);
+  const at = versions.findIndex((version) => version.id === belowId);
+  const earlier = at === -1 ? versions : versions.slice(0, at);
+
+  const model = earlier.findLast((version) => version.authoredBy === "model");
+  return model ? snapshotOf(db, model.id) : null;
 }
 
 /**
@@ -268,7 +477,7 @@ export function outgoingArtifactEditParts(
     ({ artifact, latest }) => named.has(artifact.id) && latest.authoredBy === "student",
   );
 
-  return [...pending, ...carried.map(toEditPart)];
+  return [...pending, ...carried.map((row) => toEditPart(db, row))];
 }
 
 /** Marks those edits as carried, so the following message does not repeat them (§13). */

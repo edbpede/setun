@@ -1,18 +1,48 @@
 import { beforeEach, describe, expect, it } from "bun:test";
+import { defaultPathFor } from "../../../artifacts/project";
+import type { ArtifactLanguage } from "../../../artifacts/types";
 import type { AppDatabase } from "../client";
 import { createTestDatabase, seedTestFixtures } from "../testing";
 import {
-  appendArtifactVersion,
+  appendSnapshot,
   createArtifact,
+  deleteOwnedArtifact,
   getOwnedArtifact,
+  hashContent,
   listArtifactVersions,
   listConversationAnchors,
   listConversationVersions,
+  listVersionFiles,
+  previousVersionIds,
+  pruneOrphanBlobs,
   recordVersionBuild,
+  snapshotOf,
+  snapshotsOf,
   versionsByMessage,
 } from "./artifacts";
 import { createConversation } from "./conversations";
 import { appendMessage } from "./messages";
+
+/**
+ * Append a one-file revision, the way every caller did before projects.
+ *
+ * These suites are about continuity, ordering and elision rather than about
+ * file layout, so they keep saying "here is the source" and this puts it at the
+ * conventional path for its language.
+ */
+function appendSource(
+  db: AppDatabase,
+  input: {
+    artifactId: string;
+    messageId?: string | null;
+    source: string;
+    language?: ArtifactLanguage | null;
+    authoredBy: "model" | "student";
+  },
+) {
+  const entry = defaultPathFor(input.language ?? "html");
+  return appendSnapshot(db, { ...input, entry, files: { [entry]: input.source } });
+}
 
 /**
  * The build outcome a run writes back onto its version (PRD §13, §21).
@@ -42,7 +72,7 @@ function seedArtifact(key: string | null = "side") {
     key,
     title: "Kort",
   });
-  const version = appendArtifactVersion(db, {
+  const version = appendSource(db, {
     artifactId: artifact.id,
     source: "<p>en</p>",
     authoredBy: "model",
@@ -51,11 +81,11 @@ function seedArtifact(key: string | null = "side") {
   return { artifact, version };
 }
 
-describe("appendArtifactVersion", () => {
+describe("appendSnapshot", () => {
   it("records the tag a revision was written under", () => {
     const { artifact } = seedArtifact();
 
-    const version = appendArtifactVersion(db, {
+    const version = appendSource(db, {
       artifactId: artifact.id,
       source: "<p>ny</p>",
       language: "svelte",
@@ -147,7 +177,7 @@ describe("recordVersionBuild", () => {
 describe("listConversationVersions", () => {
   it("returns every version of every artifact, ordered for one pass", () => {
     const { artifact } = seedArtifact();
-    appendArtifactVersion(db, {
+    appendSource(db, {
       artifactId: artifact.id,
       source: "<p>to</p>",
       authoredBy: "model",
@@ -162,7 +192,7 @@ describe("listConversationVersions", () => {
       key: "quiz",
     });
     for (const source of ["<svg>1</svg>", "<svg>2</svg>", "<svg>3</svg>"]) {
-      appendArtifactVersion(db, { artifactId: quiz.id, source, authoredBy: "model" });
+      appendSource(db, { artifactId: quiz.id, source, authoredBy: "model" });
     }
 
     const rows = listConversationVersions(db, {
@@ -205,12 +235,12 @@ describe("listConversationAnchors", () => {
     const first = seedArtifact("en");
     const second = seedArtifact("to");
     // Both rewritten in one message, in this order.
-    appendArtifactVersion(db, {
+    appendSource(db, {
       artifactId: second.artifact.id,
       source: "<p>to igen</p>",
       authoredBy: "model",
     });
-    appendArtifactVersion(db, {
+    appendSource(db, {
       artifactId: first.artifact.id,
       source: "<p>en igen</p>",
       authoredBy: "model",
@@ -252,7 +282,7 @@ describe("versionsByMessage", () => {
       key: "side",
     });
     for (const source of ["<p>en</p>", "<p>to</p>"]) {
-      appendArtifactVersion(db, { artifactId: side.id, source, authoredBy: "model" });
+      appendSource(db, { artifactId: side.id, source, authoredBy: "model" });
     }
 
     const message = appendMessage(db, {
@@ -271,19 +301,19 @@ describe("versionsByMessage", () => {
     // Written in this order: the third revision of `side`, then the first of
     // `quiz`, then a fourth of `side`.
     const written = [
-      appendArtifactVersion(db, {
+      appendSource(db, {
         artifactId: side.id,
         messageId: message.id,
         source: "<p>tre</p>",
         authoredBy: "model",
       }),
-      appendArtifactVersion(db, {
+      appendSource(db, {
         artifactId: quiz.id,
         messageId: message.id,
         source: "<svg>1</svg>",
         authoredBy: "model",
       }),
-      appendArtifactVersion(db, {
+      appendSource(db, {
         artifactId: side.id,
         messageId: message.id,
         source: "<p>fire</p>",
@@ -312,7 +342,7 @@ describe("versionsByMessage", () => {
       parts: [{ type: "text", text: "to" }],
     });
     const { artifact } = seedArtifact();
-    appendArtifactVersion(db, {
+    appendSource(db, {
       artifactId: artifact.id,
       messageId: second.id,
       source: "<p>to</p>",
@@ -325,5 +355,160 @@ describe("versionsByMessage", () => {
 
   it("has nothing to say about no messages", () => {
     expect(versionsByMessage(db, [])).toEqual([]);
+  });
+});
+
+/**
+ * Git's model in SQLite (PRD §13, §22).
+ *
+ * A pupil who changes one line of one file of a five-file project stores five
+ * paths, four of which point at blobs that already existed. That sharing is what
+ * makes per-file history affordable at all.
+ */
+describe("project snapshots", () => {
+  function seedProject(files: Record<string, string>, entry = "src/App.tsx") {
+    const record = createArtifact(db, {
+      studentId: fixtures.student.id,
+      conversationId,
+      language: "tsx",
+    });
+    const version = appendSnapshot(db, {
+      artifactId: record.id,
+      entry,
+      files,
+      language: "tsx",
+      authoredBy: "model",
+    });
+
+    return { record, version };
+  }
+
+  function blobCount(): number {
+    return (db.$client.query("SELECT count(*) AS n FROM artifact_blob").get() as { n: number }).n;
+  }
+
+  it("batches immediate predecessors including edits outside the selected messages", () => {
+    const first = seedProject({ "src/App.tsx": "first" });
+    const edit = appendSnapshot(db, {
+      artifactId: first.record.id,
+      entry: "src/App.tsx",
+      files: { "src/App.tsx": "student edit" },
+      authoredBy: "student",
+    });
+    const next = appendSnapshot(db, {
+      artifactId: first.record.id,
+      entry: "src/App.tsx",
+      files: { "src/App.tsx": "next answer" },
+      authoredBy: "model",
+    });
+    const unrelated = seedProject({ "src/App.tsx": "another artifact" });
+
+    expect(previousVersionIds(db, [first.version.id, next.id, unrelated.version.id])).toEqual(
+      new Map([[next.id, edit.id]]),
+    );
+    expect(previousVersionIds(db, [])).toEqual(new Map());
+  });
+
+  it("reads a revision back as the project it was written as", () => {
+    const { version } = seedProject({
+      "src/App.tsx": "app",
+      "src/data.ts": "data",
+      "styles.css": "css",
+    });
+
+    expect(snapshotOf(db, version.id)).toEqual({
+      entry: "src/App.tsx",
+      files: { "src/App.tsx": "app", "src/data.ts": "data", "styles.css": "css" },
+    });
+  });
+
+  it("stores one blob per distinct content, however many revisions hold it", () => {
+    const { record } = seedProject({
+      "src/App.tsx": "app",
+      "src/data.ts": "data",
+      "styles.css": "css",
+    });
+    expect(blobCount()).toBe(3);
+
+    // A second revision that changes one file of three.
+    appendSnapshot(db, {
+      artifactId: record.id,
+      entry: "src/App.tsx",
+      files: { "src/App.tsx": "app v2", "src/data.ts": "data", "styles.css": "css" },
+      language: "tsx",
+      authoredBy: "student",
+    });
+
+    expect(blobCount()).toBe(4);
+  });
+
+  it("shares a blob between two artifacts that happen to hold the same file", () => {
+    seedProject({ "src/App.tsx": "app", "styles.css": "delt" });
+    seedProject({ "src/App.tsx": "andet", "styles.css": "delt" });
+
+    expect(blobCount()).toBe(3);
+  });
+
+  it("fetches many revisions' files in one call", () => {
+    const first = seedProject({ "src/App.tsx": "en" });
+    const second = seedProject({ "src/App.tsx": "to", "b.css": "x" });
+
+    const snapshots = snapshotsOf(db, [first.version.id, second.version.id]);
+
+    expect(snapshots.get(first.version.id)?.files).toEqual({ "src/App.tsx": "en" });
+    expect(snapshots.get(second.version.id)?.files).toEqual({ "src/App.tsx": "to", "b.css": "x" });
+  });
+
+  /** So a file called `__proto__` is a file rather than a way to reach Object (§21). */
+  it("returns null-prototype file maps", () => {
+    const { version } = seedProject({ "src/App.tsx": "app" });
+
+    expect(Object.getPrototypeOf(snapshotOf(db, version.id)?.files)).toBeNull();
+    expect(Object.getPrototypeOf(snapshotsOf(db, [version.id]).get(version.id)?.files)).toBeNull();
+  });
+
+  it("lists a revision's files with their sizes but not their content", () => {
+    const { version } = seedProject({ "src/App.tsx": "app", "styles.css": "css!" });
+
+    expect(listVersionFiles(db, [version.id])).toEqual([
+      { versionId: version.id, path: "src/App.tsx", hash: hashContent("app"), bytes: 3 },
+      { versionId: version.id, path: "styles.css", hash: hashContent("css!"), bytes: 4 },
+    ]);
+  });
+
+  it("writes a revision and its files together or not at all", () => {
+    const { record } = seedProject({ "src/App.tsx": "app" });
+
+    // A path that violates the primary key: the same file twice in one write is
+    // impossible through `asProjectFiles`, so this reaches for the guard itself.
+    expect(() =>
+      appendSnapshot(db, {
+        artifactId: "does-not-exist",
+        entry: "App.tsx",
+        files: { "App.tsx": "x" },
+        authoredBy: "model",
+      }),
+    ).toThrow();
+
+    // The failed write left no revision behind on the artifact that does exist.
+    expect(listArtifactVersions(db, record.id)).toHaveLength(1);
+  });
+
+  /**
+   * A blob is shared, so it cannot cascade from the revision that happened to be
+   * deleted — taking it would take it from every other revision holding it (§16).
+   */
+  it("sweeps blobs no revision holds any more", () => {
+    const kept = seedProject({ "src/App.tsx": "beholdt", "styles.css": "delt" });
+    const gone = seedProject({ "src/App.tsx": "forsvinder", "styles.css": "delt" });
+
+    expect(blobCount()).toBe(3);
+    deleteOwnedArtifact(db, { artifactId: gone.record.id, studentId: fixtures.student.id });
+
+    // The revision's file rows cascaded, but the blobs are still there until swept.
+    expect(pruneOrphanBlobs(db)).toBe(1);
+    expect(blobCount()).toBe(2);
+    // The shared stylesheet survived, because the other artifact still holds it.
+    expect(snapshotOf(db, kept.version.id)?.files["styles.css"]).toBe("delt");
   });
 });

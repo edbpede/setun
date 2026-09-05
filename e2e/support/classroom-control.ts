@@ -139,6 +139,41 @@ switch (command) {
     });
     break;
 
+  /**
+   * A day's allowance the very next turn passes 70 % of, and then empties (§10).
+   *
+   * Above the roughly 1 050-token prompt reservation, but below prompt plus
+   * the roughly 2 040-token LONG_REPLY, so both boundaries happen mid-stream.
+   */
+  case "low-allowance":
+    updateClassroomSettings(db, {
+      classroomId: classroom.id,
+      settings: { perStudentDailyTokens: 2_000 },
+    });
+    break;
+
+  /** The classroom's thinking policy (§20). */
+  case "hide-thinking":
+    updateClassroomSettings(db, {
+      classroomId: classroom.id,
+      settings: { thinkingVisibility: "hidden" },
+    });
+    break;
+
+  case "show-thinking":
+    updateClassroomSettings(db, {
+      classroomId: classroom.id,
+      settings: { thinkingVisibility: "shown" },
+    });
+    break;
+
+  case "student-thinking":
+    updateClassroomSettings(db, {
+      classroomId: classroom.id,
+      settings: { thinkingVisibility: "student" },
+    });
+    break;
+
   case "restore-allowance":
     updateClassroomSettings(db, {
       classroomId: classroom.id,

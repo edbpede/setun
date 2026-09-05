@@ -17,6 +17,9 @@ const NOTICES: Record<TurnNotice, () => string> = {
   interrupted: m.chat_notice_interrupted,
   error: m.chat_notice_error,
   budget: m.chat_notice_budget,
+  truncated: m.chat_notice_truncated,
+  "student-allowance-exhausted": m.chat_notice_student_allowance_exhausted,
+  "classroom-cap-exhausted": m.chat_notice_classroom_cap_exhausted,
   unanswered: m.chat_notice_unanswered,
 };
 

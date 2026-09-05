@@ -1,4 +1,5 @@
 import { effectiveLanguage } from "./identity";
+import { type ProjectFiles, sameFiles } from "./project";
 import type { ArtifactLanguage, BuildStatus } from "./types";
 
 /**
@@ -13,9 +14,11 @@ import type { ArtifactLanguage, BuildStatus } from "./types";
  * Three conditions bound what is reported, and the first two are about *which*
  * source ran:
  *
- * - The outcome must belong to the stored source. A pupil running an unsaved
+ * - The outcome must belong to the stored project. A pupil running an unsaved
  *   draft is running something the version does not hold, and stamping the
- *   version with that result would tell the model a lie about its own code.
+ *   version with that result would tell the model a lie about its own code. Every
+ *   file, not only the entry: a stylesheet edited but not saved changes what the
+ *   pupil sees run.
  * - And to the tag it ran under. A Restore can bring back a source the artifact
  *   already holds under a different tag — same text, different pipeline — and
  *   the revision that records the new tag is still being stored while the frame
@@ -26,8 +29,9 @@ import type { ArtifactLanguage, BuildStatus } from "./types";
  */
 
 export interface BuildOutcome {
-  /** The source that actually ran, so a draft can be told from the version. */
-  readonly source: string;
+  /** The project that actually ran, so a draft can be told from the version. */
+  readonly files: ProjectFiles;
+  readonly entry: string;
   /** And the tag it ran under, so a restore can be told from the version too. */
   readonly language: ArtifactLanguage | null;
   readonly status: BuildStatus;
@@ -40,7 +44,8 @@ export interface BuildTarget {
   readonly language: ArtifactLanguage;
   readonly latest: {
     readonly id: string;
-    readonly source: string;
+    readonly files: ProjectFiles;
+    readonly entry: string;
     readonly language?: ArtifactLanguage | null;
     readonly buildStatus?: BuildStatus | null;
     readonly buildMessage?: string | null;
@@ -62,7 +67,8 @@ export function buildReportFor(
   outcome: BuildOutcome | null,
 ): BuildReport | null {
   if (!open || !outcome) return null;
-  if (outcome.source !== open.latest.source) return null;
+  if (!sameFiles(outcome.files, open.latest.files)) return null;
+  if (outcome.entry !== open.latest.entry) return null;
   if (outcome.language !== effectiveLanguage(open, open.latest)) return null;
   if ((open.latest.buildStatus ?? null) === outcome.status) return null;
 

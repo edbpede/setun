@@ -6,10 +6,9 @@
  * that is not chosen, a group without arrow handling has positions no keyboard
  * can reach at all.
  *
- * Three controls keep this contract — the workspace switcher, the theme
- * control, and the build pane's tabs — so the arithmetic lives here once rather
- * than three times, and the two that were missing it cannot drift from the one
- * that had it.
+ * Four controls keep this contract — the workspace switcher, the theme control,
+ * the build pane's tabs and its file tree — so the arithmetic lives here once
+ * rather than four times, and none of them can drift from the others.
  */
 
 /**
@@ -26,7 +25,9 @@
  * `orientation` says which arrows belong to the control. A radio group answers
  * to both pairs whichever way it is laid out, which is the pattern's own rule;
  * a horizontal tab list answers to Left and Right only, and leaves Up and Down
- * to the page they would otherwise scroll.
+ * to the page they would otherwise scroll; a file tree is the mirror of that,
+ * answering to Up and Down and leaving the horizontal pair to the editor beside
+ * it.
  */
 export function rovingTarget<T extends string>(
   event: KeyboardEvent,
@@ -34,16 +35,17 @@ export function rovingTarget<T extends string>(
     values: readonly T[];
     current: T;
     attribute: string;
-    orientation?: "inline" | "both";
+    orientation?: "inline" | "block" | "both";
   },
 ): T | null {
   const { values, current, attribute, orientation = "both" } = options;
-  const blockAxis = orientation === "both";
+  const blockAxis = orientation !== "inline";
+  const inlineAxis = orientation !== "block";
 
   const step =
-    event.key === "ArrowRight" || (blockAxis && event.key === "ArrowDown")
+    (inlineAxis && event.key === "ArrowRight") || (blockAxis && event.key === "ArrowDown")
       ? 1
-      : event.key === "ArrowLeft" || (blockAxis && event.key === "ArrowUp")
+      : (inlineAxis && event.key === "ArrowLeft") || (blockAxis && event.key === "ArrowUp")
         ? -1
         : 0;
   if (step === 0) return null;

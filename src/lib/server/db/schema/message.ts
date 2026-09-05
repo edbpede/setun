@@ -44,6 +44,13 @@ export interface ArtifactEditPart {
   readonly versionId: string;
   readonly language: string;
   readonly title: string | null;
+  /**
+   * The entry file's source.
+   *
+   * Kept for parts written before an artifact was a project, which carried only
+   * this. A part that also carries `files` states its whole change there, and
+   * this is the entry's copy of it.
+   */
   readonly source: string;
   /**
    * The id the artifact answers to, so the block carries the identity the model
@@ -53,6 +60,30 @@ export interface ArtifactEditPart {
    * those still encode, in the form they were written in.
    */
   readonly key?: string | null;
+  /** Which file of the project runs, so the block can mark it (§13). */
+  readonly entry?: string | null;
+  /**
+   * The files the student changed, path → source.
+   *
+   * Only the changed ones: a project of ten files edited in one place travels
+   * as one fence, not ten. Absent on a part written before projects.
+   */
+  readonly files?: Readonly<Record<string, string>>;
+  /** Paths the student removed, which travel as empty `delete` fences. */
+  readonly deleted?: readonly string[];
+}
+
+/**
+ * The model's own reasoning, as the provider summarises it (§20).
+ *
+ * A part of its own so a pupil who reloads still finds the block they had open.
+ * It is never replayed to the model — `textOf` in the agent loop does not read
+ * it — and never scanned for artifact fences: a fenced block inside a summary is
+ * the model thinking about writing a file, not a file.
+ */
+export interface ThinkingPart {
+  readonly type: "thinking";
+  readonly text: string;
 }
 
 /** An image produced by the generation path, served only by Setun (§15). */
@@ -101,7 +132,16 @@ export interface ToolResultPart {
  * the model finished has nothing to announce. `error` is included because a
  * failed turn may still have persisted the words it managed to stream.
  */
-export const TURN_NOTICES = ["aborted", "interrupted", "budget", "unanswered", "error"] as const;
+export const TURN_NOTICES = [
+  "aborted",
+  "interrupted",
+  "budget",
+  "truncated",
+  "student-allowance-exhausted",
+  "classroom-cap-exhausted",
+  "unanswered",
+  "error",
+] as const;
 export type TurnNotice = (typeof TURN_NOTICES)[number];
 
 export interface TurnNoticePart {
@@ -115,6 +155,7 @@ export interface TurnNoticePart {
  */
 export type MessagePart =
   | TextPart
+  | ThinkingPart
   | AttachmentPart
   | ArtifactEditPart
   | GeneratedImagePart

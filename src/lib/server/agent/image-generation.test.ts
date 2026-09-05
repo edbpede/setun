@@ -245,6 +245,15 @@ describe("the agent-loop trigger (§15)", () => {
       dialect: "openai",
       model: "test-model",
       path: [{ role: "user", parts: [{ type: "text", text: "Tegn en kat" }] }],
+      // The stub asks for the tool on every call, so the turn is bounded by its
+      // step checkpoint: it asks once, nobody answers, and the turn ends (§10).
+      budgets: {
+        perTurnStepCap: 1,
+        perTurnWallClockSeconds: 1,
+        perTurnTokenCap: 1_000_000,
+        perStudentDailyTokens: 250_000,
+        perClassroomDailyTokens: 2_500_000,
+      },
       tooling: {
         tools: buildToolSet(context),
         context,

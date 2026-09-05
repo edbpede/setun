@@ -9,24 +9,57 @@ import { type ArtifactView, ArtifactWorkspace, CONSOLE_KEPT } from "./artifacts.
  * the shell's business. These assertions are what keep it that way.
  */
 
+const BASE_VERSION = {
+  id: "version-1",
+  revision: 1,
+  source: "<button>Klik</button>",
+  entry: "index.html",
+  files: { "index.html": "<button>Klik</button>" },
+  authoredBy: "model" as const,
+  createdAt: new Date(0).toISOString(),
+};
+
 function artifact(overrides: Partial<ArtifactView> = {}): ArtifactView {
   return {
     id: "artifact-1",
     language: "html",
     title: "Klikkeren",
-    latest: {
-      id: "version-1",
-      revision: 1,
-      source: "<button>Klik</button>",
-      authoredBy: "model",
-      createdAt: new Date(0).toISOString(),
-      ...overrides.latest,
-    },
     ...overrides,
+    // Merged after the spread, not before it: an override that names `latest`
+    // states only the fields it cares about, and replacing the whole of it would
+    // leave the artifact without the files every reader now expects.
+    latest: { ...BASE_VERSION, ...overrides.latest },
   };
 }
 
 describe("the workspace stage", () => {
+  it("keeps a newer restore when an older save has identical files but another entry or tag", () => {
+    const workspace = new ArtifactWorkspace();
+    const files = { "index.html": "<p>home</p>", "other.html": "<p>other</p>" };
+    workspace.items = [artifact({ latest: { ...BASE_VERSION, files } })];
+    workspace.select("artifact-1");
+    workspace.restore({ ...BASE_VERSION, files, entry: "other.html", language: "html" });
+    workspace.applyVersion("artifact-1", { ...BASE_VERSION, files, revision: 2 });
+    expect(workspace.entry).toBe("other.html");
+    expect(workspace.draftReplace).not.toBeNull();
+
+    workspace.restore({ ...BASE_VERSION, files, language: "svelte" });
+    workspace.applyVersion("artifact-1", { ...BASE_VERSION, files, revision: 3, language: "html" });
+    expect(workspace.language).toBe("svelte");
+    expect(workspace.draftReplace).not.toBeNull();
+
+    workspace.applyVersion("artifact-1", {
+      ...BASE_VERSION,
+      files,
+      revision: 4,
+      language: "svelte",
+    });
+    expect(workspace.draftReplace).toBeNull();
+    workspace.applyVersion("artifact-1", { ...BASE_VERSION, files, revision: 3, language: "html" });
+    expect(workspace.open?.latest.revision).toBe(4);
+    expect(workspace.language).toBe("svelte");
+  });
+
   it("starts on the conversation and nothing else", () => {
     const workspace = new ArtifactWorkspace();
 
@@ -84,7 +117,7 @@ describe("the workspace stage", () => {
     // state the artifact had built up — a score, a board, a half-filled form.
     expect(workspace.stage).toBe("chat");
     expect(workspace.mounted).toBe(true);
-    expect(workspace.running).toBe("<button>Klik</button>");
+    expect(workspace.running?.files).toEqual({ "index.html": "<button>Klik</button>" });
   });
 
   it("never lets the divider drag either side out of existence (§20)", () => {
@@ -199,7 +232,7 @@ describe("following the model's writes", () => {
     ]);
 
     expect(workspace.openId).toBe("artifact-1");
-    expect(workspace.draft).toBe("<p>jeg skriver</p>");
+    expect(workspace.source).toBe("<p>jeg skriver</p>");
     // But the pupil is told, so a conversation-only workspace is not a silent one.
     expect(workspace.unseen).toBe("artifact-2");
   });
@@ -255,7 +288,7 @@ describe("choosing an artifact", () => {
     // that row used to throw their work away without saying so (§13).
     workspace.select("artifact-1");
 
-    expect(workspace.draft).toBe("<button>Klik mig</button>");
+    expect(workspace.source).toBe("<button>Klik mig</button>");
     expect(workspace.dirty).toBe(true);
   });
 
@@ -269,15 +302,21 @@ describe("choosing an artifact", () => {
       [
         {
           ...artifact(),
-          latest: { ...artifact().latest, id: "version-2", revision: 2, source: "<h1>Nyt</h1>" },
+          latest: {
+            ...artifact().latest,
+            id: "version-2",
+            revision: 2,
+            source: "<h1>Nyt</h1>",
+            files: { "index.html": "<h1>Nyt</h1>" },
+          },
         },
       ],
       "c1",
     );
 
     // The revision it was based on is gone, so the draft goes with it.
-    expect(workspace.draft).toBeNull();
-    expect(workspace.running).toBe("<h1>Nyt</h1>");
+    expect(workspace.drafts).toEqual({});
+    expect(workspace.running?.files).toEqual({ "index.html": "<h1>Nyt</h1>" });
   });
 
   it("starts a different artifact from scratch", () => {
@@ -289,7 +328,7 @@ describe("choosing an artifact", () => {
     workspace.select("artifact-2");
 
     expect(workspace.openId).toBe("artifact-2");
-    expect(workspace.draft).toBeNull();
+    expect(workspace.drafts).toEqual({});
   });
 });
 

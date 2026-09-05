@@ -10,6 +10,23 @@ import StreamingMessage from "./StreamingMessage.svelte";
  */
 
 describe("StreamingMessage", () => {
+  it("settles each reasoning block with its own duration, including a reasoning-only ending", async () => {
+    let clock = 0;
+    const turn = new StreamingTurn(() => clock);
+    turn.begin("turn-1");
+    turn.apply({ type: "thinking-delta", text: "First" }, 0);
+    clock = 2_000;
+    turn.apply({ type: "tool-result", toolCallId: "tool-1", result: "Found", isError: false }, 1);
+    clock = 5_000;
+    turn.apply({ type: "thinking-delta", text: "Second" }, 2);
+    clock = 9_000;
+    turn.apply({ type: "done", reason: "stop" }, 3);
+    render(StreamingMessage, { turn });
+
+    await expect.element(page.getByText(m.chat_thoughts_elapsed({ seconds: 2 }))).toBeVisible();
+    await expect.element(page.getByText(m.chat_thoughts_elapsed({ seconds: 4 }))).toBeVisible();
+  });
+
   it("renders nothing before a turn starts", async () => {
     const turn = new StreamingTurn();
     render(StreamingMessage, { turn });
@@ -22,7 +39,70 @@ describe("StreamingMessage", () => {
     turn.begin("turn-1");
     render(StreamingMessage, { turn });
 
-    await expect.element(page.getByText(m.chat_thinking())).toBeVisible();
+    // The static label is what assistive technology reads; the rotating line
+    // beside it is `aria-hidden`, so it never interrupts (§20).
+    await expect.element(page.getByRole("status")).toHaveTextContent(m.chat_thinking());
+    await expect.element(page.getByText(m.chat_status_reading())).toBeVisible();
+  });
+
+  /**
+   * A reasoning model can spend forty seconds before its first word, and a line
+   * that never changes for forty seconds reads as a stall (§20).
+   */
+  it("moves through the statuses as the wait goes on, and stops on the last", async () => {
+    let clock = 1_000;
+    const turn = new StreamingTurn(() => clock);
+    turn.begin("turn-1");
+    render(StreamingMessage, { turn, now: () => clock });
+
+    await expect.element(page.getByText(m.chat_status_reading())).toBeVisible();
+
+    clock = 1_000 + 5_000;
+    await expect.element(page.getByText(m.chat_status_planning())).toBeVisible();
+
+    clock = 1_000 + 13_000;
+    await expect.element(page.getByText(m.chat_status_writing())).toBeVisible();
+
+    // Clamped, never cycling: going back to "Reading your message…" after
+    // sixteen seconds would say the model had started over.
+    clock = 1_000 + 60_000;
+    await expect.element(page.getByText(m.chat_status_writing())).toBeVisible();
+  });
+
+  it("gives way the moment the reasoning itself is on screen", async () => {
+    const turn = new StreamingTurn();
+    turn.begin("turn-1");
+    render(StreamingMessage, { turn });
+
+    turn.apply({ type: "thinking-delta", text: "Overvejer opgaven" }, 0);
+
+    // The block is collapsed, so its summary is what shows; the placeholder has
+    // nothing left to say once the model is visibly reasoning.
+    await expect.element(page.getByText(m.chat_status_reading())).not.toBeInTheDocument();
+    expect(document.querySelector("summary")?.textContent).toContain("Overvejer opgaven");
+  });
+
+  it("keeps the placeholder when the classroom or the pupil hides the reasoning", async () => {
+    const turn = new StreamingTurn();
+    turn.begin("turn-1");
+    render(StreamingMessage, { turn, showThinking: false });
+
+    turn.apply({ type: "thinking-delta", text: "Overvejer opgaven" }, 0);
+
+    await expect.element(page.getByText("Overvejer opgaven")).not.toBeInTheDocument();
+    await expect.element(page.getByText(m.chat_status_reading())).toBeVisible();
+  });
+
+  it("drops the placeholder as soon as the answer begins", async () => {
+    const turn = new StreamingTurn();
+    turn.begin("turn-1");
+    render(StreamingMessage, { turn });
+
+    turn.apply({ type: "thinking-delta", text: "Overvejer" }, 0);
+    turn.apply({ type: "text-delta", text: "Et loop" }, 1);
+
+    await expect.element(page.getByText("Et loop")).toBeVisible();
+    await expect.element(page.getByRole("status")).not.toBeInTheDocument();
   });
 
   it("accumulates deltas into the streamed text", async () => {
@@ -34,7 +114,7 @@ describe("StreamingMessage", () => {
     turn.apply({ type: "text-delta", text: "loop" }, 1);
 
     await expect.element(page.getByText("Et loop")).toBeVisible();
-    await expect.element(page.getByText(m.chat_thinking())).not.toBeInTheDocument();
+    await expect.element(page.getByRole("status")).not.toBeInTheDocument();
   });
 
   it("renders streamed markdown as plain text, not as HTML", async () => {
@@ -117,6 +197,48 @@ describe("StreamingMessage", () => {
     turn.apply({ type: "done", reason: "interrupted" }, 0);
 
     await expect.element(page.getByText(m.chat_notice_interrupted())).toBeVisible();
+  });
+
+  it("names the allowance that ran out mid-answer", async () => {
+    const turn = new StreamingTurn();
+    turn.begin("turn-1");
+    render(StreamingMessage, { turn });
+
+    turn.apply({ type: "text-delta", text: "halvvejs" }, 0);
+    turn.apply({ type: "done", reason: "student-allowance-exhausted" }, 1);
+
+    await expect.element(page.getByText(m.chat_notice_student_allowance_exhausted())).toBeVisible();
+    await expect.element(page.getByText("halvvejs")).toBeVisible();
+  });
+
+  it("names the class's cap when that is what ran out", async () => {
+    const turn = new StreamingTurn();
+    turn.begin("turn-1");
+    render(StreamingMessage, { turn });
+
+    turn.apply({ type: "done", reason: "classroom-cap-exhausted" }, 0);
+
+    await expect.element(page.getByText(m.chat_notice_classroom_cap_exhausted())).toBeVisible();
+  });
+
+  it("tells the student when the model hit its own length limit", async () => {
+    const turn = new StreamingTurn();
+    turn.begin("turn-1");
+    render(StreamingMessage, { turn });
+
+    turn.apply({ type: "done", reason: "truncated" }, 0);
+
+    await expect.element(page.getByText(m.chat_notice_truncated())).toBeVisible();
+  });
+
+  it("tells the student when a checkpoint went unanswered", async () => {
+    const turn = new StreamingTurn();
+    turn.begin("turn-1");
+    render(StreamingMessage, { turn });
+
+    turn.apply({ type: "done", reason: "budget" }, 0);
+
+    await expect.element(page.getByText(m.chat_notice_budget())).toBeVisible();
   });
 
   it("shows a friendly notice on gateway failure, never a raw error", async () => {

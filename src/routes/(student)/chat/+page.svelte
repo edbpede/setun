@@ -6,10 +6,13 @@ import { goto, invalidateAll, replaceState } from "$app/navigation";
 import { page } from "$app/state";
 import type { BuildStatus } from "$lib/artifacts/types";
 import { readEventStream } from "$lib/chat/sse-client";
+import { effectiveThinking, thinkingChoiceAvailable } from "$lib/chat/thinking-visibility";
 import { fitVisualViewport } from "$lib/chat/viewport";
 import ArtifactPanel from "$lib/components/artifacts/ArtifactPanel.svelte";
+import BudgetWarning from "$lib/components/chat/BudgetWarning.svelte";
 import ChatHeader from "$lib/components/chat/ChatHeader.svelte";
 import Composer from "$lib/components/chat/Composer.svelte";
+import ContinuePrompt from "$lib/components/chat/ContinuePrompt.svelte";
 import ConversationDrawer from "$lib/components/chat/ConversationDrawer.svelte";
 import ConversationStarters from "$lib/components/chat/ConversationStarters.svelte";
 import ElicitationForm from "$lib/components/chat/ElicitationForm.svelte";
@@ -27,6 +30,7 @@ import {
   textOf,
 } from "$lib/state/conversation.svelte";
 import { attachmentRefusalMessage, imageRefusalMessage, refusalMessage } from "$lib/state/refusals";
+import { getThinking } from "$lib/state/thinking.svelte";
 import { type SplitAxis, watchSplitAxis } from "$lib/workspace/axis";
 import type { PageProps } from "./$types";
 
@@ -50,6 +54,16 @@ const conversation = new ConversationState();
 const composer = new ComposerState();
 const classroom = new ClassroomState();
 const artifacts = new ArtifactWorkspace();
+
+/**
+ * Whether this pupil sees the model's reasoning (§20).
+ *
+ * The classroom's policy and the pupil's own device switch, resolved together.
+ * Presentation only: a classroom set to "never shown" drops the events in the
+ * runner, so there is nothing here to hide (§21).
+ */
+const thinking = getThinking();
+const showThinking = $derived(effectiveThinking(data.thinkingVisibility, thinking.preference));
 
 let refusal = $state<string | null>(null);
 /** The conversation list, which is an overlay rather than a permanent column (§20). */
@@ -553,6 +567,20 @@ function setStage(stage: WorkspaceStage): void {
   artifacts.setStage(stage);
 }
 
+/**
+ * "Keep going" on the warning banner (§10).
+ *
+ * Answers the checkpoint before the loop reaches it, so the turn runs on rather
+ * than pausing at the next boundary to ask what the pupil has already said.
+ */
+async function keepGoing(): Promise<void> {
+  const warning = conversation.turn.budgetWarning;
+  if (!warning) return;
+
+  conversation.turn.acknowledgeWarning();
+  await respond({ requestId: warning.requestId, kind: "continue", proceed: true });
+}
+
 async function abort(): Promise<void> {
   const turnId = conversation.turn.turnId;
 
@@ -581,6 +609,7 @@ async function abort(): Promise<void> {
   open={drawerOpen}
   onclose={() => (drawerOpen = false)}
   ondelete={deleteConversation}
+  thinkingChoice={thinkingChoiceAvailable(data.thinkingVisibility)}
 >
   {#snippet actions()}
     <!--
@@ -676,6 +705,7 @@ async function abort(): Promise<void> {
           onregenerate={regenerate}
           onswitch={switchBranch}
           onopenartifact={openArtifact}
+          {showThinking}
         >
           {#snippet empty()}
             <ConversationStarters
@@ -716,6 +746,35 @@ async function abort(): Promise<void> {
                     })}
                 />
               {/key}
+            {/if}
+
+            {#if conversation.turn.continuePrompt}
+              {#key conversation.turn.continuePrompt.requestId}
+                <ContinuePrompt
+                  prompt={conversation.turn.continuePrompt}
+                  onrespond={(proceed) => {
+                    if (proceed) conversation.turn.acknowledgeWarning();
+                    void respond({
+                      requestId: conversation.turn.continuePrompt?.requestId,
+                      kind: "continue",
+                      proceed,
+                    });
+                  }}
+                />
+              {/key}
+            {/if}
+
+            {#if conversation.turn.budgetWarning}
+              <!--
+                Shown while the answer keeps arriving: the allowance is the
+                pupil's day, and a response in flight is never cut for it (§10).
+              -->
+              <BudgetWarning
+                warning={conversation.turn.budgetWarning}
+                streaming={conversation.turn.streaming && !conversation.turn.continuePrompt}
+                onkeepgoing={keepGoing}
+                onstop={abort}
+              />
             {/if}
 
             {#if generating}

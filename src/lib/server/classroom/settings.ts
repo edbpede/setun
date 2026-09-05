@@ -1,6 +1,12 @@
 import type { AppDatabase } from "../db/client";
 import { getClassroom } from "../db/queries/classrooms";
-import type { Classroom, InterfaceLanguage, ModelAlias, Student } from "../db/schema";
+import type {
+  Classroom,
+  InterfaceLanguage,
+  ModelAlias,
+  Student,
+  ThinkingVisibility,
+} from "../db/schema";
 import type { AttachmentPolicy } from "../storage/attachments";
 
 /**
@@ -28,6 +34,14 @@ export interface ResolvedStudentSettings {
   /** Classroom toggle with per-student override (§10). Enforced in Phase 3.11. */
   readonly attachmentsEnabled: boolean;
   readonly attachmentTypes: readonly string[];
+  /**
+   * Whether the model's reasoning may reach this pupil (§20).
+   *
+   * Classroom-level only — there is no per-student override, because the pupil's
+   * own half of this decision is a device setting rather than something recorded
+   * against them (§16).
+   */
+  readonly thinkingVisibility: ThinkingVisibility;
 }
 
 /** Merge a classroom's settings with one student's overrides. */
@@ -43,6 +57,7 @@ export function resolveStudentSettings(
     interfaceLanguage: student.interfaceLanguage ?? classroom.interfaceLanguage,
     attachmentsEnabled: student.attachmentsEnabled ?? classroom.attachmentsEnabled,
     attachmentTypes: classroom.attachmentTypes,
+    thinkingVisibility: classroom.thinkingVisibility,
   };
 }
 

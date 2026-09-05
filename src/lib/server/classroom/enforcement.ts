@@ -1,4 +1,10 @@
-import { type BudgetRefusal, budgetDayRange, budgetsOf, checkTurnBudget } from "../agent/budgets";
+import {
+  type BudgetRefusal,
+  budgetDayRange,
+  budgetsOf,
+  checkTurnBudget,
+  type DailyConsumption,
+} from "../agent/budgets";
 import type { AppDatabase } from "../db/client";
 import { isAliasAllowed } from "../db/queries/classroom-aliases";
 import { getClassroom } from "../db/queries/classrooms";
@@ -31,6 +37,14 @@ export type EnforcementResult =
        */
       readonly classroom: Classroom;
       readonly availability: AvailabilityStatus;
+      /**
+       * What the classroom and this pupil have spent today, as of this check.
+       *
+       * Returned rather than re-read: the loop needs it to bind the daily
+       * ceilings *during* the turn this call just authorised, and the figures
+       * were already computed to authorise it (§10).
+       */
+      readonly consumed: DailyConsumption;
     }
   | {
       readonly allowed: false;
@@ -90,7 +104,7 @@ export function checkModelAccess(input: CheckAccessInput): EnforcementResult {
     return denied(budget.refusal, availability);
   }
 
-  return { allowed: true, classroom, availability };
+  return { allowed: true, classroom, availability, consumed };
 }
 
 /**

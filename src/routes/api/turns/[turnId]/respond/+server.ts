@@ -1,6 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import * as v from "valibot";
-import { turnInteractions } from "$lib/server/agent/interactions";
+import { type InteractionAnswer, turnInteractions } from "$lib/server/agent/interactions";
 import { requireStudentApi } from "$lib/server/auth/guards";
 import { getDb } from "$lib/server/boot";
 import { getOwnedTurn, isTerminal } from "$lib/server/db/queries/turns";
@@ -38,6 +38,18 @@ const RespondSchema = v.union([
     declined: v.optional(v.boolean(), false),
     values: v.optional(v.record(v.pipe(v.string(), v.maxLength(120)), ElicitationValue), {}),
   }),
+  /**
+   * "Keep going" or "stop here", at a checkpoint (§10).
+   *
+   * The one answer that may arrive before the loop waits for it: the 70 %
+   * warning is shown mid-stream, and the pupil may answer it long before the
+   * boundary that asks.
+   */
+  v.object({
+    requestId: v.string(),
+    kind: v.literal("continue"),
+    proceed: v.boolean(),
+  }),
 ]);
 
 export const POST: RequestHandler = async ({ params, request, locals }) => {
@@ -58,11 +70,15 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   const delivered = turnInteractions.answer({
     turnId: turn.id,
     requestId: answer.requestId,
-    answer:
-      answer.kind === "permission"
-        ? { kind: "permission", approved: answer.approved }
-        : { kind: "elicitation", values: answer.values, declined: answer.declined },
+    answer: answerFor(answer),
   });
 
   return json({ delivered });
 };
+
+/** The registry's own vocabulary, narrowed from the validated body. */
+function answerFor(answer: v.InferOutput<typeof RespondSchema>): InteractionAnswer {
+  if (answer.kind === "permission") return { kind: "permission", approved: answer.approved };
+  if (answer.kind === "continue") return { kind: "continue", proceed: answer.proceed };
+  return { kind: "elicitation", values: answer.values, declined: answer.declined };
+}

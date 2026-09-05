@@ -11,6 +11,7 @@ import {
   type RuntimeSources,
   staticDocument,
 } from "$lib/artifacts/document";
+import type { ProjectFiles } from "$lib/artifacts/project";
 import {
   ARTIFACT_CHANNEL,
   asHostMessage,
@@ -345,7 +346,8 @@ async function render(
   runId: string,
   artifactId: string,
   language: ArtifactLanguage,
-  source: string,
+  entry: string,
+  files: ProjectFiles,
 ): Promise<void> {
   currentRunId = runId;
   mountedRunId = null;
@@ -367,7 +369,15 @@ async function render(
     stageDocument(
       runId,
       artifactId,
-      staticDocument({ language: language as "html" | "svg", source, runtimes, runId, storage }),
+      staticDocument({
+        language: language as "html" | "svg",
+        source: files[entry] ?? "",
+        entry,
+        files,
+        runtimes,
+        runId,
+        storage,
+      }),
     );
     return;
   }
@@ -378,7 +388,7 @@ async function render(
   // Compiling and collecting the runtimes at once: neither needs the other, and
   // on a two-core machine the compile is the long pole either way (§20).
   const [result, runtimes] = await Promise.all([
-    compile({ id: runId, language: language as "jsx" | "tsx" | "svelte", source }),
+    compile({ id: runId, language: language as "jsx" | "tsx" | "svelte", entry, files }),
     runtimeSources(framework),
   ]);
 
@@ -396,7 +406,7 @@ async function render(
   stageDocument(
     runId,
     artifactId,
-    compiledDocument({ framework, module: result.code, runtimes, runId, storage }),
+    compiledDocument({ framework, module: result.code, css: result.css, runtimes, runId, storage }),
   );
 }
 
@@ -504,22 +514,26 @@ window.addEventListener("message", (event) => {
 
   // Nothing here may fail silently: a rejected render would leave the panel
   // waiting on a build that is never coming, with nothing to tell the pupil.
-  void render(message.runId, message.artifactId, message.language, message.source).catch(
-    (cause) => {
-      // Unless the stage has moved on. A render rejecting after a later one
-      // began is not what the panel is waiting on, and settling it here would
-      // take the terminal word off the run that is actually on screen.
-      if (currentRunId !== message.runId) return;
+  void render(
+    message.runId,
+    message.artifactId,
+    message.language,
+    message.entry,
+    message.files,
+  ).catch((cause) => {
+    // Unless the stage has moved on. A render rejecting after a later one
+    // began is not what the panel is waiting on, and settling it here would
+    // take the terminal word off the run that is actually on screen.
+    if (currentRunId !== message.runId) return;
 
-      settledRunId = message.runId;
-      toHost({
-        channel: ARTIFACT_CHANNEL,
-        type: "failed",
-        runId: message.runId,
-        message: cause instanceof Error ? cause.message : String(cause),
-      });
-    },
-  );
+    settledRunId = message.runId;
+    toHost({
+      channel: ARTIFACT_CHANNEL,
+      type: "failed",
+      runId: message.runId,
+      message: cause instanceof Error ? cause.message : String(cause),
+    });
+  });
 });
 
 toHost({ channel: ARTIFACT_CHANNEL, type: "ready" });

@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from "bun:test";
+import { defaultPathFor } from "../../artifacts/project";
+import type { ArtifactLanguage } from "../../artifacts/types";
 import type { AppDatabase } from "../db/client";
-import { appendArtifactVersion, recordVersionBuild } from "../db/queries/artifacts";
+import { appendSnapshot, recordVersionBuild } from "../db/queries/artifacts";
 import { createConversation } from "../db/queries/conversations";
 import { appendMessage } from "../db/queries/messages";
 import type { Message, MessagePart } from "../db/schema";
@@ -8,11 +10,33 @@ import { createTestDatabase, seedTestFixtures } from "../db/testing";
 import {
   buildArtifactContext,
   CARRIED_MAX_CHARS,
+  type CarriedSource,
   elideSupersededArtifacts,
   formatArtifactState,
   formatCarriedSources,
 } from "./artifact-context";
 import { recordTurnArtifacts } from "./artifacts";
+
+/**
+ * Append a one-file revision, the way every caller did before projects.
+ *
+ * These suites are about continuity, ordering and elision rather than about
+ * file layout, so they keep saying "here is the source" and this puts it at the
+ * conventional path for its language.
+ */
+function appendSource(
+  db: AppDatabase,
+  input: {
+    artifactId: string;
+    messageId?: string | null;
+    source: string;
+    language?: ArtifactLanguage | null;
+    authoredBy: "model" | "student";
+  },
+) {
+  const entry = defaultPathFor(input.language ?? "html");
+  return appendSnapshot(db, { ...input, entry, files: { [entry]: input.source } });
+}
 
 /**
  * What the model is told about the artifacts it has written (PRD §13).
@@ -135,7 +159,7 @@ describe("buildArtifactContext", () => {
 
   it("names the pupil when the newest revision is theirs", () => {
     const [recorded] = assistantTurn("```html id=side\n<p>en</p>\n```");
-    appendArtifactVersion(db, {
+    appendSource(db, {
       artifactId: recorded.artifactId,
       source: "<p>min</p>",
       authoredBy: "student",
@@ -251,7 +275,7 @@ describe("elideSupersededArtifacts", () => {
 
   it("keeps a delivered student edit that is still the current source", () => {
     const [recorded] = assistantTurn("```html id=side\n<p>en</p>\n```");
-    const version = appendArtifactVersion(db, {
+    const version = appendSource(db, {
       artifactId: recorded.artifactId,
       source: "<p>min</p>",
       authoredBy: "student",
@@ -277,7 +301,7 @@ describe("elideSupersededArtifacts", () => {
 
   it("turns a re-carried edit into a placeholder once the model has rewritten it", () => {
     const [recorded] = assistantTurn("```html id=side\n<p>en</p>\n```");
-    const version = appendArtifactVersion(db, {
+    const version = appendSource(db, {
       artifactId: recorded.artifactId,
       source: "<p>min</p>",
       authoredBy: "student",
@@ -397,7 +421,15 @@ describe("carried sources", () => {
     const { carried } = context(assistant("```html id=side\n<p>en</p>\n```"));
 
     expect(carried).toEqual([
-      { key: "side", language: "html", title: null, revision: 2, source: "<p>to</p>" },
+      {
+        key: "side",
+        language: "html",
+        title: null,
+        revision: 2,
+        entry: "index.html",
+        allPaths: ["index.html"],
+        missing: { "index.html": "<p>to</p>" },
+      },
     ]);
   });
 
@@ -415,7 +447,7 @@ describe("carried sources", () => {
 
   it("counts the pupil's own edit part as holding the source", () => {
     const [recorded] = assistantTurn("```html id=side\n<p>en</p>\n```");
-    const version = appendArtifactVersion(db, {
+    const version = appendSource(db, {
       artifactId: recorded.artifactId,
       source: "<p>min</p>",
       authoredBy: "student",
@@ -455,12 +487,14 @@ describe("carried sources", () => {
 });
 
 describe("formatCarriedSources", () => {
-  const item = {
+  const item: CarriedSource = {
     key: "side",
-    language: "html" as const,
+    language: "html",
     title: "Min side",
     revision: 2,
-    source: "<p>to</p>",
+    entry: "index.html",
+    allPaths: ["index.html"],
+    missing: { "index.html": "<p>to</p>" },
   };
 
   it("has nothing to say when the path holds everything", () => {
@@ -470,17 +504,17 @@ describe("formatCarriedSources", () => {
   it("names the artifact, then hands over the file in the shape it asks for", () => {
     const text = formatCarriedSources([item]);
 
-    expect(text).toContain('id=side (html) "Min side", revision 2, does not appear above.');
-    expect(text).toContain("reuse id=side and write the complete file.]");
+    expect(text).toContain('id=side (html) "Min side", revision 2, holds index.html.');
+    expect(text).toContain("reuse id=side with the same paths.]");
     // The same info string the model is asked to write, so it can copy the
     // identity off the block rather than translate it (§13).
-    expect(text).toContain('```html id=side title="Min side"');
+    expect(text).toContain('```html id=side path=index.html title="Min side"');
     expect(text).toContain("\n<p>to</p>\n");
   });
 
   it("opens a longer fence for a source that holds a fence of its own", () => {
     const source = ["<p>Sådan skriver du kode:</p>", "```", "et loop", "```"].join("\n");
-    const text = formatCarriedSources([{ ...item, source }]);
+    const text = formatCarriedSources([{ ...item, missing: { "index.html": source } }]);
 
     // A three-backtick fence would close on the artifact's own line, and the
     // rest of the file would reach the model as prose.
@@ -490,29 +524,115 @@ describe("formatCarriedSources", () => {
   });
 
   it("names an artifact it cannot afford to send, rather than dropping it", () => {
-    const big = { ...item, key: "stor", source: "x".repeat(CARRIED_MAX_CHARS + 1) };
+    const big = {
+      ...item,
+      key: "stor",
+      missing: { "index.html": "x".repeat(CARRIED_MAX_CHARS + 1) },
+    };
     const text = formatCarriedSources([big, { ...item, key: "lille" }]);
 
     // Named either way: a model told an artifact exists and shown nothing asks
     // about it; a model shown nothing at all rewrites it (§13).
     expect(text).toContain("id=stor (html)");
-    expect(text).toContain("Source omitted for length.]");
+    expect(text).toContain("Sources omitted for length.]");
     expect(text).not.toContain("x".repeat(100));
 
     // And the one that fits is still sent whole, past the one that did not.
-    expect(text).toContain('```html id=lille title="Min side"');
+    expect(text).toContain('```html id=lille path=index.html title="Min side"');
     expect(text).toContain("<p>to</p>");
   });
 
   it("bounds the batch and not each source, which is where the sum matters", () => {
     const half = "y".repeat(CARRIED_MAX_CHARS * 0.75);
     const text = formatCarriedSources([
-      { ...item, key: "en", source: half },
-      { ...item, key: "to", source: half },
+      { ...item, key: "en", missing: { "index.html": half } },
+      { ...item, key: "to", missing: { "index.html": half } },
     ]);
 
-    expect(text).toContain('```html id=en title="Min side"');
+    expect(text).toContain('```html id=en path=index.html title="Min side"');
     expect(text).toContain("id=to (html)");
-    expect(text).toContain("Source omitted for length.]");
+    expect(text).toContain("Sources omitted for length.]");
+  });
+});
+
+/**
+ * A project's context, per file (PRD §13, §22).
+ *
+ * The elision and the carrying both work file by file now: a revision that
+ * changed only the stylesheet leaves four of its five files at exactly the text
+ * an earlier revision holds, and eliding those is the whole point.
+ */
+describe("projects in the model's context", () => {
+  it("carries identical files when a legacy block does not name a unique path", () => {
+    assistantTurn(
+      "```html id=side path=index.html\nsame\n```\n```html id=side path=other.html\nsame\n```",
+    );
+    const legacy = context(assistant("```html id=side\nsame\n```"));
+    expect(legacy.carried[0].missing).toEqual({ "index.html": "same", "other.html": "same" });
+    const named = context(assistant("```html id=side path=index.html\nsame\n```"));
+    expect(named.carried[0].missing).toEqual({ "other.html": "same" });
+  });
+  const project = [
+    '```tsx id=tid path=src/App.tsx title="Tidslinje" entry',
+    "app",
+    "```",
+    "```css id=tid path=src/styles.css",
+    "css",
+    "```",
+  ].join("\n");
+
+  it("lists every file with its length, and marks the entry", () => {
+    assistantTurn(project);
+    const { state } = context();
+
+    expect(state[0].files).toEqual([
+      { path: "src/App.tsx", lines: 1, isEntry: true },
+      { path: "src/styles.css", lines: 1, isEntry: false },
+    ]);
+
+    const note = formatArtifactState(state);
+    expect(note).toContain("files: src/App.tsx (1 lines, entry), src/styles.css (1 lines)");
+    expect(note).toContain("writing only the");
+  });
+
+  it("elides the file a later write replaced and keeps the one it did not", () => {
+    assistantTurn(project);
+    assistantTurn("```css id=tid path=src/styles.css\nny css\n```");
+
+    const elided = elideSupersededArtifacts(
+      path(assistant(project), assistant("```css id=tid path=src/styles.css\nny css\n```")),
+      context().index,
+    );
+
+    const first = elided[0].parts[0];
+    const text = first.type === "text" ? first.text : "";
+
+    // The entry is untouched — it is still the current copy of that file.
+    expect(text).toContain("app");
+    // The stylesheet the model has since rewritten is gone.
+    expect(text).not.toContain("\ncss\n");
+    expect(text).toContain("superseded");
+  });
+
+  it("carries only the files the path lacks, under a header naming them all", () => {
+    assistantTurn(project);
+
+    // A branch holding the entry but never the stylesheet.
+    const { carried } = context(assistant("```tsx id=tid path=src/App.tsx entry\napp\n```"));
+
+    expect(carried).toHaveLength(1);
+    expect(carried[0].missing).toEqual({ "src/styles.css": "css" });
+    expect(carried[0].allPaths).toEqual(["src/App.tsx", "src/styles.css"]);
+
+    const text = formatCarriedSources(carried);
+    expect(text).toContain("holds src/App.tsx, src/styles.css");
+    expect(text).toContain("```css id=tid path=src/styles.css");
+    expect(text).not.toContain("\napp\n");
+  });
+
+  it("carries nothing when the path holds every file", () => {
+    assistantTurn(project);
+
+    expect(context(assistant(project)).carried).toEqual([]);
   });
 });

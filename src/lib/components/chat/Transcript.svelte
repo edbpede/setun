@@ -34,6 +34,8 @@ interface Props {
   onopenartifact?: (artifactId: string) => void;
   /** Which artifact the build surface is showing, so its card can say so (§13). */
   activeArtifactId?: string | null;
+  /** Whether the model's reasoning is rendered, once policy and preference agree (§20). */
+  showThinking?: boolean;
   /** The first-visit surface: shown only while the thread is genuinely empty. */
   empty?: Snippet;
   /** The turn's interactive parts and any refusal, rendered after the stream. */
@@ -48,6 +50,7 @@ let {
   onswitch,
   onopenartifact,
   activeArtifactId = null,
+  showThinking = true,
   empty,
   footer,
 }: Props = $props();
@@ -261,10 +264,11 @@ $effect(() => {
           {onswitch}
           {onopenartifact}
           {activeArtifactId}
+          {showThinking}
         />
       {/each}
 
-      <StreamingMessage turn={conversation.turn} />
+      <StreamingMessage turn={conversation.turn} {showThinking} />
 
       {@render footer?.()}
     </div>

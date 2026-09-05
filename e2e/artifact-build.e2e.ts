@@ -345,3 +345,122 @@ test("the pinned runtimes are served from the sandbox origin", async ({ request 
     expect(response.headers()["access-control-allow-origin"]).toBe("*");
   }
 });
+
+/**
+ * An artifact is a small project of files (PRD §13).
+ *
+ * The bundler is what makes that true: entry points live in an esbuild namespace
+ * with no filesystem behind them, and the plugin is the whole of the resolution.
+ */
+test("a tsx project bundles its own modules, data and styles", async ({ page }) => {
+  test.setTimeout(90_000);
+  await page.goto("/login");
+
+  const stage = await mountArtifact(page, {
+    language: "tsx",
+    entry: "src/App.tsx",
+    files: {
+      "src/App.tsx": [
+        'import { LABELS } from "./data";',
+        'import config from "./config.json";',
+        'import "./styles.css";',
+        "export default function App() {",
+        '  return <p id="out" className="malet">{LABELS[0]} — {config.title}</p>;',
+        "}",
+      ].join("\n"),
+      "src/data.ts": 'export const LABELS: string[] = ["Klik"];',
+      "src/config.json": '{"title":"Tidslinje"}',
+      "src/styles.css": ".malet { color: rgb(0, 128, 128) }",
+    },
+  });
+
+  await expect(stage.locator("#out")).toHaveText("Klik — Tidslinje", { timeout: 60_000 });
+  // The stylesheet travelled as its own esbuild output and was injected into the
+  // document, rather than arriving inside the module.
+  await expect(stage.locator("#out")).toHaveCSS("color", "rgb(0, 128, 128)");
+});
+
+test("a svelte child component compiles with its own styles", async ({ page }) => {
+  test.setTimeout(90_000);
+  await page.goto("/login");
+
+  const stage = await mountArtifact(page, {
+    language: "svelte",
+    entry: "App.svelte",
+    files: {
+      "App.svelte": [
+        "<script>",
+        '  import Badge from "./Badge.svelte";',
+        "</script>",
+        "<Badge />",
+      ].join("\n"),
+      "Badge.svelte": [
+        '<span id="out" class="badge">Færdig</span>',
+        "<style>.badge { color: rgb(0, 128, 128) }</style>",
+      ].join("\n"),
+    },
+  });
+
+  await expect(stage.locator("#out")).toHaveText("Færdig", { timeout: 60_000 });
+  await expect(stage.locator("#out")).toHaveCSS("color", "rgb(0, 128, 128)");
+});
+
+/**
+ * There is no network in the frame, so an import outside the pinned runtimes
+ * would otherwise fail at run time with a message about a module specifier.
+ */
+test("an import from outside the project is refused by name", async ({ page }) => {
+  test.setTimeout(90_000);
+  await page.goto("/login");
+
+  await mountArtifact(page, {
+    language: "tsx",
+    entry: "App.tsx",
+    files: {
+      "App.tsx": 'import confetti from "canvas-confetti";\nexport default () => <p>{confetti}</p>;',
+    },
+  });
+
+  await expect
+    .poll(async () => (await sandboxMessageTypes(page)).includes("failed"), { timeout: 60_000 })
+    .toBe(true);
+});
+
+test("a relative import naming nothing lists the files the project does hold", async ({ page }) => {
+  test.setTimeout(90_000);
+  await page.goto("/login");
+
+  await mountArtifact(page, {
+    language: "tsx",
+    entry: "App.tsx",
+    files: {
+      "App.tsx": 'import { x } from "./mangler";\nexport default () => <p>{x}</p>;',
+      "data.ts": "export const x = 1;",
+    },
+  });
+
+  await expect
+    .poll(async () => (await sandboxMessageTypes(page)).includes("failed"), { timeout: 60_000 })
+    .toBe(true);
+});
+
+test("an html project inlines the stylesheet and script it names", async ({ page }) => {
+  await page.goto("/login");
+
+  const stage = await mountArtifact(page, {
+    language: "html",
+    entry: "index.html",
+    files: {
+      "index.html": [
+        "<!doctype html><html><head>",
+        '<link rel="stylesheet" href="styles.css">',
+        '</head><body><p id="out">Side</p><script src="main.js"></script></body></html>',
+      ].join("\n"),
+      "styles.css": "#out { color: rgb(0, 128, 128) }",
+      "main.js": 'document.getElementById("out").textContent = "Kørt";',
+    },
+  });
+
+  await expect(stage.locator("#out")).toHaveText("Kørt");
+  await expect(stage.locator("#out")).toHaveCSS("color", "rgb(0, 128, 128)");
+});

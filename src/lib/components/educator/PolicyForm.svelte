@@ -75,6 +75,28 @@ const field = "rounded-md border border-input bg-background px-3 py-2 text-sm te
         </select>
       </label>
 
+      <!--
+        Whether pupils may watch the model reason (§20).
+        `student` is the default and leaves it to the pupil's own device
+        setting; the other two decide for the class, and `hidden` is enforced
+        server-side rather than by hiding a control (§21).
+      -->
+      <label class="flex flex-col gap-1">
+        <span class="text-xs text-muted-foreground">
+          {m.educator_thinking_visibility_label()}
+        </span>
+        <select
+          name="thinkingVisibility"
+          bind:value={$form.thinkingVisibility}
+          class="h-9 {field}"
+        >
+          <option value="student">{m.educator_thinking_student()}</option>
+          <option value="shown">{m.educator_thinking_shown()}</option>
+          <option value="hidden">{m.educator_thinking_hidden()}</option>
+        </select>
+        <span class="text-xs text-muted-foreground">{m.educator_thinking_visibility_help()}</span>
+      </label>
+
       <label class="flex flex-col gap-1">
         <span class="text-xs text-muted-foreground">{m.educator_session_policy_label()}</span>
         <select name="sessionPolicy" bind:value={$form.sessionPolicy} class="h-9 {field}">

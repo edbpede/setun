@@ -4,9 +4,11 @@ import { requireStudentPage } from "$lib/server/auth/guards";
 import { getDb, getFileStore } from "$lib/server/boot";
 import { getConfig } from "$lib/server/config";
 import {
+  attachSnapshots,
   countArtifactVersions,
   deleteOwnedArtifact,
   listStudentArtifacts,
+  pruneOrphanBlobs,
 } from "$lib/server/db/queries/artifacts";
 import { deleteOwnedImage, listStudentImages } from "$lib/server/db/queries/images";
 import type { Actions, PageServerLoad } from "./$types";
@@ -30,22 +32,26 @@ export const load: PageServerLoad = ({ locals }) => {
   const db = getDb();
 
   return {
-    artifacts: listStudentArtifacts(db, student.id).map(({ artifact, latest }) => ({
-      id: artifact.id,
-      language: artifact.language,
-      title: artifact.title,
-      versionCount: countArtifactVersions(db, artifact.id),
-      latest: {
-        id: latest.id,
-        revision: latest.revision,
-        source: latest.source,
-        // Null reads as "whatever the artifact says"; the gallery frame runs it
-        // through `effectiveLanguage` rather than the row's current tag (§13).
-        language: latest.language,
-        authoredBy: latest.authoredBy,
-        createdAt: latest.createdAt.toISOString(),
-      },
-    })),
+    artifacts: attachSnapshots(db, listStudentArtifacts(db, student.id)).map(
+      ({ artifact, latest, source, snapshot }) => ({
+        id: artifact.id,
+        language: artifact.language,
+        title: artifact.title,
+        versionCount: countArtifactVersions(db, artifact.id),
+        latest: {
+          id: latest.id,
+          revision: latest.revision,
+          source,
+          entry: snapshot.entry,
+          files: snapshot.files,
+          // Null reads as "whatever the artifact says"; the gallery frame runs it
+          // through `effectiveLanguage` rather than the row's current tag (§13).
+          language: latest.language,
+          authoredBy: latest.authoredBy,
+          createdAt: latest.createdAt.toISOString(),
+        },
+      }),
+    ),
     images: listStudentImages(db, student.id).map((image) => ({
       id: image.id,
       prompt: image.prompt,
@@ -65,7 +71,12 @@ export const actions: Actions = {
 
     // Owner-scoped in the statement: naming somebody else's artifact deletes
     // nothing and is reported exactly as deleting one's own is (§21).
-    deleteOwnedArtifact(getDb(), { artifactId: parsed.output.id, studentId: student.id });
+    const db = getDb();
+    if (deleteOwnedArtifact(db, { artifactId: parsed.output.id, studentId: student.id })) {
+      // A blob is shared between revisions and between artifacts, so it cannot
+      // cascade from the rows that went; the sweep is what actually frees it (§16).
+      pruneOrphanBlobs(db);
+    }
 
     return { deleted: true };
   },

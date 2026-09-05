@@ -1,5 +1,6 @@
 import { redirect } from "@sveltejs/kit";
 import { effectiveArtifactKey, effectiveLanguage } from "$lib/artifacts/identity";
+import { diffFileLists } from "$lib/artifacts/project";
 import type { ArtifactLanguage, BuildStatus } from "$lib/artifacts/types";
 import { generationAliases } from "$lib/server/agent/image-generation";
 import { requireStudentPage } from "$lib/server/auth/guards";
@@ -8,7 +9,13 @@ import { getDb } from "$lib/server/boot";
 import { classroomAvailability } from "$lib/server/classroom/enforcement";
 import { resolveClassroomStatus } from "$lib/server/classroom/status";
 import { getConfig } from "$lib/server/config";
-import { listConversationArtifacts, versionsByMessage } from "$lib/server/db/queries/artifacts";
+import {
+  attachSnapshots,
+  listConversationArtifacts,
+  listVersionFiles,
+  previousVersionIds,
+  versionsByMessage,
+} from "$lib/server/db/queries/artifacts";
 import { listPendingAttachments } from "$lib/server/db/queries/attachments";
 import { listClassroomAliases } from "$lib/server/db/queries/classroom-aliases";
 import { getClassroom } from "$lib/server/db/queries/classrooms";
@@ -65,13 +72,39 @@ export const load: PageServerLoad = ({ locals, url }) => {
       language: ArtifactLanguage;
       title: string | null;
       buildStatus: BuildStatus | null;
+      entry: string;
+      fileCount: number;
+      added: number;
+      modified: number;
     }[]
   >();
-  for (const { artifact, version } of versionsByMessage(
+  const written = versionsByMessage(
     db,
     path.map((message) => message.id),
-  )) {
+  );
+  /**
+   * What each revision holds and what it changed, without its content (§13).
+   *
+   * The transcript's card says "3 files · +1 ~2", which is the whole of what a
+   * pupil needs to see from a message that revised one file of a project — and
+   * none of it needs the sources.
+   */
+  const filesByVersion = new Map<string, { path: string; hash: string }[]>();
+  const writtenIds = written.map(({ version }) => version.id);
+  const predecessors = previousVersionIds(db, writtenIds);
+  for (const file of listVersionFiles(db, [
+    ...new Set([...writtenIds, ...predecessors.values()]),
+  ])) {
+    filesByVersion.set(file.versionId, [...(filesByVersion.get(file.versionId) ?? []), file]);
+  }
+
+  for (const { artifact, version } of written) {
     if (!version.messageId) continue;
+
+    const files = filesByVersion.get(version.id) ?? [];
+    const previousId = predecessors.get(version.id);
+    const previous = previousId ? (filesByVersion.get(previousId) ?? []) : [];
+    const changes = diffFileLists(previous, files);
 
     const held = messageArtifacts.get(version.messageId) ?? [];
     held.push({
@@ -84,6 +117,10 @@ export const load: PageServerLoad = ({ locals, url }) => {
       language: effectiveLanguage(artifact, version),
       title: artifact.title,
       buildStatus: version.buildStatus,
+      entry: version.entryPath,
+      fileCount: files.length,
+      added: changes.filter((change) => change.change === "added").length,
+      modified: changes.filter((change) => change.change === "modified").length,
     });
     messageArtifacts.set(version.messageId, held);
   }
@@ -148,6 +185,14 @@ export const load: PageServerLoad = ({ locals, url }) => {
     // hiding a control is never access control (§8, §10, §21).
     attachmentsEnabled: student.attachmentsEnabled ?? classroom?.attachmentsEnabled ?? false,
     imageModeAvailable: generationAliases(db, student.classroomId).length > 0,
+    /**
+     * Whether this classroom lets the pupil see the model reason (§20).
+     *
+     * Presentation only: `hidden` is enforced in the runner, which drops the
+     * events before the turn is buffered, so a pupil cannot reach the reasoning
+     * by any route whatever this value says (§21).
+     */
+    thinkingVisibility: classroom?.thinkingVisibility ?? "student",
     // Uploads the pupil made before this reload; the composer shows them again.
     pendingAttachments: active
       ? listPendingAttachments(db, { studentId: student.id, conversationId: active.id }).map(
@@ -164,10 +209,10 @@ export const load: PageServerLoad = ({ locals, url }) => {
     // Artifacts this conversation produced, each with the revision on screen.
     // Creations outlive conversations, so the gallery reads them separately (§16).
     artifacts: active
-      ? listConversationArtifacts(db, {
-          conversationId: active.id,
-          studentId: student.id,
-        }).map(({ artifact, latest }) => ({
+      ? attachSnapshots(
+          db,
+          listConversationArtifacts(db, { conversationId: active.id, studentId: student.id }),
+        ).map(({ artifact, latest, source, snapshot }) => ({
           id: artifact.id,
           language: artifact.language,
           title: artifact.title,
@@ -175,7 +220,9 @@ export const load: PageServerLoad = ({ locals, url }) => {
           latest: {
             id: latest.id,
             revision: latest.revision,
-            source: latest.source,
+            source,
+            entry: snapshot.entry,
+            files: snapshot.files,
             language: latest.language,
             authoredBy: latest.authoredBy,
             buildStatus: latest.buildStatus,

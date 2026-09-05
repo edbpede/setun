@@ -1,6 +1,12 @@
-import { artifactLanguage, type DetectedArtifact, detectArtifacts } from "./detect";
+import {
+  artifactLanguage,
+  type DetectedArtifact,
+  detectArtifacts,
+  groupProjectWrites,
+} from "./detect";
 import { CARRIED, type OpenFence, type ScannedFences, scanFences } from "./fences";
 import { normaliseArtifactKey } from "./identity";
+import { normaliseProjectPath } from "./project";
 import type { ArtifactLanguage } from "./types";
 
 /**
@@ -24,15 +30,15 @@ export type ArtifactSegment =
       /**
        * Position among the message's artifacts, counting from `firstIndex`.
        *
-       * A message's text arrives as several parts, and the artifact refs the
-       * server hands back are numbered across the whole message — so the caller
-       * carries the running count between parts rather than each part starting
-       * at zero.
+       * artifactMessageSegments numbers writes across the whole message;
+       * artifactSegments can offset an isolated part with firstIndex.
        */
       readonly index: number;
       readonly artifact: DetectedArtifact;
       /** The block as written, fences included, for the fallback rendering. */
       readonly raw: string;
+      /** Every path this write states, so the card can say how many files (§13). */
+      readonly files: readonly string[];
     };
 
 /**
@@ -42,33 +48,54 @@ export type ArtifactSegment =
  * lines: the gap between a paragraph and the block below it is not a paragraph.
  */
 export function artifactSegments(markdown: string, firstIndex = 0): ArtifactSegment[] {
-  const found = detectArtifacts(markdown);
-  if (found.length === 0) {
-    return markdown.trim() ? [{ kind: "text", text: markdown }] : [];
-  }
+  return artifactMessageSegments([markdown])[0].map((segment) =>
+    segment.kind === "artifact" ? { ...segment, index: segment.index + firstIndex } : segment,
+  );
+}
 
+/** Group across the same joined text as the recorder, keeping each part's prose in place. */
+export function artifactMessageSegments(texts: readonly string[]): ArtifactSegment[][] {
+  const markdown = texts.join("\n");
   const lines = markdown.split("\n");
-  const segments: ArtifactSegment[] = [];
-  let at = 0;
-
-  found.forEach((artifact, offset) => {
-    const before = lines.slice(at, artifact.line).join("\n");
-    if (before.trim()) segments.push({ kind: "text", text: before });
-
-    segments.push({
+  const detected = detectArtifacts(markdown);
+  const writes = groupProjectWrites(detected);
+  const cards = new Map<number, Extract<ArtifactSegment, { kind: "artifact" }>>();
+  writes.forEach((write, index) => {
+    const first = write.blocks[0];
+    cards.set(first.line, {
       kind: "artifact",
-      index: firstIndex + offset,
-      artifact,
-      raw: lines.slice(artifact.line, artifact.endLine + 1).join("\n"),
+      index,
+      artifact: first,
+      raw: write.blocks
+        .map((block) => lines.slice(block.line, block.endLine + 1).join("\n"))
+        .join("\n"),
+      files: write.blocks.flatMap((block) => (block.path ? [block.path] : [])),
     });
-
-    at = artifact.endLine + 1;
   });
 
-  const after = lines.slice(at).join("\n");
-  if (after.trim()) segments.push({ kind: "text", text: after });
+  let start = 0;
+  return texts.map((text) => {
+    const end = start + text.split("\n").length;
+    const segments: ArtifactSegment[] = [];
+    let at = start;
+    const prose = (from: number, to: number) => {
+      const text = lines.slice(from, to).join("\n");
+      if (text.trim()) segments.push({ kind: "text", text });
+    };
 
-  return segments;
+    // Walk individual ranges in document order. Grouping must never swallow
+    // prose or another project's fences between files of the same write.
+    for (const block of detected) {
+      if (block.endLine < start || block.line >= end) continue;
+      prose(at, Math.max(at, block.line));
+      const card = cards.get(block.line);
+      if (card && block.line >= start) segments.push(card);
+      at = Math.min(end, block.endLine + 1);
+    }
+    prose(at, end);
+    start = end;
+    return segments;
+  });
 }
 
 /**
@@ -95,10 +122,38 @@ export type StreamingSegment =
       readonly language: ArtifactLanguage;
       readonly key: string | null;
       readonly title: string | null;
+      /**
+       * How many lines of the file have arrived so far (§20).
+       *
+       * A long artifact can take a minute to write, and a stub that says only
+       * "building" for the whole of it looks stuck. A count that climbs is the
+       * cheapest honest sign that something is happening.
+       */
+      readonly lines: number;
+      /** Which file of the project is arriving, when the fence named one. */
+      readonly path: string | null;
     };
 
 /** Anything that is not whitespace, tested without allocating a trimmed copy. */
 const NON_BLANK = /\S/;
+
+/**
+ * How many lines a fence body holds, given the rows it was split into.
+ *
+ * A body ending in a newline has finished its last line; one ending mid-line is
+ * still on it, and that line counts — the pupil can see it being typed.
+ */
+function bodyLines(rows: readonly string[]): number {
+  if (rows.length === 0) return 0;
+  return rows.length - 1 + (rows.at(-1) === "" ? 0 : 1);
+}
+
+/** Newlines in a piece, counted without allocating a split of it. */
+function countNewlines(piece: string): number {
+  let count = 0;
+  for (let at = piece.indexOf("\n"); at !== -1; at = piece.indexOf("\n", at + 1)) count++;
+  return count;
+}
 
 export function streamingSegments(markdown: string): StreamingSegment[] {
   // The scanner's own line array, not a second split of the same string: this
@@ -144,7 +199,21 @@ export function streamingMessageSegments(texts: readonly string[]): StreamingSeg
    * would make a long artifact cost more with every part it crosses. They are
    * joined once, when the fence closes and a card needs its source.
    */
-  let stub: { at: number; open: OpenFence; source: string[]; bodied: boolean } | null = null;
+  let stub: {
+    at: number;
+    open: OpenFence;
+    source: string[];
+    bodied: boolean;
+    /**
+     * The running line count, kept incrementally for the same reason `bodied`
+     * is: this walk runs again on every delta, and re-joining the source to
+     * count its lines would make a long artifact cost more with every part it
+     * crosses.
+     */
+    newlines: number;
+    endsWithNewline: boolean;
+    nonEmpty: boolean;
+  } | null = null;
 
   texts.forEach((text, at) => {
     const scanned = scanFences(text, carried);
@@ -170,6 +239,12 @@ export function streamingMessageSegments(texts: readonly string[]): StreamingSeg
       // Still open, so the whole of this part is inside it.
       stub.source.push(text);
       stub.bodied = bodied;
+      stub.newlines += countNewlines(text);
+      if (text.length > 0) {
+        stub.nonEmpty = true;
+        stub.endsWithNewline = text.endsWith("\n");
+      }
+      growStub(scans[stub.at], stub.newlines + (stub.nonEmpty && !stub.endsWithNewline ? 1 : 0));
     }
 
     const open = scanned.open;
@@ -183,11 +258,29 @@ export function streamingMessageSegments(texts: readonly string[]): StreamingSeg
       return;
     }
 
-    const head = scanned.lines.slice(open.line + 1).join("\n");
-    stub = { at, open, source: [head], bodied: NON_BLANK.test(head) };
+    const rows = scanned.lines.slice(open.line + 1);
+    const head = rows.join("\n");
+    stub = {
+      at,
+      open,
+      source: [head],
+      bodied: NON_BLANK.test(head),
+      newlines: Math.max(0, rows.length - 1),
+      endsWithNewline: rows.at(-1) === "",
+      nonEmpty: head.length > 0,
+    };
   });
 
   return scans;
+}
+
+/** Update the line count on a stub whose fence later parts are still filling. */
+function growStub(segments: StreamingSegment[], lines: number): void {
+  const at = segments.findIndex((segment) => segment.kind === "pending");
+  const pending = at === -1 ? null : segments[at];
+  if (pending?.kind !== "pending") return;
+
+  segments[at] = { ...pending, lines };
 }
 
 /**
@@ -206,11 +299,15 @@ function nameStub(segments: StreamingSegment[], open: OpenFence, source: string)
     kind: "artifact",
     artifact: {
       language,
+      kind: language,
       source,
       line: open.line,
       endLine: CARRIED,
       key: normaliseArtifactKey(open.attributes.id),
       title: open.attributes.title?.trim() || null,
+      path: null,
+      deleted: false,
+      entry: false,
     },
   };
 }
@@ -278,11 +375,15 @@ function segmentsOf(
       kind: "artifact",
       artifact: {
         language,
+        kind: language,
         source: block.source,
         line: block.line,
         endLine: block.endLine,
         key: normaliseArtifactKey(block.attributes.id),
         title: block.attributes.title?.trim() || null,
+        path: null,
+        deleted: false,
+        entry: false,
       },
     });
   }
@@ -296,6 +397,8 @@ function segmentsOf(
       language: pendingLanguage,
       key: normaliseArtifactKey(open.attributes.id),
       title: open.attributes.title?.trim() || null,
+      lines: bodyLines(lines.slice(open.line + 1)),
+      path: normaliseProjectPath(open.attributes.path),
     });
   }
 
@@ -304,5 +407,8 @@ function segmentsOf(
 
 /** How many artifacts a piece of prose holds — the running count between parts. */
 export function artifactSegmentCount(markdown: string): number {
-  return detectArtifacts(markdown).length;
+  // Writes, not fences: three fences under one id are one card and one recorded
+  // revision, and counting them separately would put the transcript's cards out
+  // of step with what the server stored (§13).
+  return groupProjectWrites(detectArtifacts(markdown)).length;
 }

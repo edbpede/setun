@@ -5,6 +5,8 @@ import * as m from "../src/lib/paraglide/messages";
 import { E2E_DATABASE_PATH, E2E_PEPPER, E2E_STORAGE_PATH } from "../playwright.config";
 import {
   ARTIFACT_MARKER,
+  ARTIFACT_PROJECT_MARKER,
+  ARTIFACT_PROJECT_REVISION_MARKER,
   ARTIFACT_REVISION_MARKER,
   ARTIFACT_SECOND_MARKER,
 } from "./support/stub-gateway";
@@ -148,7 +150,17 @@ test("a student builds an artifact, edits it, and the edit travels back", async 
   expect(body.versions).toHaveLength(2);
   expect(body.versions[0].authoredBy).toBe("model");
   expect(body.versions[1].authoredBy).toBe("student");
-  expect(body.versions[1].source).toContain("Min knap");
+  // The list carries paths and sizes; the content is its own request, because a
+  // project of a hundred kilobytes revised twenty times would otherwise arrive
+  // whole every time the History tab opened (§13).
+  expect(body.versions[1].files.map((file: { path: string }) => file.path)).toEqual([
+    "index.html",
+  ]);
+
+  const edited = await (
+    await page.request.get(`/api/artifacts/${artifactId}/versions/${body.versions[1].id}`)
+  ).json();
+  expect(edited.files["index.html"]).toContain("Min knap");
   // Each revision carries the tag it was written under, so restoring one later
   // does not run it through the pipeline the row has since moved to (§13).
   expect(body.versions[0].language).toBe("html");
@@ -179,16 +191,62 @@ test("a student builds an artifact, edits it, and the edit travels back", async 
   // and doing it earlier would have made *that* the edit carried above rather
   // than the one the pupil typed into CodeMirror.
   const posted = await page.request.post(`/api/artifacts/${artifactId}/versions`, {
-    data: { source: "<p>en komponent</p>", language: "svelte" },
+    data: {
+      files: { "App.svelte": "<p>en komponent</p>" },
+      deletes: ["index.html"],
+      entry: "App.svelte",
+      language: "svelte",
+    },
   });
   expect(posted.status()).toBe(201);
   expect((await posted.json()).language).toBe("svelte");
 
   // And a tag Setun does not recognise is refused before it reaches the database.
   const refused = await page.request.post(`/api/artifacts/${artifactId}/versions`, {
-    data: { source: "<p>nej</p>", language: "cobol" },
+    data: { files: { "index.html": "<p>nej</p>" }, language: "cobol" },
   });
   expect(refused.status()).toBe(400);
+
+  // As is a path that would leave the project (§21).
+  const escaped = await page.request.post(`/api/artifacts/${artifactId}/versions`, {
+    data: { files: { "../stjaalet.html": "<p>nej</p>" } },
+  });
+  expect(escaped.status()).toBe(400);
+});
+
+test("history retains deleted paths and language-only restores create revisions", async ({ page }) => {
+  test.setTimeout(120_000);
+  const { code } = await provisionStudent();
+  await signIn(page, code);
+  await askForArtifact(page);
+  const artifactId = await page.locator("[data-artifact-id]").first().getAttribute("data-artifact-id");
+  const endpoint = `/api/artifacts/${artifactId}/versions`;
+  const files = { "index.html": "<p>same source</p>", "styles.css": "p { color: red }" };
+
+  const initial = await page.request.post(endpoint, {
+    data: { files, entry: "index.html", language: "html", replace: true },
+  });
+  expect(initial.status()).toBe(201);
+  const changed = await page.request.post(endpoint, {
+    data: { files, entry: "index.html", language: "svg", replace: true },
+  });
+  expect(changed.status()).toBe(201);
+  expect((await changed.json()).language).toBe("svg");
+  const unchanged = await page.request.post(endpoint, {
+    data: { files, entry: "index.html", language: "svg", replace: true },
+  });
+  expect(unchanged.status()).toBe(200);
+
+  const removed = await page.request.post(endpoint, {
+    data: { files: {}, deletes: ["styles.css"], language: "svg" },
+  });
+  expect(removed.status()).toBe(201);
+  const history = await (await page.request.get(`/api/artifacts/${artifactId}`)).json();
+  expect(history.versions.at(-1).files).toContainEqual({
+    path: "styles.css",
+    bytes: new TextEncoder().encode(files["styles.css"]).length,
+    change: "deleted",
+  });
 });
 
 test("the creations gallery holds what the student made", async ({ page }) => {
@@ -237,7 +295,7 @@ test("a student cannot reach another student's artifact", async ({ browser }) =>
   expect(read.status()).toBe(404);
 
   const write = await intruderPage.request.post(`/api/artifacts/${target}/versions`, {
-    data: { source: "<p>stjålet</p>" },
+    data: { files: { "index.html": "<p>stjålet</p>" } },
   });
   expect(write.status()).toBe(404);
 
@@ -289,7 +347,11 @@ test("a second turn revises the same artifact rather than replacing it", async (
   expect(stored.key).toBe("klikkeren");
   expect(stored.versions).toHaveLength(2);
   expect(stored.versions[1].authoredBy).toBe("model");
-  expect(stored.versions[1].source).toContain("quiz");
+
+  const revised = await (
+    await page.request.get(`/api/artifacts/${artifactId}/versions/${stored.versions[1].id}`)
+  ).json();
+  expect(revised.files[revised.entry]).toContain("quiz");
 
   // A different id is a different thing, not a revision of this one.
   await ask(page, `${ARTIFACT_SECOND_MARKER} lav et logo`, 2);
@@ -410,4 +472,113 @@ test("a build outcome cannot be written to somebody else's artifact", async ({ b
   await ownerContext.close();
   await intruderContext.close();
   await unauthenticated.close();
+});
+
+/**
+ * An artifact built from several fences, revised one file at a time (PRD §13).
+ *
+ * The whole economy of a project: the model writes an entry and a stylesheet,
+ * the pupil edits one file, and the next turn re-emits only the stylesheet —
+ * with the page it did not mention carried through untouched.
+ */
+test("is built from several fences, edited one file at a time, and revised by one", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  const { code } = await provisionStudent();
+
+  await signIn(page, code);
+  await startConversation(page);
+  await ask(page, `${ARTIFACT_PROJECT_MARKER} lav et projekt`, 1);
+
+  // The card in the transcript says it is a project, not a file. Scoped to the
+  // transcript: the panel's own header says the same thing beside it.
+  await expect(
+    page.locator("[data-artifact-card]").getByText(m.artifact_files_count({ count: 2 })),
+  ).toBeVisible({ timeout: 20_000 });
+
+  // The frame runs the entry with its stylesheet inlined: there is no network in
+  // there, so an untouched `<link href>` would silently do nothing (§13).
+  const stage = page
+    .frameLocator('iframe[title="' + m.artifact_frame_title() + '"]')
+    .frameLocator("#stage");
+  await expect(stage.locator("#hilsen")).toHaveText("Hej fra projektet", { timeout: 20_000 });
+  await expect(stage.locator("#hilsen")).toHaveCSS("color", "rgb(0, 128, 128)");
+
+  // The tree lists both files and the editor opens on the entry.
+  await page.getByRole("tab", { name: m.artifact_tab_code() }).click();
+  await expect(page.getByRole("tree", { name: m.artifact_file_tree_label() })).toBeVisible({
+    timeout: 20_000,
+  });
+  await expect(page.getByRole("treeitem", { name: /index\.html/ })).toBeVisible();
+
+  // Edit the stylesheet, which is not the entry: the file the pupil picks is
+  // the file the editor holds.
+  await page.getByRole("treeitem", { name: /styles\.css/ }).click();
+  const editor = page.locator(".cm-content");
+  await expect(editor).toBeVisible({ timeout: 20_000 });
+
+  await editor.click();
+  await page.keyboard.press("ControlOrMeta+a");
+  await page.keyboard.type("#hilsen { color: rgb(255, 0, 0) }");
+  await page.getByRole("button", { name: m.artifact_run() }).click();
+
+  await expect(stage.locator("#hilsen")).toHaveCSS("color", "rgb(255, 0, 0)", { timeout: 20_000 });
+
+  const artifactId = await page
+    .locator("[data-artifact-id]")
+    .first()
+    .getAttribute("data-artifact-id");
+
+  // The pupil's revision holds both files: only the stylesheet was posted, and
+  // the page it did not mention was carried through (§13).
+  const stored = await (await page.request.get(`/api/artifacts/${artifactId}`)).json();
+  expect(stored.versions).toHaveLength(2);
+  expect(stored.versions[1].authoredBy).toBe("student");
+  expect(
+    stored.versions[1].files.map((file: { path: string }) => file.path).sort(),
+  ).toEqual(["index.html", "styles.css"]);
+  // And the history says what it actually changed, which is one file of two.
+  expect(
+    stored.versions[1].files.filter(
+      (file: { change: string }) => file.change !== "unchanged",
+    ),
+  ).toHaveLength(1);
+
+  const edited = await (
+    await page.request.get(`/api/artifacts/${artifactId}/versions/${stored.versions[1].id}`)
+  ).json();
+  expect(edited.files["index.html"]).toContain("Hej fra projektet");
+  expect(edited.files["styles.css"]).toContain("rgb(255, 0, 0)");
+
+  // A second turn that re-emits only the stylesheet: the page survives it.
+  //
+  // Waited for by the revision rather than by the build count, which is already
+  // one and would let the assertions run before the turn had landed.
+  await showChatOnly(page);
+  await page
+    .getByRole("textbox", { name: m.chat_composer_label() })
+    .fill(`${ARTIFACT_PROJECT_REVISION_MARKER} skift farven`);
+  await page.getByRole("button", { name: m.chat_send() }).click();
+
+  await expect
+    .poll(
+      async () =>
+        (await (await page.request.get(`/api/artifacts/${artifactId}`)).json()).versions.length,
+      { timeout: 30_000 },
+    )
+    .toBe(3);
+
+  const revised = await (await page.request.get(`/api/artifacts/${artifactId}`)).json();
+  expect(revised.versions[2].authoredBy).toBe("model");
+  // One file of two, which is the whole economy of it.
+  expect(
+    revised.versions[2].files.filter((file: { change: string }) => file.change !== "unchanged"),
+  ).toHaveLength(1);
+
+  const latest = await (
+    await page.request.get(`/api/artifacts/${artifactId}/versions/${revised.versions[2].id}`)
+  ).json();
+  expect(latest.files["index.html"]).toContain("Hej fra projektet");
+  expect(latest.files["styles.css"]).toContain("rgb(128, 0, 128)");
 });

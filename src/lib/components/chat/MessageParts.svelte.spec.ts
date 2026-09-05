@@ -35,6 +35,22 @@ function ref(overrides: Partial<MessageArtifactRef> = {}): MessageArtifactRef {
 }
 
 describe("MessageParts artifact cards", () => {
+  it("shows one project card across text parts and preserves intervening prose", async () => {
+    render(MessageParts, {
+      parts: [
+        { type: "text", text: "```html id=side path=index.html\n<p>hi</p>\n```\nMore files next." },
+        { type: "thinking", text: "Choosing a colour" },
+        { type: "text", text: "A teal page.\n```css id=side path=styles.css\np {color:teal}\n```" },
+      ],
+      artifacts: [ref()],
+    });
+    await expect
+      .element(page.getByRole("button", { name: m.artifact_card_label({ title: "Min side" }) }))
+      .toBeVisible();
+    await expect.element(page.getByText("More files next.")).toBeVisible();
+    await expect.element(page.getByText("A teal page.")).toBeVisible();
+    await expect.element(page.getByText("p {color:teal}")).not.toBeInTheDocument();
+  });
   it("shows what was built, with its identity in the mono line", async () => {
     render(MessageParts, { parts: text(PROSE), artifacts: [ref()] });
 
@@ -154,5 +170,32 @@ describe("MessageParts artifact cards", () => {
     render(MessageParts, { parts: text(PROSE), artifacts: [ref()], plain: true });
 
     await expect.element(page.getByText("<p>hi</p>")).toBeVisible();
+  });
+});
+
+/**
+ * The reasoning in a settled message (PRD §20, §22).
+ *
+ * A part that is not rendered is skipped, not deleted: the summary stays on the
+ * message, and turning the switch back on shows it again.
+ */
+describe("MessageParts — thinking", () => {
+  const parts = [
+    { type: "thinking" as const, text: "Overvejer opgaven" },
+    { type: "text" as const, text: "Et loop gentager noget." },
+  ];
+
+  it("renders the reasoning as a collapsed block beside the answer", async () => {
+    render(MessageParts, { parts });
+
+    await expect.element(page.getByText(m.chat_thoughts())).toBeVisible();
+    await expect.element(page.getByText("Et loop gentager noget.")).toBeVisible();
+  });
+
+  it("skips it where the classroom or the pupil has it off", async () => {
+    render(MessageParts, { parts, showThinking: false });
+
+    await expect.element(page.getByText(m.chat_thoughts())).not.toBeInTheDocument();
+    await expect.element(page.getByText("Et loop gentager noget.")).toBeVisible();
   });
 });

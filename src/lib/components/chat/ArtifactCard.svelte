@@ -30,6 +30,24 @@ interface Props {
 let { artifact, active = false, onopen }: Props = $props();
 
 const title = $derived(artifact.title ?? m.artifact_untitled({ language: artifact.language }));
+
+/** Only where there is more than one: "1 file" is noise on every card. */
+const files = $derived(
+  (artifact.fileCount ?? 1) > 1
+    ? ` · ${m.artifact_files_count({ count: artifact.fileCount ?? 0 })}`
+    : "",
+);
+
+const changes = $derived(
+  [
+    (artifact.added ?? 0) > 0 ? m.artifact_history_added({ count: artifact.added ?? 0 }) : "",
+    (artifact.modified ?? 0) > 0
+      ? m.artifact_history_modified({ count: artifact.modified ?? 0 })
+      : "",
+  ]
+    .filter((part) => part.length > 0)
+    .join(" · "),
+);
 </script>
 
 <button
@@ -52,8 +70,15 @@ const title = $derived(artifact.title ?? m.artifact_untitled({ language: artifac
   <span class="min-w-0 flex-1">
     <span class="block truncate text-sm font-medium text-card-foreground">{title}</span>
     <span class="block truncate font-mono text-xs tabular-nums text-muted-foreground">
-      {m.artifact_id_label()}={artifact.key} · {artifact.language} · v{artifact.revision}
+      {m.artifact_id_label()}={artifact.key} · {artifact.language} · v{artifact.revision}{files}
     </span>
+    {#if changes}
+      <!--
+        What this revision *did*, which is what makes a project legible: a
+        message that changed one file of five should read as one change (§13).
+      -->
+      <span class="block truncate text-xs text-muted-foreground">{changes}</span>
+    {/if}
   </span>
 
   <span

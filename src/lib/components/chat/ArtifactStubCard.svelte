@@ -22,9 +22,19 @@ interface Props {
   title: string | null;
   /** True while the fence is still open, which is the one still being written. */
   pending?: boolean;
+  /**
+   * How many lines of the file have arrived (§20).
+   *
+   * A long artifact takes a minute to write, and "Building…" alone for the whole
+   * of it looks stuck. A count that climbs is the cheapest honest sign that work
+   * is happening.
+   */
+  lines?: number;
+  /** Which file of the project is arriving, when the fence named one. */
+  path?: string | null;
 }
 
-let { language, artifactKey, title, pending = false }: Props = $props();
+let { language, artifactKey, title, pending = false, lines = 0, path = null }: Props = $props();
 
 const name = $derived(title ?? m.artifact_untitled({ language }));
 </script>
@@ -47,7 +57,16 @@ const name = $derived(title ?? m.artifact_untitled({ language }));
     </p>
     {#if pending}
       <p class="truncate text-xs text-muted-foreground">
-        {m.artifact_card_building({ title: name })}
+        {#if path && artifactKey}
+          <!-- A project's own file, named: "Building Tidslinje…" says nothing
+               about which of five files is arriving (§13). -->
+          {m.artifact_card_writing({ path })}
+        {:else}
+          {m.artifact_card_building({ title: name })}
+        {/if}
+        {#if lines > 0}
+          <span class="tabular-nums">· {m.artifact_card_lines({ lines })}</span>
+        {/if}
       </p>
     {/if}
   </div>

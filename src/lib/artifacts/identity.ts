@@ -1,3 +1,4 @@
+import { normaliseProjectPath } from "./project";
 import type { ArtifactLanguage } from "./types";
 
 /**
@@ -112,13 +113,31 @@ function sanitiseTitle(title: string): string {
  * copy the identity off rather than one it has to translate.
  */
 export function fenceInfo(
-  language: ArtifactLanguage,
-  identity: { key?: string | null; title?: string | null },
+  /**
+   * The fence tag: an artifact language for a runnable file, or a plain kind —
+   * `ts`, `css`, `json` — for one of the project's other files (§13).
+   */
+  tag: string,
+  identity: {
+    key?: string | null;
+    title?: string | null;
+    /** Which file of the project this block is. Omitted for a single-file write. */
+    path?: string | null;
+    /** Marks this file as the one that runs, where the convention would not. */
+    entry?: boolean;
+  },
 ): string {
   const key = normaliseArtifactKey(identity.key);
   const title = identity.title ? sanitiseTitle(identity.title) : "";
+  const path = normaliseProjectPath(identity.path);
 
-  return [language, key ? `id=${key}` : "", title ? `title="${title}"` : ""]
+  return [
+    tag,
+    key ? `id=${key}` : "",
+    path ? `path=${path}` : "",
+    title ? `title="${title}"` : "",
+    identity.entry ? "entry" : "",
+  ]
     .filter((part) => part.length > 0)
     .join(" ");
 }

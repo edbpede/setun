@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+  artifactMessageSegments,
   artifactSegmentCount,
   artifactSegments,
   streamingMessageSegments,
@@ -7,6 +8,44 @@ import {
 } from "./segments";
 
 describe("artifactSegments", () => {
+  it("preserves disjoint prose and other projects while grouping a write", () => {
+    const first = "```html id=a path=index.html\n<p>a</p>\n```";
+    const last = "```css id=a path=style.css\np {color: teal}\n```";
+    const segments = artifactSegments(
+      [
+        first,
+        "Between A and B.",
+        "```svg id=b\n<svg/>\n```",
+        "Between B and A.",
+        last,
+        "Done.",
+      ].join("\n"),
+    );
+    expect(segments.map((segment) => segment.kind)).toEqual([
+      "artifact",
+      "text",
+      "artifact",
+      "text",
+      "text",
+    ]);
+    expect(segments[0].kind === "artifact" && segments[0].raw).toBe(`${first}\n${last}`);
+    expect(segments[1]).toEqual({ kind: "text", text: "Between A and B." });
+    expect(segments[3]).toEqual({ kind: "text", text: "Between B and A." });
+  });
+
+  it("groups project files across text parts before numbering cards", () => {
+    const parts = artifactMessageSegments([
+      "```html id=a path=index.html\n<p>a</p>\n```",
+      "Styles follow.\n```css id=a path=style.css\np {}\n```\n```svg id=b\n<svg/>\n```",
+    ]);
+    expect(parts[0][0].kind === "artifact" && parts[0][0].files).toEqual([
+      "index.html",
+      "style.css",
+    ]);
+    expect(parts[1][0]).toEqual({ kind: "text", text: "Styles follow." });
+    const cards = parts.flat().filter((segment) => segment.kind === "artifact");
+    expect(cards.map((card) => card.index)).toEqual([0, 1]);
+  });
   it("splits prose around an artifact block", () => {
     const segments = artifactSegments(
       ["Her er siden:", "```html id=side", "<p>hi</p>", "```", "Prøv den."].join("\n"),
@@ -90,7 +129,7 @@ describe("streamingSegments", () => {
     // The pupil watched `<!doctype html>` scroll past before this (§13, §20).
     expect(segments).toEqual([
       { kind: "text", text: "Her er siden:" },
-      { kind: "pending", language: "html", key: "side", title: "Min side" },
+      { kind: "pending", language: "html", key: "side", title: "Min side", lines: 2, path: null },
     ]);
   });
 
@@ -108,7 +147,14 @@ describe("streamingSegments", () => {
 
     expect(segments.map((segment) => segment.kind)).toEqual(["artifact", "text", "pending"]);
     expect(segments[0].kind === "artifact" && segments[0].artifact.key).toBe("en");
-    expect(segments[2]).toEqual({ kind: "pending", language: "svg", key: "to", title: null });
+    expect(segments[2]).toEqual({
+      kind: "pending",
+      language: "svg",
+      key: "to",
+      title: null,
+      lines: 1,
+      path: null,
+    });
   });
 
   it("does not read a backtick inside an info string as a fence", () => {
@@ -125,7 +171,7 @@ describe("streamingSegments", () => {
     // A tilde fence's info string may hold one, so the same info string that is
     // not a fence above opens one here.
     expect(streamingSegments("~~~html id=side title=`x`\n<p>hi")).toEqual([
-      { kind: "pending", language: "html", key: "side", title: "`x`" },
+      { kind: "pending", language: "html", key: "side", title: "`x`", lines: 1, path: null },
     ]);
   });
 
@@ -134,7 +180,26 @@ describe("streamingSegments", () => {
 
     // The backtick is what makes this a tilde fence's case: the same info string
     // after three backticks is not a fence at all.
-    expect(segments).toEqual([{ kind: "pending", language: "html", key: "side", title: "`x`" }]);
+    expect(segments).toEqual([
+      { kind: "pending", language: "html", key: "side", title: "`x`", lines: 1, path: null },
+    ]);
+  });
+
+  /**
+   * A long file takes a minute to write, and a stub that says only "building"
+   * for the whole of it looks stuck (§20).
+   */
+  it("counts the lines of the file that have arrived", () => {
+    const stubOf = (markdown: string) => {
+      const segment = streamingSegments(markdown).at(-1);
+      if (segment?.kind !== "pending") throw new Error("expected a pending stub");
+      return segment.lines;
+    };
+
+    expect(stubOf("```html id=side\n")).toBe(0);
+    expect(stubOf("```html id=side\n<h1>")).toBe(1);
+    expect(stubOf("```html id=side\n<h1>Hej</h1>\n")).toBe(1);
+    expect(stubOf("```html id=side\n<h1>Hej</h1>\n<p>Og</p>")).toBe(2);
   });
 
   it("scans a long buffer without parsing it", () => {
@@ -167,13 +232,30 @@ describe("streamingMessageSegments", () => {
           source: "<h1>Hej</h1>",
           line: 1,
           endLine: -1,
+          kind: "html",
           key: "side",
           title: "Min side",
+          path: null,
+          deleted: false,
+          entry: false,
         },
       },
     ]);
     // One artifact is one card, owned by the part that opened it.
     expect(after).toEqual([{ kind: "text", text: "Færdig." }]);
+  });
+
+  it("keeps counting the lines while later parts fill the same fence", () => {
+    const linesOf = (scans: ReturnType<typeof streamingMessageSegments>) => {
+      const segment = scans[0].find((entry) => entry.kind === "pending");
+      if (segment?.kind !== "pending") throw new Error("expected a pending stub");
+      return segment.lines;
+    };
+
+    // The pieces join with nothing, because `StreamingTurn` concatenates deltas
+    // — so a boundary that fell mid-line is one line again here.
+    expect(linesOf(streamingMessageSegments(["```html id=side\n<h1>He", "j</h1>"]))).toBe(1);
+    expect(linesOf(streamingMessageSegments(["```html id=side\n<h1>He", "j</h1>\n<p>Og"]))).toBe(2);
   });
 
   it("renders nothing for a part wholly inside a carried fence", () => {
@@ -192,8 +274,12 @@ describe("streamingMessageSegments", () => {
           source: "<h1>Hej<p>mere</p></h1>",
           line: 0,
           endLine: -1,
+          kind: "html",
           key: "side",
           title: null,
+          path: null,
+          deleted: false,
+          entry: false,
         },
       },
     ]);
@@ -204,7 +290,9 @@ describe("streamingMessageSegments", () => {
   it("keeps the stub pending while the fence it opened is still open", () => {
     const scans = streamingMessageSegments(["```html id=side\n<h1>Hej", "<p>mere</p>"]);
 
-    expect(scans[0]).toEqual([{ kind: "pending", language: "html", key: "side", title: null }]);
+    expect(scans[0]).toEqual([
+      { kind: "pending", language: "html", key: "side", title: null, lines: 1, path: null },
+    ]);
     expect(scans[1]).toEqual([]);
   });
 
@@ -236,7 +324,7 @@ describe("streamingMessageSegments", () => {
     expect(scans[0].map((segment) => segment.kind)).toEqual(["artifact"]);
     expect(scans[1]).toEqual([
       { kind: "text", text: "Og nu:" },
-      { kind: "pending", language: "svg", key: "to", title: null },
+      { kind: "pending", language: "svg", key: "to", title: null, lines: 1, path: null },
     ]);
   });
 
@@ -289,8 +377,12 @@ describe("streamingMessageSegments", () => {
           source: "<p>hi</p>",
           line: 0,
           endLine: -1,
+          kind: "html",
           key: "side",
           title: null,
+          path: null,
+          deleted: false,
+          entry: false,
         },
       },
     ]);

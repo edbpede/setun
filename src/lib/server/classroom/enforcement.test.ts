@@ -165,6 +165,30 @@ describe("budget enforcement (§10, §22)", () => {
     if (!result.allowed) expect(result.reason).toBe("classroom-cap-exhausted");
   });
 
+  /**
+   * The figures the check already computed, handed on rather than re-read (§10).
+   *
+   * The loop binds the daily ceilings *during* a turn, so it has to know where
+   * the day stood; reading them twice would let the two reads disagree.
+   */
+  it("returns what the day has already cost, for the turn it authorises", () => {
+    recordUsageEvent(db, {
+      classroomId: classroom.id,
+      studentId: student.id,
+      modelAliasId: alias.id,
+      inputTokens: 1_200,
+      outputTokens: 800,
+      estimated: false,
+    });
+
+    const result = check();
+
+    expect(result.allowed).toBe(true);
+    if (result.allowed) {
+      expect(result.consumed).toEqual({ studentTokens: 2_000, classroomTokens: 2_000 });
+    }
+  });
+
   it("resets at local midnight — a new day grants a fresh allowance", () => {
     const budget = BUDGET_PRESETS.standard;
 

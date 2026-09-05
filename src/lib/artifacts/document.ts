@@ -1,3 +1,4 @@
+import { findProjectFile, kindOf, type ProjectFiles, resolveRelative } from "./project";
 import {
   CONSOLE_MAX_LINES,
   CONSOLE_MAX_TEXT,
@@ -238,6 +239,17 @@ export function staticDocument(input: {
   runtimes: RuntimeSources;
   runId: string;
   storage?: ArtifactStorageSeed;
+  /** Which file this source is, so a relative reference resolves against it. */
+  entry?: string;
+  /**
+   * The rest of the project, so the entry's own links resolve (§13).
+   *
+   * A static artifact is not bundled — there is nothing to bundle — so a page
+   * that links a stylesheet or a script of its own has those inlined here. The
+   * frame has no network and no origin to fetch from, so an untouched
+   * `<link href="styles.css">` would silently do nothing.
+   */
+  files?: ProjectFiles;
 }): string {
   // A static artifact runs no module of its own, so the only thing the graph is
   // here for is UnoCSS — but it goes through the same script all the same, since
@@ -249,7 +261,105 @@ export function staticDocument(input: {
     return `<!doctype html><html><head><meta charset="utf-8">${head}<style>html,body{margin:0;height:100%;display:grid;place-items:center;background:#fff}svg{max-width:100%;max-height:100%}</style></head><body>${input.source}${ack}</body></html>`;
   }
 
-  return injectIntoHtml(input.source, head, ack);
+  const source = input.files
+    ? inlineStaticSiblings(input.source, entryFor(input), input.files)
+    : input.source;
+
+  return injectIntoHtml(source, head, ack);
+}
+
+/** Where the entry sits, so a relative reference resolves against its folder. */
+function entryFor(input: { files?: ProjectFiles; entry?: string }): string {
+  return input.entry ?? "index.html";
+}
+
+/**
+ * A `</style` or `</script` sequence inside inlined content (§21).
+ *
+ * The parser ends an element at the first matching end tag whatever the quoting
+ * around it, so a stylesheet holding the literal text `</style` would close the
+ * block and put the rest of the file on the page as markup. Escaped rather than
+ * removed: what a pupil wrote stays what a pupil wrote.
+ */
+function escapeStyle(css: string): string {
+  // A CSS hex escape, which the CSS parser reads back as the same character.
+  return css.replace(/<\/(style)/gi, "<\\3c /$1");
+}
+
+/** Attribute tokens, read only after the markup scanner identifies a real start tag. */
+const HTML_ATTRIBUTE = /([^\s=/>]+)(?:\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
+
+/**
+ * Inline the project files an html entry references (§13).
+ *
+ * There is no server behind the frame, so a reference is either inlined here or
+ * it does nothing. Only references that name a file of *this* project are
+ * touched: an absolute URL, a data URI, or a path the project does not hold is
+ * left exactly as written, so the page still says what the pupil wrote and the
+ * frame's own network policy is what refuses it.
+ */
+export function inlineStaticSiblings(source: string, entry: string, files: ProjectFiles): string {
+  const resolve = (raw: string | undefined): string | null => {
+    if (!raw) return null;
+    const specifier = raw.trim().split(/[?#]/, 1)[0];
+    // Anything that is not a plain relative path is somebody else's to resolve.
+    if (specifier === "" || /^[a-z][a-z0-9+.-]*:/i.test(specifier) || specifier.startsWith("//")) {
+      return null;
+    }
+
+    const resolved = resolveRelative(specifier.startsWith("/") ? "index.html" : entry, specifier);
+    return resolved ? findProjectFile(files, resolved) : null;
+  };
+
+  const replacements: { start: number; end: number; html: string }[] = [];
+  for (const tag of markupStartTags(source)) {
+    if (tag.name !== "link" && tag.name !== "script") continue;
+    const attributes = source.slice(tag.start + tag.name.length + 1, tag.end - 1);
+    const tokens = [...attributes.matchAll(HTML_ATTRIBUTE)];
+    const values = new Map<string, string>();
+    for (const token of tokens) {
+      const name = token[1].toLowerCase();
+      if (!values.has(name)) values.set(name, token[3] ?? token[4] ?? token[5] ?? "");
+    }
+    const without = (...names: string[]) =>
+      tokens
+        .filter((token) => !names.includes(token[1].toLowerCase()))
+        .map((token) => ` ${token[0]}`)
+        .join("");
+
+    if (tag.name === "link") {
+      // Alternate/disabled links have state a plain style cannot represent.
+      if (values.get("rel")?.toLowerCase() !== "stylesheet" || values.has("disabled")) continue;
+      const path = resolve(values.get("href"));
+      if (path === null || kindOf(path) !== "css") continue;
+      replacements.push({
+        start: tag.start,
+        end: tag.end,
+        html: `<style${without("rel", "href")}>${escapeStyle(files[path])}</style>`,
+      });
+      continue;
+    }
+
+    const close = /^\s*<\/script\s*>/i.exec(source.slice(tag.end));
+    if (!close) continue;
+    const path = resolve(values.get("src"));
+    const kind = path === null ? null : kindOf(path);
+    if (path === null || (kind !== "js" && kind !== "json")) continue;
+    const kept = without("src");
+    // Parser-inserted blob scripts keep native defer/async ordering and load
+    // events. These attributes do nothing on an inline classic script.
+    const scheduled = values.has("defer") || values.has("async");
+    const html = scheduled
+      ? `<script>${escapeScript(`document.write(${JSON.stringify(`<script${kept} src="`)} + URL.createObjectURL(new Blob([${JSON.stringify(files[path])}], {type:"text/javascript"})) + ${JSON.stringify('"></script>')});`)}</script>`
+      : `<script${kept}>${escapeScript(files[path])}</script>`;
+    replacements.push({ start: tag.start, end: tag.end + close[0].length, html });
+  }
+
+  let result = source;
+  for (const replacement of replacements.reverse()) {
+    result = result.slice(0, replacement.start) + replacement.html + result.slice(replacement.end);
+  }
+  return result;
 }
 
 /**
@@ -304,11 +414,23 @@ function tagEnd(source: string, from: number): number {
  * every context in which `<` opens nothing.
  */
 function structuralTagEnd(source: string, name: "head" | "html"): number {
+  for (const tag of markupStartTags(source, true)) {
+    if (tag.name === name) return tag.end;
+  }
+  return -1;
+}
+
+function* markupStartTags(
+  source: string,
+  documentOnly = false,
+): Generator<{ name: string; start: number; end: number }> {
   let at = 0;
+  const excluded: string[] = [];
+  const scopeCounts = new Map<string, number>();
 
   while (at < source.length) {
     const open = source.indexOf("<", at);
-    if (open < 0) return -1;
+    if (open < 0) return;
 
     if (source.startsWith("<!--", open)) {
       const close = source.indexOf("-->", open + 4);
@@ -334,15 +456,36 @@ function structuralTagEnd(source: string, name: "head" | "html"): number {
     const end = tagEnd(source, open + tag[0].length);
 
     // An unclosed tag swallows the rest of the input, so nothing follows it.
-    if (end < 0) return -1;
+    if (end < 0) return;
 
-    if (!closesTag && tagName === name) return end;
+    if (documentOnly) {
+      // Template contents and foreign elements cannot own the document's head.
+      // Nesting matters; raw-text bodies below must not affect this stack.
+      if (closesTag) {
+        // An unmatched end tag must not search the whole stack. Each matched
+        // scope is popped only once, keeping total work linear in the input.
+        if ((scopeCounts.get(tagName) ?? 0) > 0) {
+          while (excluded.length > 0) {
+            const scope = excluded.pop() as string;
+            scopeCounts.set(scope, (scopeCounts.get(scope) ?? 0) - 1);
+            if (scope === tagName) break;
+          }
+        }
+      } else if (
+        tagName === "template" ||
+        ((tagName === "svg" || tagName === "math") && !/\/\s*>$/.test(source.slice(open, end)))
+      ) {
+        excluded.push(tagName);
+        scopeCounts.set(tagName, (scopeCounts.get(tagName) ?? 0) + 1);
+      }
+    }
+    if (!closesTag && excluded.length === 0) yield { name: tagName, start: open, end };
 
     // `<plaintext>` has no end tag — the parser stays in that mode to the end of
     // input, so a `</plaintext>` in the source closes nothing and no structural
     // tag can follow. Listing it beside the raw-text elements would look right
     // and hand back the same diversion, one string away.
-    if (!closesTag && tagName === "plaintext") return -1;
+    if (!closesTag && tagName === "plaintext") return;
 
     if (!closesTag && RAW_TEXT.has(tagName)) {
       // Resume at the end tag itself, which the loop then steps over normally.
@@ -353,8 +496,6 @@ function structuralTagEnd(source: string, name: "head" | "html"): number {
 
     at = end;
   }
-
-  return -1;
 }
 
 /**
@@ -389,6 +530,15 @@ export function compiledDocument(input: {
   framework: "react" | "svelte";
   /** ES module source, already through `esbuild-wasm` or the Svelte compiler. */
   module: string;
+  /**
+   * The stylesheets the bundle imported, concatenated (§13).
+   *
+   * esbuild lifts every imported `.css` file into an output of its own, so it
+   * arrives beside the module rather than inside it. Injected after the reset
+   * below and before the artifact mounts, so a component's own injected styles —
+   * Svelte's, which land at mount — still win, as they do in a real build.
+   */
+  css?: string;
   runtimes: RuntimeSources;
   runId: string;
   storage?: ArtifactStorageSeed;
@@ -437,9 +587,12 @@ try {
   // import map first, then the modules that resolve against it. A module script
   // in the markup — UnoCSS's, as it used to be — would begin loading before the
   // map existed, and a map added after that point is ignored.
+  const styles = input.css ? `<style>${escapeStyle(input.css)}</style>` : "";
+
   return `<!doctype html><html><head><meta charset="utf-8">
 ${preamble(input.runId, input.storage)}
 <style>html,body{margin:0}</style>
+${styles}
 </head><body><div id="setun-root"></div>
 ${modules(input.runtimes, harness)}
 </body></html>`;

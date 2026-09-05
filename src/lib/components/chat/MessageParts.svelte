@@ -1,7 +1,7 @@
 <script lang="ts">
 import {
-  artifactSegmentCount,
-  artifactSegments,
+  type ArtifactSegment,
+  artifactMessageSegments,
   type StreamingSegment,
   streamingMessageSegments,
 } from "$lib/artifacts/segments";
@@ -13,6 +13,7 @@ import type { MessageArtifactRef } from "$lib/state/conversation.svelte";
 import ArtifactCard from "./ArtifactCard.svelte";
 import ArtifactStubCard from "./ArtifactStubCard.svelte";
 import MarkdownMessage from "./MarkdownMessage.svelte";
+import ThinkingBlock from "./ThinkingBlock.svelte";
 import ToolAttribution from "./ToolAttribution.svelte";
 
 /**
@@ -42,6 +43,24 @@ interface Props {
   /** Which artifact the build surface is showing, so its card can say so (§13). */
   activeArtifactId?: string | null;
   onopenartifact?: (artifactId: string) => void;
+  /**
+   * Whether the model's reasoning is rendered at all (§20).
+   *
+   * The classroom's policy and the pupil's own switch, already resolved. A part
+   * that is not rendered is simply skipped: a persisted summary stays on the
+   * message, and turning the switch back on shows it again.
+   */
+  showThinking?: boolean;
+  /**
+   * When the reasoning began and settled, for the block's elapsed figure (§20).
+   *
+   * Only a streaming turn has them: a message read back after a reload is a
+   * record of what was said, not of how long it took, so its block simply says
+   * "Thoughts".
+   */
+  thinkingStartedAt?: number | null;
+  thinkingSettledAt?: number | null;
+  thinkingTimings?: Readonly<Record<number, { startedAt: number; settledAt: number | null }>>;
 }
 
 let {
@@ -51,25 +70,28 @@ let {
   artifacts,
   activeArtifactId = null,
   onopenartifact,
+  showThinking = true,
+  thinkingStartedAt = null,
+  thinkingSettledAt = null,
+  thinkingTimings = {},
 }: Props = $props();
 
 /**
- * Where each text part starts counting artifacts (§13).
- *
- * A message's prose arrives as several parts and the refs are numbered across
- * the whole message, so each part needs to know how many came before it.
+ * Group all text parts together, just as the recorder does (§13).
  */
-const firstIndexOf = $derived.by(() => {
-  const offsets = new Map<number, number>();
-  let seen = 0;
-
+const settledByPart = $derived.by(() => {
+  const texts: string[] = [];
+  const indexes: number[] = [];
   parts.forEach((part, index) => {
     if (part.type !== "text") return;
-    offsets.set(index, seen);
-    seen += artifactSegmentCount(part.text);
+    texts.push(part.text);
+    indexes.push(index);
   });
-
-  return { offsets, total: seen };
+  const byIndex = new Map<number, ArtifactSegment[]>();
+  artifactMessageSegments(texts).forEach((segments, at) => {
+    byIndex.set(indexes[at], segments);
+  });
+  return byIndex;
 });
 
 /**
@@ -83,15 +105,14 @@ const firstIndexOf = $derived.by(() => {
  */
 const aligned = $derived.by(() => {
   const refs = artifacts ?? [];
-  if (refs.length === 0 || refs.length !== firstIndexOf.total) return false;
-
-  return parts.every((part, index) => {
-    if (part.type !== "text") return true;
-
-    return artifactSegments(part.text, firstIndexOf.offsets.get(index) ?? 0).every(
-      (segment) =>
-        segment.kind !== "artifact" || refs[segment.index]?.language === segment.artifact.language,
-    );
+  const cards = [...settledByPart.values()].flat().filter((segment) => segment.kind === "artifact");
+  if (refs.length === 0 || refs.length !== cards.length) return false;
+  return cards.every((segment) => {
+    // A write whose first fence is a plain file — a revision that changed only
+    // the stylesheet — states no language of its own, so there is nothing to
+    // compare and the ref's own tag stands (§13).
+    if (segment.artifact.language === null) return refs[segment.index] !== undefined;
+    return refs[segment.index]?.language === segment.artifact.language;
   });
 });
 
@@ -150,16 +171,25 @@ const failed = $derived(
         {#if segment.kind === "text"}
           <p class="whitespace-pre-wrap break-words">{segment.text}</p>
         {:else if segment.kind === "artifact"}
-          <ArtifactStubCard
-            language={segment.artifact.language}
-            artifactKey={segment.artifact.key}
-            title={segment.artifact.title}
-          />
+          <!--
+            A write whose first fence is a plain file — a revision that touched
+            only the stylesheet — has no language to show a trit for, so it stays
+            in the prose rather than becoming a card that names nothing (§13).
+          -->
+          {#if segment.artifact.language}
+            <ArtifactStubCard
+              language={segment.artifact.language}
+              artifactKey={segment.artifact.key}
+              title={segment.artifact.title}
+            />
+          {/if}
         {:else}
           <ArtifactStubCard
             language={segment.language}
             artifactKey={segment.key}
             title={segment.title}
+            lines={segment.lines}
+            path={segment.path}
             pending
           />
         {/if}
@@ -172,7 +202,7 @@ const failed = $derived(
         between them is ordinary markdown, and `renderMarkdown` stays the only
         producer of `{@html}` in the transcript (§5).
       -->
-      {#each artifactSegments(part.text, firstIndexOf.offsets.get(index) ?? 0) as segment, at (at)}
+      {#each settledByPart.get(index) ?? [] as segment, at (at)}
         {#if segment.kind === "text"}
           <MarkdownMessage text={segment.text} />
         {:else if artifacts?.[segment.index]}
@@ -185,6 +215,20 @@ const failed = $derived(
           <MarkdownMessage text={segment.raw} />
         {/if}
       {/each}
+    {/if}
+  {:else if part.type === "thinking"}
+    {#if showThinking}
+      <!--
+        What the model worked out before it answered, collapsed (§20). Live only
+        while it is the last thing that has arrived: once prose follows it, the
+        reasoning is finished whatever the turn is doing.
+      -->
+      <ThinkingBlock
+        text={part.text}
+        live={streaming && index === parts.length - 1 && (thinkingTimings[index]?.settledAt ?? null) === null}
+        startedAt={thinkingTimings[index]?.startedAt ?? thinkingStartedAt}
+        settledAt={thinkingTimings[index]?.settledAt ?? thinkingSettledAt}
+      />
     {/if}
   {:else if part.type === "tool-call"}
     <!--
