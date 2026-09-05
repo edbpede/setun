@@ -510,12 +510,13 @@ function placeBlock(
 ): readonly ArtifactSourceRef[] {
   if (refs.length === 0) return [];
 
-  if (identity.artifactId !== undefined || (identity.key ?? null) !== null) {
-    return refs.filter((ref) => owns(ref, identity));
-  }
-
-  const artifactIds = new Set(refs.map((ref) => ref.artifactId));
-  return artifactIds.size === 1 ? refs : [];
+  const matches =
+    identity.artifactId !== undefined || (identity.key ?? null) !== null
+      ? refs.filter((ref) => owns(ref, identity))
+      : refs;
+  // A legacy block supplies one file, even if several paths share its bytes.
+  const files = new Set(matches.map((ref) => fileKey(ref.artifactId, ref.path)));
+  return files.size === 1 ? matches : [];
 }
 
 /**

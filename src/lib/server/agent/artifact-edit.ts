@@ -21,7 +21,9 @@ import type { MessagePart } from "../db/schema";
  * same id, which is the whole mechanism.
  */
 export function encodeArtifactEdit(part: Extract<MessagePart, { type: "artifact-edit" }>): string {
-  const named = part.title ? ` "${part.title}"` : "";
+  const named = part.title
+    ? ` ${JSON.stringify(part.title.replace(/\s+/g, " ").trim().slice(0, 120))}`
+    : "";
   const key = part.key ?? null;
   const files = filesOf(part);
   const deleted = part.deleted ?? [];

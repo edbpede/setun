@@ -563,6 +563,15 @@ describe("formatCarriedSources", () => {
  * an earlier revision holds, and eliding those is the whole point.
  */
 describe("projects in the model's context", () => {
+  it("carries identical files when a legacy block does not name a unique path", () => {
+    assistantTurn(
+      "```html id=side path=index.html\nsame\n```\n```html id=side path=other.html\nsame\n```",
+    );
+    const legacy = context(assistant("```html id=side\nsame\n```"));
+    expect(legacy.carried[0].missing).toEqual({ "index.html": "same", "other.html": "same" });
+    const named = context(assistant("```html id=side path=index.html\nsame\n```"));
+    expect(named.carried[0].missing).toEqual({ "other.html": "same" });
+  });
   const project = [
     '```tsx id=tid path=src/App.tsx title="Tidslinje" entry',
     "app",
