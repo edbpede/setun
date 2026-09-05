@@ -37,14 +37,14 @@ const changedSet = $derived(new Set(changed));
 /** Folders the pupil has collapsed. Open is the default, so this holds the closed ones. */
 let collapsed = $state<Record<string, boolean>>({});
 
-/** The files in the order the tree shows them, which is the order the arrows walk. */
+/** Files and folders share one focus order, including when the active file is hidden. */
 const ordered = $derived.by(() => {
   const out: string[] = [];
 
   const walk = (nodes: readonly FileTreeNode[]) => {
     for (const node of nodes) {
+      out.push(node.path);
       if (node.kind === "file") {
-        out.push(node.path);
         continue;
       }
       if (!collapsed[node.path]) walk(node.children);
@@ -55,19 +55,29 @@ const ordered = $derived.by(() => {
   return out;
 });
 
+let focused = $state<string | null>(null);
+const tabStop = $derived(
+  focused && ordered.includes(focused)
+    ? focused
+    : ordered.includes(active)
+      ? active
+      : (ordered[0] ?? ""),
+);
+
 let root = $state<HTMLElement | null>(null);
 
 function onkeydown(event: KeyboardEvent): void {
   const next = rovingTarget(event, {
     values: ordered,
-    current: active,
+    current: tabStop,
     attribute: "data-path",
     orientation: "block",
   });
   if (!next) return;
 
   event.preventDefault();
-  onselect(next);
+  focused = next;
+  if (paths.includes(next)) onselect(next);
 
   // The moved-to file keeps the focus, so the next arrow press continues from it.
   queueMicrotask(() => {
@@ -82,8 +92,11 @@ function onkeydown(event: KeyboardEvent): void {
       <li role="none">
         <button
           type="button"
+          data-path={node.path}
+          tabindex={tabStop === node.path ? 0 : -1}
           aria-expanded={!collapsed[node.path]}
           aria-label={m.artifact_file_folder_toggle({ name: node.name })}
+          onfocus={() => (focused = node.path)}
           onclick={() => (collapsed = { ...collapsed, [node.path]: !collapsed[node.path] })}
           style="padding-inline-start: {0.5 + depth * 0.75}rem"
           class="flex w-full items-center gap-1 py-1 pe-2 text-start text-xs text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
@@ -109,7 +122,8 @@ function onkeydown(event: KeyboardEvent): void {
           data-path={node.path}
           aria-current={isActive}
           aria-selected={isActive}
-          tabindex={isActive ? 0 : -1}
+          tabindex={tabStop === node.path ? 0 : -1}
+          onfocus={() => (focused = node.path)}
           onclick={() => onselect(node.path)}
           style="padding-inline-start: {0.5 + depth * 0.75}rem"
           class={[

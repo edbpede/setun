@@ -107,4 +107,27 @@ describe("FileTree", () => {
 
     expect(onselect).not.toHaveBeenCalled();
   });
+
+  it("roves through folders and retains one tab stop after collapsing the active file", async () => {
+    const onselect = vi.fn();
+    tree({ onselect });
+    const folder = page.getByRole("button", {
+      name: m.artifact_file_folder_toggle({ name: "src" }),
+      exact: true,
+    });
+    expect(document.querySelectorAll('[role="tree"] button[tabindex="0"]')).toHaveLength(1);
+    await expect.element(folder).toHaveAttribute("tabindex", "-1");
+    await folder.element().focus();
+    await userEvent.keyboard("{ArrowDown}");
+    await expect
+      .element(page.getByRole("button", { name: m.artifact_file_folder_toggle({ name: "lib" }) }))
+      .toHaveFocus();
+    expect(onselect).not.toHaveBeenCalled();
+    await folder.click();
+    await expect.element(folder).toHaveAttribute("tabindex", "0");
+    expect(document.querySelectorAll('[role="tree"] button[tabindex="0"]')).toHaveLength(1);
+    await userEvent.keyboard("{ArrowDown}");
+    expect(onselect).toHaveBeenCalledWith("styles.css");
+    await expect.element(page.getByRole("treeitem", { name: /styles\.css/ })).toHaveFocus();
+  });
 });
